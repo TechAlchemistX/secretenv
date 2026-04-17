@@ -26,6 +26,15 @@ version = "0.1.0"
 [[package]]
 name = "backend-aws-ssm"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "backend-local"

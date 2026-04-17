@@ -205,15 +205,38 @@ fn run_errors_when_no_registry_configured_and_no_flag() {
 // ---- doctor + setup stubs ----
 
 #[test]
-fn doctor_stub_reports_phase_10() {
+fn doctor_human_output_lists_local_backend_as_ok() {
     let (dir, config) = full_fixture();
     secretenv()
         .current_dir(dir.path())
         .args(["--config", &config])
         .arg("doctor")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("Phase 10"));
+        .success()
+        .stdout(predicate::str::contains("Backends (1 configured)"))
+        .stdout(predicate::str::contains("local [local]"))
+        .stdout(predicate::str::contains("✓ ready"))
+        .stdout(predicate::str::contains("Summary: 1/1 OK"));
+}
+
+#[test]
+fn doctor_json_output_has_stable_schema() {
+    let (dir, config) = full_fixture();
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "doctor --json should exit 0 on happy path");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["summary"]["total"], 1);
+    assert_eq!(parsed["summary"]["ok"], 1);
+    let b = &parsed["backends"][0];
+    assert_eq!(b["instance_name"], "local");
+    assert_eq!(b["backend_type"], "local");
+    assert_eq!(b["status"], "ok");
 }
 
 #[test]

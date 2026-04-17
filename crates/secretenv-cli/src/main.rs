@@ -11,6 +11,7 @@ use secretenv_core::{BackendRegistry, Config};
 use tracing_subscriber::EnvFilter;
 
 mod cli;
+mod doctor;
 
 use cli::Cli;
 

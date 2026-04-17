@@ -156,9 +156,7 @@ impl Cli {
             Command::Registry(rc) => cmd_registry(rc, config, backends).await,
             Command::Resolve(args) => cmd_resolve(args, config, backends).await,
             Command::Get(args) => cmd_get(args, config, backends).await,
-            Command::Doctor(_) => {
-                bail!("`doctor` is not yet implemented (arrives in Phase 10)");
-            }
+            Command::Doctor(args) => crate::doctor::run_doctor(backends, args.json).await,
             Command::Setup(_) => {
                 bail!("`setup` is not yet implemented (arrives in Phase 11)");
             }

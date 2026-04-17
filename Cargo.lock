@@ -680,6 +680,7 @@ dependencies = [
  "backend-aws-ssm",
  "backend-local",
  "clap",
+ "directories",
  "futures",
  "predicates",
  "secretenv-core",

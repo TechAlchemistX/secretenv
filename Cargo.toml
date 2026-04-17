@@ -34,6 +34,7 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indexmap           = { version = "2", features = ["serde"] }
 directories        = "5"
+tempfile           = "3"
 
 [workspace.lints.rust]
 unsafe_code     = "forbid"

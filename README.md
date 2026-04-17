@@ -531,7 +531,9 @@ secretenv has no credential storage, no login command, and no auth surface of it
 
 ## Plugin Architecture
 
-Every backend is an independent Rust crate implementing a common trait. Adding a new backend doesn't touch core.
+The core is an SDK. It parses `secretenv.toml`, resolves `--registry` to a source list, fetches registry documents, resolves aliases, fetches secret values, and injects them into the child process. That's it. The core never knows about AWS, Vault, 1Password, or any specific backend — it only speaks the trait interface below.
+
+Every backend is an independent Rust crate in `crates/backends/` implementing **two** traits defined in `secretenv-core`:
 
 ```rust
 #[async_trait]
@@ -544,9 +546,22 @@ pub trait Backend: Send + Sync {
     async fn delete(&self, uri: &BackendUri) -> Result<()>;
     async fn list(&self, uri: &BackendUri) -> Result<Vec<(String, String)>>;
 }
+
+pub trait BackendFactory: Send + Sync {
+    fn backend_type(&self) -> &str;
+    fn create(
+        &self,
+        instance_name: &str,
+        config: HashMap<String, String>,
+    ) -> Result<Box<dyn Backend>>;
+}
 ```
 
-All backends are compiled into the single binary. No feature flags to configure, no profiled builds to choose between. The instance configuration in `config.toml` determines which backends are active.
+Every backend crate registers one `BackendFactory`. At startup, the core iterates `[backends.*]` blocks in `config.toml` and calls each factory with the raw config fields — plugins own their own validation; the core stays blind to what fields each plugin expects. This keeps the core binary immutable: adding a new backend is a new crate plus one line of factory registration, never a change to core.
+
+`async_trait` is used from day one. v0.1 fetches secrets sequentially; parallelism becomes a one-line change in v0.2 thanks to the async surface.
+
+All backends are compiled into the single binary. No feature flags to configure, no profiled builds to choose between. The presence (or absence) of `[backends.<name>]` in `config.toml` determines which backends are active at runtime.
 
 For the step-by-step guide to writing a new backend, see [docs/adding-a-backend.md](docs/adding-a-backend.md).
 

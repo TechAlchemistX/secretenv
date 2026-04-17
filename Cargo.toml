@@ -22,6 +22,9 @@ readme       = "README.md"
 
 [workspace.dependencies]
 secretenv-core     = { path = "crates/secretenv-core" }
+backend-local      = { path = "crates/backends/backend-local" }
+backend-aws-ssm    = { path = "crates/backends/backend-aws-ssm" }
+backend-1password  = { path = "crates/backends/backend-1password" }
 anyhow             = "1"
 async-trait        = "0.1"
 clap               = { version = "4", features = ["derive"] }
@@ -36,6 +39,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indexmap           = { version = "2", features = ["serde"] }
 directories        = "5"
 tempfile           = "3"
+assert_cmd         = "2"
+predicates         = "3"
 
 [workspace.lints.rust]
 unsafe_code     = "forbid"

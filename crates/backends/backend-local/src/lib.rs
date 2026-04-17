@@ -95,6 +95,8 @@ impl Backend for LocalBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
         let path = Self::file_path(uri);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| {
@@ -105,7 +107,24 @@ impl Backend for LocalBackend {
                 )
             })?;
         }
-        tokio::fs::write(&path, value).await.with_context(|| {
+
+        // Open with mode 0o600 on Unix so a newly-created file never goes
+        // through a world-readable state. On Unix open(O_CREAT) only applies
+        // the mode to new files, so pre-existing files keep their current
+        // mode; the chmod below handles those as defense-in-depth.
+        let mut opts = tokio::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut f = opts.open(&path).await.with_context(|| {
+            format!(
+                "local backend '{}': failed to open '{}' for write (uri='{}')",
+                self.instance_name,
+                path.display(),
+                uri.raw
+            )
+        })?;
+        f.write_all(value.as_bytes()).await.with_context(|| {
             format!(
                 "local backend '{}': failed to write '{}' (uri='{}')",
                 self.instance_name,
@@ -113,6 +132,12 @@ impl Backend for LocalBackend {
                 uri.raw
             )
         })?;
+        // Flush + close via drop.
+        f.flush().await.with_context(|| {
+            format!("local backend '{}': failed to flush '{}'", self.instance_name, path.display())
+        })?;
+        drop(f);
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -1,10 +1,10 @@
 //! The [`BackendRegistry`] — the process-wide dispatcher that maps
 //! instance names (URI schemes) to live [`Backend`] instances.
 //!
-//! Not to be confused with the *alias registry document* — that's the
-//! TOML file stored inside a backend that maps aliases to backend URIs
-//! ([registry-document] in the wiki). The `BackendRegistry` here is
-//! the in-process plugin directory.
+//! Not to be confused with the *alias registry document* (the
+//! `registry-document` wiki page) — that's the TOML/JSON blob stored
+//! inside a backend that maps aliases to backend URIs. The
+//! `BackendRegistry` here is the in-process plugin directory.
 //!
 //! Typical startup flow:
 //!
@@ -15,8 +15,6 @@
 //! reg.register_factory(Box::new(OnePasswordFactory));
 //! reg.load_from_config(&config)?;
 //! ```
-//!
-//! [registry-document]: https://github.com/TechAlchemistX/secretenv/blob/main/../../kb/wiki/artifacts/registry-document.md
 #![allow(clippy::module_name_repetitions)]
 
 use std::collections::HashMap;

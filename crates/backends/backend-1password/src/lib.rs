@@ -104,7 +104,7 @@ impl OnePasswordBackend {
         }
     }
 
-    fn op_failure_message(&self, uri: &BackendUri, op: &str, stderr: &[u8]) -> String {
+    fn operation_failure_message(&self, uri: &BackendUri, op: &str, stderr: &[u8]) -> String {
         let stderr_str = String::from_utf8_lossy(stderr).trim().to_owned();
         format!(
             "1password backend '{}': {op} failed for URI '{}': {stderr_str}",
@@ -207,7 +207,7 @@ impl Backend for OnePasswordBackend {
             )
         })?;
         if !output.status.success() {
-            bail!(self.op_failure_message(uri, "get", &output.stderr));
+            bail!(self.operation_failure_message(uri, "get", &output.stderr));
         }
         let stdout = String::from_utf8(output.stdout).with_context(|| {
             format!(
@@ -231,7 +231,7 @@ impl Backend for OnePasswordBackend {
             )
         })?;
         if !output.status.success() {
-            bail!(self.op_failure_message(uri, "set", &output.stderr));
+            bail!(self.operation_failure_message(uri, "set", &output.stderr));
         }
         Ok(())
     }
@@ -251,7 +251,7 @@ impl Backend for OnePasswordBackend {
             )
         })?;
         if !output.status.success() {
-            bail!(self.op_failure_message(uri, "delete", &output.stderr));
+            bail!(self.operation_failure_message(uri, "delete", &output.stderr));
         }
         Ok(())
     }
@@ -515,6 +515,27 @@ exit 1
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
+        assert!(msg.contains("1password-personal"), "instance in context: {msg}");
+    }
+
+    #[tokio::test]
+    async fn get_non_utf8_response_errors_with_context() {
+        let dir = TempDir::new().unwrap();
+        let mock = install_mock_op(
+            &dir,
+            r#"
+if [ "$1" = "read" ]; then
+  printf '\xFF\xFE\xFD\xFC'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("non-UTF-8"), "specific error: {msg}");
         assert!(msg.contains("1password-personal"), "instance in context: {msg}");
     }
 

@@ -13,6 +13,14 @@ categories.workspace   = true
 readme.workspace       = true
 
 [dependencies]
+secretenv-core.workspace = true
+anyhow.workspace         = true
+async-trait.workspace    = true
+tokio.workspace          = true
+toml.workspace           = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

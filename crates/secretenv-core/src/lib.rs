@@ -1,17 +1,28 @@
 //! Core types, traits, and plugin registry for SecretEnv.
 //!
 //! This crate defines the abstractions every backend implements: the
-//! `Backend` and `BackendFactory` traits, the `BackendRegistry`, URI
-//! parsing, and the config model. All backends are wired at runtime via
-//! `config.toml`; there are no compile-time feature flags for backends.
+//! [`Backend`] and [`BackendFactory`] traits, the [`BackendRegistry`],
+//! URI parsing, and the config model. All backends are wired at runtime
+//! via `config.toml`; there are no compile-time feature flags for
+//! backends.
 //!
-//! Phase 1 lands the foundational value types: [`BackendUri`] (and its
-//! [`UriError`]) plus [`BackendStatus`]. Traits, the registry, and
-//! config loading land in Phases 2 and 3.
+//! # Module map
+//!
+//! - [`uri`] — [`BackendUri`] and [`UriError`]
+//! - [`status`] — [`BackendStatus`] (what `doctor` renders)
+//! - [`backend`] — the [`Backend`] and [`BackendFactory`] traits
+//! - [`config`] — [`Config`] and [`BackendConfig`] (Phase 3 adds serde)
+//! - [`registry`] — [`BackendRegistry`] dispatcher
 #![forbid(unsafe_code)]
 
+pub mod backend;
+pub mod config;
+pub mod registry;
 pub mod status;
 pub mod uri;
 
+pub use backend::{Backend, BackendFactory};
+pub use config::{BackendConfig, Config};
+pub use registry::BackendRegistry;
 pub use status::BackendStatus;
 pub use uri::{BackendUri, UriError};

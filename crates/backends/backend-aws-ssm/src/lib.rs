@@ -96,7 +96,7 @@ impl AwsSsmBackend {
         }
     }
 
-    fn op_failure_message(&self, uri: &BackendUri, op: &str, stderr: &[u8]) -> String {
+    fn operation_failure_message(&self, uri: &BackendUri, op: &str, stderr: &[u8]) -> String {
         let stderr_str = String::from_utf8_lossy(stderr).trim().to_owned();
         format!(
             "aws-ssm backend '{}': {op} failed for URI '{}': {stderr_str}",
@@ -229,7 +229,7 @@ impl Backend for AwsSsmBackend {
             )
         })?;
         if !output.status.success() {
-            bail!(self.op_failure_message(uri, "get", &output.stderr));
+            bail!(self.operation_failure_message(uri, "get", &output.stderr));
         }
         let stdout = String::from_utf8(output.stdout).with_context(|| {
             format!(
@@ -253,7 +253,7 @@ impl Backend for AwsSsmBackend {
             )
         })?;
         if !output.status.success() {
-            bail!(self.op_failure_message(uri, "set", &output.stderr));
+            bail!(self.operation_failure_message(uri, "set", &output.stderr));
         }
         Ok(())
     }
@@ -268,7 +268,7 @@ impl Backend for AwsSsmBackend {
             )
         })?;
         if !output.status.success() {
-            bail!(self.op_failure_message(uri, "delete", &output.stderr));
+            bail!(self.operation_failure_message(uri, "delete", &output.stderr));
         }
         Ok(())
     }
@@ -683,6 +683,60 @@ exit 1
                 assert!(identity.contains("profile=prod"));
                 assert!(identity.contains("account=123456789012"));
                 assert!(identity.contains("region=us-east-1"));
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_non_utf8_response_errors_with_context() {
+        let dir = TempDir::new().unwrap();
+        // Emit raw bytes that aren't valid UTF-8. Use POSIX octal
+        // escapes (\NNN) — hex \xNN is bash-specific and dash on
+        // ubuntu-latest passes them through as literal backslashes.
+        let mock = install_mock_aws(
+            &dir,
+            r#"
+if [ "$1 $2" = "ssm get-parameter" ]; then
+  printf '\377\376\375\374'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/garbage").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("non-UTF-8"), "specific error: {msg}");
+        assert!(msg.contains("aws-ssm-prod"), "instance in context: {msg}");
+    }
+
+    #[tokio::test]
+    async fn check_version_falls_back_to_stderr_for_cli_v1() {
+        let dir = TempDir::new().unwrap();
+        // AWS CLI v1 writes `--version` output to stderr, not stdout.
+        let mock = install_mock_aws(
+            &dir,
+            r#"
+if [ "$1" = "--version" ]; then
+  echo "aws-cli/1.18.69 Python/2.7.16 Darwin/19.6.0 botocore/1.17.0" >&2
+  exit 0
+fi
+if [ "$1 $2" = "sts get-caller-identity" ]; then
+  echo '{"UserId":"AIDA","Account":"123","Arn":"arn:aws:iam::123:user/t"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let b = backend(&mock, None);
+        match b.check().await {
+            BackendStatus::Ok { cli_version, .. } => {
+                assert!(
+                    cli_version.contains("aws-cli/1.18.69"),
+                    "stderr-origin version: {cli_version}"
+                );
             }
             other => panic!("expected Ok, got {other:?}"),
         }

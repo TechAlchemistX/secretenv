@@ -134,6 +134,12 @@ impl Config {
 
     fn validate(&self) -> Result<()> {
         for (name, reg) in &self.registries {
+            if reg.sources.is_empty() {
+                anyhow::bail!(
+                    "registry '{name}' has an empty sources list — a registry must list at \
+                     least one backend URI under `sources = [...]`"
+                );
+            }
             for (idx, source) in reg.sources.iter().enumerate() {
                 BackendUri::parse(source).with_context(|| {
                     format!("registry '{name}' sources[{idx}] = '{source}' is not a valid URI")
@@ -211,15 +217,16 @@ op_account = "myteam.1password.com"
     }
 
     #[test]
-    fn missing_file_returns_empty_config() {
+    fn load_from_errors_on_missing_file() {
+        // `Config::load_from` is strict — missing file is an error (unlike
+        // `Config::load` which returns `Config::default()` on a missing
+        // XDG-default config).
         let cfg = Config::load_from(Path::new("/definitely/not/a/real/path/config.toml"));
-        assert!(cfg.is_err(), "explicit load_from errors on missing file");
+        assert!(cfg.is_err(), "load_from errors on nonexistent path");
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        // Don't create the file; Config::load would fall through to empty,
-        // but load_from is strict.
-        assert!(Config::load_from(&path).is_err());
+        assert!(Config::load_from(&path).is_err(), "load_from errors on missing file in tempdir");
     }
 
     #[test]
@@ -317,5 +324,21 @@ extra = "typo"
         let cfg = Config::load_from(&path).unwrap();
         assert!(cfg.registries.is_empty());
         assert!(cfg.backends.is_empty());
+    }
+
+    #[test]
+    fn empty_sources_list_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            r"
+[registries.default]
+sources = []
+",
+        );
+        let err = Config::load_from(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("default"), "error names the registry: {msg}");
+        assert!(msg.contains("empty sources"), "error explains the problem: {msg}");
     }
 }

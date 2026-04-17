@@ -24,13 +24,10 @@ use crate::{BackendStatus, BackendUri};
 ///
 /// Implementations are expected to wrap a native CLI (`aws`, `op`,
 /// `vault`, etc.) — SecretEnv never calls cloud SDKs directly. See the
-/// [wrapper-model] design doc for the full rationale.
+/// `wrapper-model` wiki page for the full rationale.
 ///
-/// All I/O is async so that Phase v0.2 can introduce parallelism
-/// without changing the trait surface. v0.1 dispatches secrets
-/// sequentially.
-///
-/// [wrapper-model]: https://github.com/TechAlchemistX/secretenv/blob/main/../../kb/wiki/core/wrapper-model.md
+/// All I/O is async so that v0.2 can introduce parallelism without
+/// changing the trait surface. v0.1 dispatches secrets sequentially.
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// The backend type that created this instance (e.g. `aws-ssm`).

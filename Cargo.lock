@@ -22,6 +22,16 @@ dependencies = [
 [[package]]
 name = "backend-1password"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
 
 [[package]]
 name = "backend-aws-ssm"

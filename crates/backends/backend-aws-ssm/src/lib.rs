@@ -340,14 +340,39 @@ mod tests {
     use super::*;
 
     /// Write a bash script to `dir/aws`, chmod +x, return the path.
+    ///
+    /// Uses explicit `sync_all` + drop before chmod to close the write fd
+    /// deterministically, then spin-waits until the file is exec-able.
+    /// This defeats a Linux ETXTBSY race where a file just written by one
+    /// thread is transiently seen as "open for write" by another thread's
+    /// concurrent `execve`, visible only on CI's parallel test runner.
     fn install_mock_aws(dir: &TempDir, body: &str) -> PathBuf {
+        use std::io::Write;
+
         let path = dir.path().join("aws");
         let full = format!("#!/bin/sh\n{body}\n");
-        std::fs::write(&path, full).unwrap();
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(full.as_bytes()).unwrap();
+            f.sync_all().unwrap();
+            // f drops here — write fd closes.
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Probe-until-executable: retry up to ~500 ms to let any stale
+        // write fd in the kernel's books clear.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            match std::process::Command::new(&path).arg("--probe").output() {
+                // ETXTBSY == 26 on Linux — wait and retry.
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(_) | Err(_) => return path,
+            }
         }
         path
     }

@@ -1,0 +1,18 @@
+[package]
+name        = "backend-aws-ssm"
+description = "AWS SSM Parameter Store backend for SecretEnv"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[dependencies]
+
+[lints]
+workspace = true

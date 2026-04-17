@@ -1,0 +1,22 @@
+[package]
+name        = "secretenv-cli"
+description = "SecretEnv CLI — resolves aliases to secrets and runs commands with them injected"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[[bin]]
+name = "secretenv"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

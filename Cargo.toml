@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/secretenv-core",
+    "crates/secretenv-cli",
+    "crates/backends/backend-local",
+    "crates/backends/backend-aws-ssm",
+    "crates/backends/backend-1password",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+license      = "MIT"
+repository   = "https://github.com/TechAlchemistX/secretenv"
+homepage     = "https://secretenv.dev"
+authors      = ["Mandeep Patel <mandeep@techalchemist.io>"]
+rust-version = "1.75"
+keywords     = ["secrets", "cli", "environment", "aws", "vault"]
+categories   = ["command-line-utilities", "development-tools"]
+readme       = "README.md"
+
+[workspace.dependencies]
+anyhow             = "1"
+async-trait        = "0.1"
+clap               = { version = "4", features = ["derive"] }
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+toml               = "0.8"
+tokio              = { version = "1", features = ["process", "rt-multi-thread", "macros", "io-util"] }
+thiserror          = "1"
+zeroize            = { version = "1", features = ["zeroize_derive"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indexmap           = { version = "2", features = ["serde"] }
+directories        = "5"
+
+[workspace.lints.rust]
+unsafe_code     = "forbid"
+missing_docs    = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all         = { level = "warn", priority = -1 }
+pedantic    = { level = "warn", priority = -1 }
+nursery     = { level = "warn", priority = -1 }
+cargo       = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"

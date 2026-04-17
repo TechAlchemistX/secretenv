@@ -1,0 +1,22 @@
+# Acronyms and product names that should not be flagged by `clippy::doc_markdown`.
+# `..` preserves the default list of well-known identifiers.
+doc-valid-idents = [
+    "SecretEnv",
+    "TechAlchemistX",
+    "AWS",
+    "SSM",
+    "GCP",
+    "IAM",
+    "URI",
+    "URIs",
+    "TOML",
+    "JSON",
+    "YAML",
+    "CI",
+    "CLI",
+    "OAuth",
+    "1Password",
+    "HashiCorp",
+    "MacOS",
+    "..",
+]

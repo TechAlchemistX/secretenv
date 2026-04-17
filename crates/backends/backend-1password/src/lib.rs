@@ -521,11 +521,12 @@ exit 1
     #[tokio::test]
     async fn get_non_utf8_response_errors_with_context() {
         let dir = TempDir::new().unwrap();
+        // Octal escapes (POSIX), not \xFF (bash-specific).
         let mock = install_mock_op(
             &dir,
             r#"
 if [ "$1" = "read" ]; then
-  printf '\xFF\xFE\xFD\xFC'
+  printf '\377\376\375\374'
   exit 0
 fi
 exit 1

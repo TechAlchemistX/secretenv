@@ -691,12 +691,14 @@ exit 1
     #[tokio::test]
     async fn get_non_utf8_response_errors_with_context() {
         let dir = TempDir::new().unwrap();
-        // Emit raw bytes that aren't valid UTF-8.
+        // Emit raw bytes that aren't valid UTF-8. Use POSIX octal
+        // escapes (\NNN) — hex \xNN is bash-specific and dash on
+        // ubuntu-latest passes them through as literal backslashes.
         let mock = install_mock_aws(
             &dir,
             r#"
 if [ "$1 $2" = "ssm get-parameter" ]; then
-  printf '\xFF\xFE\xFD\xFC'
+  printf '\377\376\375\374'
   exit 0
 fi
 exit 1

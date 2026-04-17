@@ -21,6 +21,7 @@ pub mod config;
 pub mod manifest;
 pub mod registry;
 pub mod resolver;
+pub mod runner;
 pub mod status;
 pub mod uri;
 
@@ -31,5 +32,6 @@ pub use registry::BackendRegistry;
 pub use resolver::{
     resolve_manifest, resolve_registry, AliasMap, RegistrySelection, ResolvedSecret, ResolvedSource,
 };
+pub use runner::{build_env, run, EnvEntry};
 pub use status::BackendStatus;
 pub use uri::{BackendUri, UriError};

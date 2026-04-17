@@ -134,12 +134,33 @@ pub struct DoctorArgs {
     pub json: bool,
 }
 
-/// `secretenv setup <registry-uri>` — Phase 11 stub.
+/// `secretenv setup <registry-uri>` — bootstrap a fresh config.toml.
 #[derive(Debug, Args)]
 pub struct SetupArgs {
     /// Backend URI the new `config.toml` should target as
-    /// `[registries.default]`.
+    /// `[registries.default]`. The scheme becomes the backend
+    /// instance name.
     pub registry_uri: String,
+
+    /// AWS region — required for aws-ssm backends.
+    #[arg(long)]
+    pub region: Option<String>,
+
+    /// AWS profile — optional, aws-ssm only.
+    #[arg(long)]
+    pub profile: Option<String>,
+
+    /// 1Password account shorthand or URL — optional, 1password only.
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// Overwrite an existing config.toml.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Skip the post-write health check.
+    #[arg(long)]
+    pub skip_doctor: bool,
 }
 
 impl Cli {
@@ -157,9 +178,7 @@ impl Cli {
             Command::Resolve(args) => cmd_resolve(args, config, backends).await,
             Command::Get(args) => cmd_get(args, config, backends).await,
             Command::Doctor(args) => crate::doctor::run_doctor(backends, args.json).await,
-            Command::Setup(_) => {
-                bail!("`setup` is not yet implemented (arrives in Phase 11)");
-            }
+            Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
         }
     }
 }
@@ -425,6 +444,21 @@ fn serialize_registry(backend_type: &str, map: &HashMap<String, String>) -> Resu
             "writing registry documents through backend type '{other}' is not supported in v0.1"
         )),
     }
+}
+
+// ---- setup --------------------------------------------------------------
+
+async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) -> Result<()> {
+    let opts = crate::setup::SetupOpts {
+        registry_uri: args.registry_uri.clone(),
+        region: args.region.clone(),
+        profile: args.profile.clone(),
+        account: args.account.clone(),
+        force: args.force,
+        skip_doctor: args.skip_doctor,
+        target: target_config.map(std::path::Path::to_path_buf),
+    };
+    crate::setup::run_setup(&opts).await
 }
 
 // Avoid unused-import warnings on FromStr when RegistrySelection::from_str

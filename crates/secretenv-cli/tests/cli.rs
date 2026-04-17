@@ -240,15 +240,147 @@ fn doctor_json_output_has_stable_schema() {
 }
 
 #[test]
-fn setup_stub_reports_phase_11() {
-    let (dir, config) = full_fixture();
+fn setup_writes_config_for_local_backend() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let registry = dir.path().join("registry.toml");
+    write_file(&registry, ""); // empty registry doc is a valid TOML map
+    let registry_uri = format!("local://{}", registry.to_str().unwrap());
+
     secretenv()
         .current_dir(dir.path())
-        .args(["--config", &config])
-        .args(["setup", "local:///tmp/new-registry.toml"])
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["setup", &registry_uri, "--skip-doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote config"));
+
+    let written = std::fs::read_to_string(&config_path).unwrap();
+    assert!(written.contains("[registries.default]"), "has registries: {written}");
+    assert!(written.contains("[backends.local]"), "has backend block: {written}");
+    assert!(written.contains("type = \"local\""));
+}
+
+#[test]
+fn setup_aws_ssm_requires_region() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["setup", "aws-ssm-prod:///prod/reg", "--skip-doctor"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Phase 11"));
+        .stderr(predicate::str::contains("--region"));
+    assert!(!config_path.exists(), "no config written on validation failure");
+}
+
+#[test]
+fn setup_aws_ssm_writes_region_and_profile() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args([
+            "setup",
+            "aws-ssm-prod:///prod/reg",
+            "--region",
+            "us-east-1",
+            "--profile",
+            "prod",
+            "--skip-doctor",
+        ])
+        .assert()
+        .success();
+
+    let written = std::fs::read_to_string(&config_path).unwrap();
+    assert!(written.contains("[backends.aws-ssm-prod]"));
+    assert!(written.contains("type = \"aws-ssm\""));
+    assert!(written.contains("aws_region = \"us-east-1\""));
+    assert!(written.contains("aws_profile = \"prod\""));
+}
+
+#[test]
+fn setup_refuses_to_overwrite_without_force() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    write_file(&config_path, "# existing config, do not clobber\n");
+
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["setup", "local:///tmp/r.toml", "--skip-doctor"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+
+    let still_there = std::fs::read_to_string(&config_path).unwrap();
+    assert!(still_there.contains("existing config"), "file unchanged: {still_there}");
+}
+
+#[test]
+fn setup_force_overwrites_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let registry = dir.path().join("registry.toml");
+    write_file(&config_path, "# will be replaced\n");
+    write_file(&registry, "");
+    let registry_uri = format!("local://{}", registry.to_str().unwrap());
+
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["setup", &registry_uri, "--force", "--skip-doctor"])
+        .assert()
+        .success();
+
+    let written = std::fs::read_to_string(&config_path).unwrap();
+    assert!(!written.contains("will be replaced"));
+    assert!(written.contains("[registries.default]"));
+}
+
+#[test]
+fn setup_written_config_is_usable_by_resolve() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let registry = dir.path().join("registry.toml");
+    let secret_path = dir.path().join("secret.toml");
+
+    // Populate the registry with one alias pointing at a local secret file.
+    write_file(&registry, &format!("stripe-key = \"local://{}\"\n", secret_path.to_str().unwrap()));
+    write_file(&secret_path, "value");
+    let registry_uri = format!("local://{}", registry.to_str().unwrap());
+
+    // Phase 1: setup writes the config.
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["setup", &registry_uri, "--skip-doctor"])
+        .assert()
+        .success();
+
+    // Phase 2: resolve against the just-written config.
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["resolve", "stripe-key"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local://"));
+}
+
+#[test]
+fn setup_rejects_unknown_scheme() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["setup", "vault-prod:///secrets/reg", "--skip-doctor"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown backend scheme"));
 }
 
 // ---- run happy path: exec-replace printenv ----

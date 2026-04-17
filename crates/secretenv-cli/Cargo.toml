@@ -23,6 +23,7 @@ backend-aws-ssm.workspace     = true
 backend-1password.workspace   = true
 anyhow.workspace              = true
 clap.workspace                = true
+directories.workspace         = true
 futures.workspace             = true
 serde.workspace               = true
 serde_json.workspace          = true

@@ -5,13 +5,15 @@
 //! [`secretenv_core`] and the per-backend crates.
 #![forbid(unsafe_code)]
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use secretenv_core::{BackendRegistry, Config};
+use secretenv_core::Config;
 use tracing_subscriber::EnvFilter;
 
+mod backends_init;
 mod cli;
 mod doctor;
+mod setup;
 
 use cli::Cli;
 
@@ -28,17 +30,21 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let config = load_config(&cli)?;
+    // Setup may write to a target that doesn't exist yet — tolerate a
+    // missing --config path in that case. Every other command needs an
+    // actually-present config (or falls through to XDG default).
+    let allow_missing = matches!(cli.command, cli::Command::Setup(_));
+    let config = load_config(&cli, allow_missing)?;
 
-    let mut backends = BackendRegistry::new();
-    backends.register_factory(Box::new(backend_local::LocalFactory::new()));
-    backends.register_factory(Box::new(backend_aws_ssm::AwsSsmFactory::new()));
-    backends.register_factory(Box::new(backend_1password::OnePasswordFactory::new()));
-    backends.load_from_config(&config).context("loading backend instances from config.toml")?;
+    let backends = backends_init::build_registry(&config)?;
 
     cli.run(&config, &backends).await
 }
 
-fn load_config(cli: &Cli) -> Result<Config> {
-    cli.config.as_ref().map_or_else(Config::load, |path| Config::load_from(path))
+fn load_config(cli: &Cli, allow_missing: bool) -> Result<Config> {
+    match &cli.config {
+        Some(path) if allow_missing && !path.exists() => Ok(Config::default()),
+        Some(path) => Config::load_from(path),
+        None => Config::load(),
+    }
 }

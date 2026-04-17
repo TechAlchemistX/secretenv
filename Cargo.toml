@@ -38,6 +38,7 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indexmap           = { version = "2", features = ["serde"] }
 directories        = "5"
+futures            = "0.3"
 tempfile           = "3"
 assert_cmd         = "2"
 predicates         = "3"

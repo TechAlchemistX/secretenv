@@ -186,6 +186,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 

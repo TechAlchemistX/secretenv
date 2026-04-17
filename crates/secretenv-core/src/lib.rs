@@ -11,18 +11,21 @@
 //! - [`uri`] — [`BackendUri`] and [`UriError`]
 //! - [`status`] — [`BackendStatus`] (what `doctor` renders)
 //! - [`backend`] — the [`Backend`] and [`BackendFactory`] traits
-//! - [`config`] — [`Config`] and [`BackendConfig`] (Phase 3 adds serde)
+//! - [`config`] — [`Config`], [`RegistryConfig`], [`BackendConfig`]
+//! - [`manifest`] — [`Manifest`] and [`SecretDecl`] for `secretenv.toml`
 //! - [`registry`] — [`BackendRegistry`] dispatcher
 #![forbid(unsafe_code)]
 
 pub mod backend;
 pub mod config;
+pub mod manifest;
 pub mod registry;
 pub mod status;
 pub mod uri;
 
 pub use backend::{Backend, BackendFactory};
-pub use config::{BackendConfig, Config};
+pub use config::{BackendConfig, Config, RegistryConfig};
+pub use manifest::{Manifest, SecretDecl};
 pub use registry::BackendRegistry;
 pub use status::BackendStatus;
 pub use uri::{BackendUri, UriError};

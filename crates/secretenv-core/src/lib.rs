@@ -20,6 +20,7 @@ pub mod backend;
 pub mod config;
 pub mod manifest;
 pub mod registry;
+pub mod resolver;
 pub mod status;
 pub mod uri;
 
@@ -27,5 +28,8 @@ pub use backend::{Backend, BackendFactory};
 pub use config::{BackendConfig, Config, RegistryConfig};
 pub use manifest::{Manifest, SecretDecl};
 pub use registry::BackendRegistry;
+pub use resolver::{
+    resolve_manifest, resolve_registry, AliasMap, RegistrySelection, ResolvedSecret, ResolvedSource,
+};
 pub use status::BackendStatus;
 pub use uri::{BackendUri, UriError};

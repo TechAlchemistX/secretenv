@@ -219,8 +219,29 @@ impl Backend for OnePasswordBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        // KNOWN LIMITATION (review finding CV-1, partial): the 1Password
+        // CLI (`op item edit`) reads field assignments as `field=value`
+        // argv tokens. Unlike AWS SSM, `op` does not offer a portable
+        // stdin-fed value form that works across the 2.x and 1.x
+        // CLI generations users have installed. A version-gated stdin
+        // path (`op item edit ... field[password]=-`) is planned in a
+        // v0.3 follow-up once we have concrete compatibility testing
+        // against a live `op` binary.
+        //
+        // Exposure: the secret value is visible in the child process's
+        // argv for the lifetime of the `op` subprocess (normally
+        // O(200ms) — 2s). On multi-user Linux hosts, `/proc/<pid>/cmdline`
+        // is world-readable. `secretenv registry set` on 1password
+        // backends should not be run on shared machines until this is
+        // fixed.
         let (vault, item, field) = Self::parse_path(uri)?;
         let assignment = format!("{field}={value}");
+        tracing::warn!(
+            instance = self.instance_name.as_str(),
+            uri = uri.raw.as_str(),
+            "`op item edit` passes the field value through subprocess argv — \
+             do not run on multi-user hosts (CV-1; full stdin fix in v0.3)"
+        );
         let mut cmd = Command::new(&self.op_bin);
         cmd.args(["item", "edit", &item, &assignment, "--vault", &vault]);
         self.append_account(&mut cmd);

@@ -241,14 +241,51 @@ impl Backend for AwsSsmBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        // Secret value is piped via child stdin — NEVER on argv. `aws`
+        // supports `--value file:///dev/stdin` which tells it to read
+        // the value from the file at that path, and on Unix `/dev/stdin`
+        // resolves to the fd-0 we hand it via `Stdio::piped()`.
+        //
+        // Review finding CV-1 (Phase 0.5 preflight): previously we
+        // passed `--value <value>` on argv, making secrets readable via
+        // `/proc/<pid>/cmdline` to every local user for the lifetime
+        // of the aws subprocess.
         let name = Self::parameter_name(uri);
         let mut cmd = self.ssm_command(
             "put-parameter",
-            &["--type", "SecureString", "--overwrite", "--name", &name, "--value", value],
+            &[
+                "--type",
+                "SecureString",
+                "--overwrite",
+                "--name",
+                &name,
+                "--value",
+                "file:///dev/stdin",
+            ],
         );
-        let output = cmd.output().await.with_context(|| {
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().with_context(|| {
             format!(
-                "aws-ssm backend '{}': failed to invoke 'aws ssm put-parameter' for URI '{}'",
+                "aws-ssm backend '{}': failed to spawn 'aws ssm put-parameter' for URI '{}'",
+                self.instance_name, uri.raw
+            )
+        })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(value.as_bytes()).await.with_context(|| {
+                format!(
+                    "aws-ssm backend '{}': failed to write secret value to aws stdin",
+                    self.instance_name
+                )
+            })?;
+            stdin.shutdown().await.ok();
+            drop(stdin);
+        }
+        let output = child.wait_with_output().await.with_context(|| {
+            format!(
+                "aws-ssm backend '{}': 'aws ssm put-parameter' exited abnormally for URI '{}'",
                 self.instance_name, uri.raw
             )
         })?;
@@ -629,6 +666,59 @@ exit 1
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let err = b.set(&uri, "v").await.unwrap_err();
         assert!(format!("{err:#}").contains("ParameterAlreadyExists"));
+    }
+
+    #[tokio::test]
+    async fn set_passes_secret_value_via_stdin_not_argv() {
+        // CV-1 regression check: mock aws binary writes every argv + its
+        // stdin to a log file. Test then asserts:
+        //   (1) the secret appears in stdin,
+        //   (2) the secret does NOT appear anywhere in argv.
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("argv_and_stdin.log");
+        let log_path_str = log_path.to_string_lossy();
+        let script = format!(
+            r#"
+LOG="{log_path_str}"
+{{
+  echo "--- ARGV ---"
+  i=0
+  for a in "$@"; do
+    echo "[$i] $a"
+    i=$((i + 1))
+  done
+  echo "--- STDIN ---"
+  cat
+}} > "$LOG" 2>&1
+if [ "$1 $2" = "ssm put-parameter" ]; then
+  echo '{{"Version":1}}'
+  exit 0
+fi
+exit 1
+"#
+        );
+        let mock = install_mock_aws(&dir, &script);
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        let very_sensitive = "sk_live_top_SECRET_never_on_argv_987";
+        b.set(&uri, very_sensitive).await.unwrap();
+
+        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
+        // Split on ARGV/STDIN markers so assertions are unambiguous.
+        let (argv_section, stdin_section) =
+            log.split_once("--- STDIN ---").expect("log has STDIN section");
+        assert!(
+            !argv_section.contains(very_sensitive),
+            "secret value must not appear in argv; argv was:\n{argv_section}"
+        );
+        assert!(
+            stdin_section.contains(very_sensitive),
+            "secret value should have arrived via stdin; stdin section was:\n{stdin_section}"
+        );
+        assert!(
+            argv_section.contains("file:///dev/stdin"),
+            "argv should name the stdin sentinel instead of the value:\n{argv_section}"
+        );
     }
 
     #[tokio::test]

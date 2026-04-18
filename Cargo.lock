@@ -100,45 +100,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "backend-1password"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "secretenv-core",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "backend-aws-ssm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "secretenv-core",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "backend-local"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "secretenv-core",
- "tempfile",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,18 +632,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "secretenv-cli"
+name = "secretenv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
- "backend-1password",
- "backend-aws-ssm",
- "backend-local",
  "clap",
  "directories",
  "futures",
  "predicates",
+ "secretenv-backend-1password",
+ "secretenv-backend-aws-ssm",
+ "secretenv-backend-local",
  "secretenv-core",
  "serde",
  "serde_json",
@@ -691,6 +652,45 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "secretenv-backend-1password"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "secretenv-backend-aws-ssm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "secretenv-backend-local"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "tempfile",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

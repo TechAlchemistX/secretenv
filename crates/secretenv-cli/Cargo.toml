@@ -1,5 +1,5 @@
 [package]
-name        = "secretenv-cli"
+name        = "secretenv"
 description = "SecretEnv CLI — resolves aliases to secrets and runs commands with them injected"
 version.workspace      = true
 edition.workspace      = true
@@ -17,10 +17,10 @@ name = "secretenv"
 path = "src/main.rs"
 
 [dependencies]
-secretenv-core.workspace      = true
-backend-local.workspace       = true
-backend-aws-ssm.workspace     = true
-backend-1password.workspace   = true
+secretenv-core.workspace             = true
+secretenv-backend-local.workspace    = true
+secretenv-backend-aws-ssm.workspace  = true
+secretenv-backend-1password.workspace = true
 anyhow.workspace              = true
 clap.workspace                = true
 directories.workspace         = true

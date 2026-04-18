@@ -23,10 +23,12 @@ readme       = "README.md"
 [workspace.dependencies]
 # Path + version combo: cargo uses `path` for local builds and `version` for
 # `cargo publish` metadata. Both must match the workspace.package.version.
-secretenv-core     = { path = "crates/secretenv-core",              version = "0.1.0" }
-backend-local      = { path = "crates/backends/backend-local",      version = "0.1.0" }
-backend-aws-ssm    = { path = "crates/backends/backend-aws-ssm",    version = "0.1.0" }
-backend-1password  = { path = "crates/backends/backend-1password",  version = "0.1.0" }
+# Directory names stay unprefixed (`backends/backend-local`); only the
+# published crate names carry the `secretenv-` prefix to keep crates.io tidy.
+secretenv-core               = { path = "crates/secretenv-core",              version = "0.1.0" }
+secretenv-backend-local      = { path = "crates/backends/backend-local",      version = "0.1.0" }
+secretenv-backend-aws-ssm    = { path = "crates/backends/backend-aws-ssm",    version = "0.1.0" }
+secretenv-backend-1password  = { path = "crates/backends/backend-1password",  version = "0.1.0" }
 anyhow             = "1"
 async-trait        = "0.1"
 clap               = { version = "4", features = ["derive"] }

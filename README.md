@@ -1,14 +1,10 @@
 <div align="center">
 
-```
-                          _
-  ___  ___  ___ _ __ ___| |_ ___ _ ____   __
- / __|/ _ \/ __| '__/ _ \ __/ _ \ '_ \ \ / /
- \__ \  __/ (__| | |  __/ ||  __/ | | \ V /
- |___/\___|\___|_|  \___|\__\___|_| |_|\_/
-```
+<div align="center">
+  <img src="./docs/banner.svg" alt="secretenv" width="100%"/>
+</div>
 
-**Run any process with secrets from all your backends.**
+‎ 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)

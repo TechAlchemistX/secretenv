@@ -38,9 +38,9 @@ use thiserror::Error;
 /// let alias = BackendUri::parse("secretenv://stripe-key").unwrap();
 /// assert!(alias.is_alias());
 ///
-/// let fragmented = BackendUri::parse("aws-secrets-prod:///db-creds#password").unwrap();
+/// let fragmented = BackendUri::parse("aws-secrets-prod:///db-creds#json-key=password").unwrap();
 /// assert_eq!(fragmented.path, "/db-creds");
-/// assert_eq!(fragmented.fragment.as_deref(), Some("password"));
+/// assert_eq!(fragmented.fragment.as_deref(), Some("json-key=password"));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendUri {

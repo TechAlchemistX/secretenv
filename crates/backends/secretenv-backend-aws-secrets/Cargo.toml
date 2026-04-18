@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-aws-secrets"
-description = "AWS Secrets Manager backend for SecretEnv (supports #json-key URI fragment)"
+description = "AWS Secrets Manager backend for SecretEnv (supports #json-key=<field> URI fragment directive)"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

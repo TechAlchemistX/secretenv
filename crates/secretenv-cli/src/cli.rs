@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use secretenv_core::{
     resolve_manifest, resolve_registry, run as runner_run, Backend, BackendRegistry, BackendUri,
     Config, Manifest, RegistryCache, RegistrySelection,
@@ -51,6 +51,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Initialize `config.toml` for a registry URI (Phase 11).
     Setup(SetupArgs),
+    /// Generate shell completion scripts.
+    Completions(CompletionsArgs),
 }
 
 /// `secretenv run [...] -- <command>`
@@ -171,6 +173,27 @@ pub struct SetupArgs {
     pub skip_doctor: bool,
 }
 
+/// `secretenv completions <shell>` — emit a shell-completion script.
+#[derive(Debug, Args)]
+pub struct CompletionsArgs {
+    /// Target shell. One of `bash`, `zsh`, `fish`.
+    pub shell: Shell,
+
+    /// Write the script here (chmod 0o644) instead of stdout.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+}
+
+/// Shells we emit completion scripts for. A deliberately small set —
+/// the Big Three POSIX shells. PowerShell/Elvish can be added later
+/// when a user asks; there's no reason to carry the surface preemptively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
 impl Cli {
     /// Dispatch to the per-subcommand handler.
     ///
@@ -187,6 +210,7 @@ impl Cli {
             Command::Get(args) => cmd_get(args, config, backends).await,
             Command::Doctor(args) => crate::doctor::run_doctor(backends, args.json).await,
             Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
+            Command::Completions(args) => cmd_completions(args),
         }
     }
 }
@@ -501,6 +525,83 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         target: target_config.map(std::path::Path::to_path_buf),
     };
     crate::setup::run_setup(&opts).await
+}
+
+// ---- completions --------------------------------------------------------
+
+fn cmd_completions(args: &CompletionsArgs) -> Result<()> {
+    use std::io::IsTerminal as _;
+
+    let mut cmd = Cli::command();
+    let bin = "secretenv";
+    let mut buf: Vec<u8> = Vec::new();
+    match args.shell {
+        Shell::Bash => {
+            clap_complete::generate(clap_complete::shells::Bash, &mut cmd, bin, &mut buf);
+        }
+        Shell::Zsh => {
+            clap_complete::generate(clap_complete::shells::Zsh, &mut cmd, bin, &mut buf);
+        }
+        Shell::Fish => {
+            clap_complete::generate(clap_complete::shells::Fish, &mut cmd, bin, &mut buf);
+        }
+    }
+
+    if let Some(path) = &args.output {
+        std::fs::write(path, &buf)
+            .with_context(|| format!("writing completion script to '{}'", path.display()))?;
+        // Best-effort chmod 0o644. On non-Unix this is a no-op.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).with_context(
+                || format!("chmod 0o644 on completion script '{}'", path.display()),
+            )?;
+        }
+        eprintln!("wrote {} completion script to '{}'", args.shell.name(), path.display());
+    } else {
+        std::io::Write::write_all(&mut std::io::stdout(), &buf)
+            .context("writing completion script to stdout")?;
+        // If we're printing to a TTY, the user ran this interactively
+        // — point them at the canonical install location. Silent on
+        // redirect (the usual `secretenv completions zsh > _secretenv`
+        // pipeline).
+        if std::io::stdout().is_terminal() {
+            eprintln!();
+            eprintln!("{}", args.shell.install_hint());
+        }
+    }
+    Ok(())
+}
+
+impl Shell {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+            Self::Fish => "fish",
+        }
+    }
+
+    const fn install_hint(self) -> &'static str {
+        match self {
+            Self::Bash => {
+                "# install: add to ~/.bashrc (or /etc/bash_completion.d/):\n\
+                 #   source <(secretenv completions bash)"
+            }
+            Self::Zsh => {
+                "# install (replace PATH with a directory in your fpath):\n\
+                 #   secretenv completions zsh > \"$HOME/.zsh/completions/_secretenv\"\n\
+                 # then ensure your ~/.zshrc has:\n\
+                 #   fpath=(~/.zsh/completions $fpath)\n\
+                 #   autoload -U compinit && compinit"
+            }
+            Self::Fish => {
+                "# install:\n\
+                 #   secretenv completions fish > \"$HOME/.config/fish/completions/secretenv.fish\""
+            }
+        }
+    }
 }
 
 // Avoid unused-import warnings on FromStr when RegistrySelection::from_str

@@ -150,8 +150,7 @@ pub async fn build_env(
                         uri.scheme
                     )
                 })?;
-                let op_label =
-                    format!("{}::get (secret '{}')", uri.scheme, secret.env_var);
+                let op_label = format!("{}::get (secret '{}')", uri.scheme, secret.env_var);
                 let value =
                     crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(uri))
                         .await

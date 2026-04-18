@@ -388,10 +388,7 @@ default = "info"
 
         let err = Manifest::find_upward(&src).unwrap_err();
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("project rooted at"),
-            "error cites project-root bounding: {msg}"
-        );
+        assert!(msg.contains("project rooted at"), "error cites project-root bounding: {msg}");
     }
 
     #[test]

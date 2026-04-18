@@ -409,10 +409,7 @@ mod tests {
     fn factory_accepts_op_account() {
         let factory = OnePasswordFactory::new();
         let mut cfg: HashMap<String, toml::Value> = HashMap::new();
-        cfg.insert(
-            "op_account".to_owned(),
-            toml::Value::String("myteam.1password.com".to_owned()),
-        );
+        cfg.insert("op_account".to_owned(), toml::Value::String("myteam.1password.com".to_owned()));
         assert!(factory.create("1password-team", &cfg).is_ok());
     }
 

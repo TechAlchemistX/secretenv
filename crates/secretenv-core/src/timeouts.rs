@@ -41,11 +41,7 @@ pub const DEFAULT_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 ///   `SIGKILL` via the Child destructor, releasing the process cleanly.
 /// - Propagates any `Err` from the inner future, unchanged aside from
 ///   an added context line naming the op.
-pub async fn with_timeout<T, F>(
-    duration: Duration,
-    op_label: &str,
-    future: F,
-) -> Result<T>
+pub async fn with_timeout<T, F>(duration: Duration, op_label: &str, future: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
 {

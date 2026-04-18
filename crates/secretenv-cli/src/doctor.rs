@@ -115,8 +115,7 @@ pub async fn run_doctor(backends: &BackendRegistry, json: bool) -> Result<()> {
     // uniform.
     let statuses: Vec<BackendStatus> = join_all(list.iter().map(|b| async {
         let label = format!("{}::check", b.instance_name());
-        match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async { Ok(b.check().await) }).await
-        {
+        match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async { Ok(b.check().await) }).await {
             Ok(status) => status,
             Err(err) => BackendStatus::Error { message: err.to_string() },
         }

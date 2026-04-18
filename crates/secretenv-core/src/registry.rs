@@ -81,9 +81,8 @@ impl BackendRegistry {
                     instance_name
                 )
             })?;
-            let instance = factory
-                .create(instance_name, &backend_cfg.raw_fields)
-                .with_context(|| {
+            let instance =
+                factory.create(instance_name, &backend_cfg.raw_fields).with_context(|| {
                     format!(
                         "failed to build backend instance '{instance_name}' of type '{}'",
                         backend_cfg.backend_type

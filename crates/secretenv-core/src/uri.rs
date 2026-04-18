@@ -77,17 +77,13 @@ impl BackendUri {
             Some((left, right)) => (left, Some(right.to_owned())),
             None => (raw, None),
         };
-        let (scheme, path) = without_frag
-            .split_once("://")
-            .ok_or_else(|| UriError::Malformed(raw.to_owned()))?;
+        let (scheme, path) =
+            without_frag.split_once("://").ok_or_else(|| UriError::Malformed(raw.to_owned()))?;
         if scheme.is_empty() || path.is_empty() {
             return Err(UriError::Malformed(raw.to_owned()));
         }
         if !is_valid_scheme(scheme) {
-            return Err(UriError::InvalidScheme {
-                scheme: scheme.to_owned(),
-                raw: raw.to_owned(),
-            });
+            return Err(UriError::InvalidScheme { scheme: scheme.to_owned(), raw: raw.to_owned() });
         }
         if has_forbidden_control_char(path) {
             return Err(UriError::InvalidCharacter { raw: raw.to_owned() });
@@ -98,12 +94,7 @@ impl BackendUri {
             }
         }
         warn_on_bidi_override(raw);
-        Ok(Self {
-            scheme: scheme.to_owned(),
-            path: path.to_owned(),
-            fragment,
-            raw: raw.to_owned(),
-        })
+        Ok(Self { scheme: scheme.to_owned(), path: path.to_owned(), fragment, raw: raw.to_owned() })
     }
 
     /// Returns `true` if this URI is an alias reference (`secretenv://<alias>`).

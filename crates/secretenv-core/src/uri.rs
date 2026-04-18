@@ -765,10 +765,7 @@ mod tests {
         // Azure Key Vault version GUID `12345678-abcd-...`.
         let uri = BackendUri::parse("azure:///kv#version=12345678-abcd-1234-ef56-9876").unwrap();
         let dirs = uri.fragment_directives().unwrap().unwrap();
-        assert_eq!(
-            dirs.get("version").map(String::as_str),
-            Some("12345678-abcd-1234-ef56-9876"),
-        );
+        assert_eq!(dirs.get("version").map(String::as_str), Some("12345678-abcd-1234-ef56-9876"),);
     }
 
     #[test]

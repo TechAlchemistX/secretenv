@@ -743,8 +743,7 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri =
-            BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "hunter2");
     }
 
@@ -762,8 +761,7 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let port_uri =
-            BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=port").unwrap();
+        let port_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=port").unwrap();
         assert_eq!(b.get(&port_uri).await.unwrap(), "5432");
         let tls_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=tls").unwrap();
         assert_eq!(b.get(&tls_uri).await.unwrap(), "true");
@@ -783,8 +781,7 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri =
-            BackendUri::parse("aws-secrets-prod:///myapp/plain#json-key=field").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/plain#json-key=field").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("'field'"), "names the JSON key: {msg}");
@@ -805,8 +802,7 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri =
-            BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("password"), "names missing field: {msg}");
@@ -865,15 +861,10 @@ exit 1
         // `#json-key=password,version=5` — json-key is present, but aws-secrets
         // does not recognize `version`. Must error with the extra keys listed.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"echo '{"password":"hunter2"}'; exit 0"#,
-        );
+        let mock = install_mock_aws(&dir, r#"echo '{"password":"hunter2"}'; exit 0"#);
         let b = backend(&mock, None);
-        let uri = BackendUri::parse(
-            "aws-secrets-prod:///myapp/cfg#json-key=password,version=5",
-        )
-        .unwrap();
+        let uri =
+            BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password,version=5").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("unsupported"), "error names the problem: {msg}");

@@ -129,12 +129,28 @@ impl AwsSecretsBackend {
         cmd
     }
 
+    /// Map the URI path onto the secret ID AWS Secrets Manager will
+    /// accept. Unlike SSM (which requires a leading `/`), Secrets
+    /// Manager secret names must NOT start with `/` — the `describe`
+    /// and `get-secret-value` APIs reject slash-prefixed IDs as
+    /// `ResourceNotFoundException`. [`BackendUri::parse`] preserves
+    /// the leading slash when the URI uses triple-slash form (the
+    /// documented example), so strip it here before handing to the
+    /// CLI. ARNs (which don't start with `/` and begin with `arn:`)
+    /// pass through unchanged.
+    ///
+    /// Bug caught in integration validation 2026-04-18; mock tests
+    /// didn't cover this because mocks don't validate AWS naming rules.
+    fn secret_id(uri: &BackendUri) -> &str {
+        uri.path.strip_prefix('/').unwrap_or(&uri.path)
+    }
+
     /// Fetch the raw `SecretString` value with no fragment dispatch.
     /// Strips exactly one trailing `\n` (mirrors aws-ssm).
     async fn get_raw(&self, uri: &BackendUri) -> Result<String> {
         let mut cmd = self.secrets_command(
             "get-secret-value",
-            &["--secret-id", &uri.path, "--query", "SecretString", "--output", "text"],
+            &["--secret-id", Self::secret_id(uri), "--query", "SecretString", "--output", "text"],
         );
         let output = cmd.output().await.with_context(|| {
             format!(
@@ -267,7 +283,7 @@ impl Backend for AwsSecretsBackend {
         // Vault backend.
         let mut cmd = self.secrets_command(
             "put-secret-value",
-            &["--secret-id", &uri.path, "--secret-string", "file:///dev/stdin"],
+            &["--secret-id", Self::secret_id(uri), "--secret-string", "file:///dev/stdin"],
         );
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
@@ -314,7 +330,7 @@ impl Backend for AwsSecretsBackend {
         // Skipping it keeps semantics symmetric with aws-ssm/vault.
         let mut cmd = self.secrets_command(
             "delete-secret",
-            &["--secret-id", &uri.path, "--force-delete-without-recovery"],
+            &["--secret-id", Self::secret_id(uri), "--force-delete-without-recovery"],
         );
         let output = cmd.output().await.with_context(|| {
             format!(

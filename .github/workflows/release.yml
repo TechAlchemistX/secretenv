@@ -61,9 +61,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.use-cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }} -p secretenv-cli
+            cross build --release --locked --target ${{ matrix.target }} -p secretenv
           else
-            cargo build --release --locked --target ${{ matrix.target }} -p secretenv-cli
+            cargo build --release --locked --target ${{ matrix.target }} -p secretenv
           fi
 
       - name: Strip symbols
@@ -169,15 +169,15 @@ jobs:
 
       - name: Publish backend crates (parallel dep-wise; sequential here for simplicity)
         run: |
-          cargo publish -p backend-local --locked
-          cargo publish -p backend-aws-ssm --locked
-          cargo publish -p backend-1password --locked
+          cargo publish -p secretenv-backend-local --locked
+          cargo publish -p secretenv-backend-aws-ssm --locked
+          cargo publish -p secretenv-backend-1password --locked
 
       - name: Wait for crates.io to index backend crates
         run: sleep 45
 
-      - name: Publish secretenv-cli
-        run: cargo publish -p secretenv-cli --locked
+      - name: Publish secretenv (CLI)
+        run: cargo publish -p secretenv --locked
 
   # ------------------------------------------------------------------
   # 4. Render + push the Homebrew formula to the tap repo.

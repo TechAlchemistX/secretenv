@@ -53,15 +53,19 @@ pub struct RegistryConfig {
 ///
 /// Deserialized manually because the TOML key `type` is a Rust
 /// reserved word. Every non-`type` field is collected into
-/// [`raw_fields`](Self::raw_fields) without interpretation — the
-/// factory owns all validation.
+/// [`raw_fields`](Self::raw_fields) as a [`toml::Value`] — factories
+/// own all type-checking and validation of their own fields.
 #[derive(Debug, Clone)]
 pub struct BackendConfig {
     /// The backend type (the `type = "..."` field in TOML). Identifies
     /// which factory builds this instance.
     pub backend_type: String,
-    /// All non-`type` fields under the block, as strings.
-    pub raw_fields: HashMap<String, String>,
+    /// All non-`type` fields under the block, preserved as
+    /// [`toml::Value`]s. Factories extract scalars via
+    /// [`toml::Value::as_str`] (or `as_integer` / `as_bool` / `as_array`
+    /// for typed fields). This keeps the core blind to plugin-specific
+    /// schemas.
+    pub raw_fields: HashMap<String, toml::Value>,
 }
 
 impl<'de> Deserialize<'de> for BackendConfig {
@@ -82,21 +86,7 @@ impl<'de> Deserialize<'de> for BackendConfig {
                 )));
             }
         };
-        let mut raw_fields = HashMap::with_capacity(raw.len());
-        for (k, v) in raw {
-            match v {
-                toml::Value::String(s) => {
-                    raw_fields.insert(k, s);
-                }
-                other => {
-                    return Err(DeError::custom(format!(
-                        "field '{k}' must be a string, got {}",
-                        other.type_str()
-                    )));
-                }
-            }
-        }
-        Ok(Self { backend_type, raw_fields })
+        Ok(Self { backend_type, raw_fields: raw })
     }
 }
 
@@ -203,8 +193,8 @@ op_account = "myteam.1password.com"
         assert_eq!(cfg.backends.len(), 3);
         let aws = &cfg.backends["aws-ssm-prod"];
         assert_eq!(aws.backend_type, "aws-ssm");
-        assert_eq!(aws.raw_fields["aws_region"], "us-east-1");
-        assert_eq!(aws.raw_fields["aws_profile"], "prod");
+        assert_eq!(aws.raw_fields["aws_region"].as_str(), Some("us-east-1"));
+        assert_eq!(aws.raw_fields["aws_profile"].as_str(), Some("prod"));
         assert!(!aws.raw_fields.contains_key("type"), "'type' must not leak into raw_fields");
 
         let local = &cfg.backends["local"];
@@ -213,7 +203,7 @@ op_account = "myteam.1password.com"
 
         let op = &cfg.backends["1password-personal"];
         assert_eq!(op.backend_type, "1password");
-        assert_eq!(op.raw_fields["op_account"], "myteam.1password.com");
+        assert_eq!(op.raw_fields["op_account"].as_str(), Some("myteam.1password.com"));
     }
 
     #[test]
@@ -267,20 +257,47 @@ aws_region = "us-east-1"
     }
 
     #[test]
-    fn non_string_field_value_errors() {
+    fn typed_non_string_fields_are_preserved_for_factories() {
+        // v0.2+ behavior: integers, booleans, and arrays pass through as
+        // `toml::Value`s. Factories validate per-field types themselves.
         let dir = TempDir::new().unwrap();
         let path = write_config(
             &dir,
             r#"
-[backends.bad]
-type = "aws-ssm"
-timeout = 30
+[backends.vault]
+type = "vault"
+vault_addr = "https://vault.example.com:8200"
+timeout_secs = 30
+use_kv_v2 = true
+scopes = ["read", "write"]
 "#,
         );
-        let err = Config::load_from(&path).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("timeout"), "error names offending field: {msg}");
-        assert!(msg.contains("string"), "error says field must be a string: {msg}");
+        let cfg = Config::load_from(&path).unwrap();
+        let fields = &cfg.backends["vault"].raw_fields;
+        assert_eq!(fields["vault_addr"].as_str(), Some("https://vault.example.com:8200"));
+        assert_eq!(fields["timeout_secs"].as_integer(), Some(30));
+        assert_eq!(fields["use_kv_v2"].as_bool(), Some(true));
+        assert_eq!(fields["scopes"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn raw_fields_hashmap_preserves_string_values() {
+        // v0.1-compatibility: existing backends extract strings via
+        // `toml::Value::as_str()`. Confirm the round-trip.
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            r#"
+[backends.aws-ssm-prod]
+type = "aws-ssm"
+aws_region = "us-east-1"
+aws_profile = "prod"
+"#,
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        let fields = &cfg.backends["aws-ssm-prod"].raw_fields;
+        assert_eq!(fields["aws_region"].as_str(), Some("us-east-1"));
+        assert_eq!(fields["aws_profile"].as_str(), Some("prod"));
     }
 
     #[test]

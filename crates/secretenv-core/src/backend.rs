@@ -87,9 +87,13 @@ pub trait Backend: Send + Sync {
 /// Registered once per compiled-in plugin at startup via
 /// [`BackendRegistry::register_factory`](crate::BackendRegistry::register_factory).
 /// Core hands the factory the instance name (from the
-/// `[backends.<name>]` TOML key) and a `HashMap<String, String>` of
-/// every other field under that block. The factory owns all validation
-/// — core never interprets plugin-specific fields.
+/// `[backends.<name>]` TOML key) and a borrowed
+/// `HashMap<String, toml::Value>` of every other field under that
+/// block. The factory owns all validation — core never interprets
+/// plugin-specific fields. Factories typically extract scalars via
+/// [`toml::Value::as_str`] / `as_integer` / `as_bool` / `as_array`,
+/// emit typed errors naming the offending field, and `.clone()` any
+/// values they intend to store.
 pub trait BackendFactory: Send + Sync {
     /// The backend type this factory builds (e.g. `aws-ssm`). Must
     /// match the `type = "..."` value used in `config.toml`.
@@ -104,6 +108,6 @@ pub trait BackendFactory: Send + Sync {
     fn create(
         &self,
         instance_name: &str,
-        config: HashMap<String, String>,
+        config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>>;
 }

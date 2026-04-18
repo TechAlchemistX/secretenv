@@ -666,6 +666,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -679,6 +680,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -706,6 +708,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
  "zeroize",
 ]
 

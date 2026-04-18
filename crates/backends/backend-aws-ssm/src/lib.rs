@@ -241,14 +241,51 @@ impl Backend for AwsSsmBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        // Secret value is piped via child stdin — NEVER on argv. `aws`
+        // supports `--value file:///dev/stdin` which tells it to read
+        // the value from the file at that path, and on Unix `/dev/stdin`
+        // resolves to the fd-0 we hand it via `Stdio::piped()`.
+        //
+        // Review finding CV-1 (Phase 0.5 preflight): previously we
+        // passed `--value <value>` on argv, making secrets readable via
+        // `/proc/<pid>/cmdline` to every local user for the lifetime
+        // of the aws subprocess.
         let name = Self::parameter_name(uri);
         let mut cmd = self.ssm_command(
             "put-parameter",
-            &["--type", "SecureString", "--overwrite", "--name", &name, "--value", value],
+            &[
+                "--type",
+                "SecureString",
+                "--overwrite",
+                "--name",
+                &name,
+                "--value",
+                "file:///dev/stdin",
+            ],
         );
-        let output = cmd.output().await.with_context(|| {
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().with_context(|| {
             format!(
-                "aws-ssm backend '{}': failed to invoke 'aws ssm put-parameter' for URI '{}'",
+                "aws-ssm backend '{}': failed to spawn 'aws ssm put-parameter' for URI '{}'",
+                self.instance_name, uri.raw
+            )
+        })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(value.as_bytes()).await.with_context(|| {
+                format!(
+                    "aws-ssm backend '{}': failed to write secret value to aws stdin",
+                    self.instance_name
+                )
+            })?;
+            stdin.shutdown().await.ok();
+            drop(stdin);
+        }
+        let output = child.wait_with_output().await.with_context(|| {
+            format!(
+                "aws-ssm backend '{}': 'aws ssm put-parameter' exited abnormally for URI '{}'",
                 self.instance_name, uri.raw
             )
         })?;
@@ -311,15 +348,10 @@ impl BackendFactory for AwsSsmFactory {
     fn create(
         &self,
         instance_name: &str,
-        mut config: HashMap<String, String>,
+        config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let aws_region = config.remove("aws_region").ok_or_else(|| {
-            anyhow!(
-                "aws-ssm instance '{instance_name}': missing required field 'aws_region' \
-                 (set aws_region = \"us-east-1\" under [backends.{instance_name}])"
-            )
-        })?;
-        let aws_profile = config.remove("aws_profile");
+        let aws_region = required_string(config, "aws_region", instance_name)?;
+        let aws_profile = optional_string(config, "aws_profile", instance_name)?;
         Ok(Box::new(AwsSsmBackend {
             backend_type: "aws-ssm",
             instance_name: instance_name.to_owned(),
@@ -328,6 +360,45 @@ impl BackendFactory for AwsSsmFactory {
             aws_bin: CLI_NAME.to_owned(),
         }))
     }
+}
+
+/// Extract a required string field from the raw backend config. Returns
+/// a typed error naming the instance + field when missing or when the
+/// value has the wrong TOML type.
+fn required_string(
+    config: &HashMap<String, toml::Value>,
+    field: &str,
+    instance_name: &str,
+) -> Result<String> {
+    let value = config.get(field).ok_or_else(|| {
+        anyhow!(
+            "aws-ssm instance '{instance_name}': missing required field '{field}' \
+             (set {field} = \"...\" under [backends.{instance_name}])"
+        )
+    })?;
+    value.as_str().map(str::to_owned).ok_or_else(|| {
+        anyhow!(
+            "aws-ssm instance '{instance_name}': field '{field}' must be a string, got {}",
+            value.type_str()
+        )
+    })
+}
+
+/// Extract an optional string field. `Ok(None)` when absent; error when
+/// present with the wrong type.
+fn optional_string(
+    config: &HashMap<String, toml::Value>,
+    field: &str,
+    instance_name: &str,
+) -> Result<Option<String>> {
+    config.get(field).map_or(Ok(None), |value| {
+        value.as_str().map(|s| Some(s.to_owned())).ok_or_else(|| {
+            anyhow!(
+                "aws-ssm instance '{instance_name}': field '{field}' must be a string, got {}",
+                value.type_str()
+            )
+        })
+    })
 }
 
 #[cfg(test)]
@@ -402,8 +473,9 @@ mod tests {
     #[test]
     fn factory_errors_when_aws_region_missing() {
         let factory = AwsSsmFactory::new();
+        let cfg: HashMap<String, toml::Value> = HashMap::new();
         // Box<dyn Backend> isn't Debug, so we can't .unwrap_err(). Destructure.
-        let Err(err) = factory.create("aws-ssm-prod", HashMap::new()) else {
+        let Err(err) = factory.create("aws-ssm-prod", &cfg) else {
             panic!("expected error when aws_region is missing");
         };
         let msg = format!("{err:#}");
@@ -414,9 +486,9 @@ mod tests {
     #[test]
     fn factory_accepts_region_and_no_profile() {
         let factory = AwsSsmFactory::new();
-        let mut cfg = HashMap::new();
-        cfg.insert("aws_region".to_owned(), "us-east-1".to_owned());
-        let b = factory.create("aws-ssm-prod", cfg).unwrap();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        let b = factory.create("aws-ssm-prod", &cfg).unwrap();
         assert_eq!(b.backend_type(), "aws-ssm");
         assert_eq!(b.instance_name(), "aws-ssm-prod");
     }
@@ -424,10 +496,23 @@ mod tests {
     #[test]
     fn factory_accepts_region_and_profile() {
         let factory = AwsSsmFactory::new();
-        let mut cfg = HashMap::new();
-        cfg.insert("aws_region".to_owned(), "us-east-1".to_owned());
-        cfg.insert("aws_profile".to_owned(), "prod".to_owned());
-        assert!(factory.create("aws-ssm-prod", cfg).is_ok());
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        cfg.insert("aws_profile".to_owned(), toml::Value::String("prod".to_owned()));
+        assert!(factory.create("aws-ssm-prod", &cfg).is_ok());
+    }
+
+    #[test]
+    fn factory_rejects_non_string_aws_region() {
+        let factory = AwsSsmFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::Integer(30));
+        let Err(err) = factory.create("aws-ssm-prod", &cfg) else {
+            panic!("expected error for non-string aws_region");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("aws_region"), "names the field: {msg}");
+        assert!(msg.contains("string"), "explains expected type: {msg}");
     }
 
     #[test]
@@ -581,6 +666,59 @@ exit 1
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let err = b.set(&uri, "v").await.unwrap_err();
         assert!(format!("{err:#}").contains("ParameterAlreadyExists"));
+    }
+
+    #[tokio::test]
+    async fn set_passes_secret_value_via_stdin_not_argv() {
+        // CV-1 regression check: mock aws binary writes every argv + its
+        // stdin to a log file. Test then asserts:
+        //   (1) the secret appears in stdin,
+        //   (2) the secret does NOT appear anywhere in argv.
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("argv_and_stdin.log");
+        let log_path_str = log_path.to_string_lossy();
+        let script = format!(
+            r#"
+LOG="{log_path_str}"
+{{
+  echo "--- ARGV ---"
+  i=0
+  for a in "$@"; do
+    echo "[$i] $a"
+    i=$((i + 1))
+  done
+  echo "--- STDIN ---"
+  cat
+}} > "$LOG" 2>&1
+if [ "$1 $2" = "ssm put-parameter" ]; then
+  echo '{{"Version":1}}'
+  exit 0
+fi
+exit 1
+"#
+        );
+        let mock = install_mock_aws(&dir, &script);
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        let very_sensitive = "sk_live_top_SECRET_never_on_argv_987";
+        b.set(&uri, very_sensitive).await.unwrap();
+
+        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
+        // Split on ARGV/STDIN markers so assertions are unambiguous.
+        let (argv_section, stdin_section) =
+            log.split_once("--- STDIN ---").expect("log has STDIN section");
+        assert!(
+            !argv_section.contains(very_sensitive),
+            "secret value must not appear in argv; argv was:\n{argv_section}"
+        );
+        assert!(
+            stdin_section.contains(very_sensitive),
+            "secret value should have arrived via stdin; stdin section was:\n{stdin_section}"
+        );
+        assert!(
+            argv_section.contains("file:///dev/stdin"),
+            "argv should name the stdin sentinel instead of the value:\n{argv_section}"
+        );
     }
 
     #[tokio::test]

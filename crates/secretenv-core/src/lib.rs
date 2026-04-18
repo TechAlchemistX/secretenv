@@ -14,6 +14,7 @@
 //! - [`config`] — [`Config`], [`RegistryConfig`], [`BackendConfig`]
 //! - [`manifest`] — [`Manifest`] and [`SecretDecl`] for `secretenv.toml`
 //! - [`registry`] — [`BackendRegistry`] dispatcher
+//! - [`timeouts`] — per-op timeout wrapper for backend calls
 #![forbid(unsafe_code)]
 
 pub mod backend;
@@ -23,6 +24,7 @@ pub mod registry;
 pub mod resolver;
 pub mod runner;
 pub mod status;
+pub mod timeouts;
 pub mod uri;
 
 pub use backend::{Backend, BackendFactory};
@@ -34,4 +36,5 @@ pub use resolver::{
 };
 pub use runner::{build_env, run, EnvEntry};
 pub use status::BackendStatus;
+pub use timeouts::{with_timeout, DEFAULT_CHECK_TIMEOUT, DEFAULT_GET_TIMEOUT};
 pub use uri::{BackendUri, UriError};

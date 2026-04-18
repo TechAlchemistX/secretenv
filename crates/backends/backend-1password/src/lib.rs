@@ -47,7 +47,7 @@
 use std::collections::HashMap;
 use std::io;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
 use serde::Deserialize;
@@ -219,8 +219,29 @@ impl Backend for OnePasswordBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        // KNOWN LIMITATION (review finding CV-1, partial): the 1Password
+        // CLI (`op item edit`) reads field assignments as `field=value`
+        // argv tokens. Unlike AWS SSM, `op` does not offer a portable
+        // stdin-fed value form that works across the 2.x and 1.x
+        // CLI generations users have installed. A version-gated stdin
+        // path (`op item edit ... field[password]=-`) is planned in a
+        // v0.3 follow-up once we have concrete compatibility testing
+        // against a live `op` binary.
+        //
+        // Exposure: the secret value is visible in the child process's
+        // argv for the lifetime of the `op` subprocess (normally
+        // O(200ms) — 2s). On multi-user Linux hosts, `/proc/<pid>/cmdline`
+        // is world-readable. `secretenv registry set` on 1password
+        // backends should not be run on shared machines until this is
+        // fixed.
         let (vault, item, field) = Self::parse_path(uri)?;
         let assignment = format!("{field}={value}");
+        tracing::warn!(
+            instance = self.instance_name.as_str(),
+            uri = uri.raw.as_str(),
+            "`op item edit` passes the field value through subprocess argv — \
+             do not run on multi-user hosts (CV-1; full stdin fix in v0.3)"
+        );
         let mut cmd = Command::new(&self.op_bin);
         cmd.args(["item", "edit", &item, &assignment, "--vault", &vault]);
         self.append_account(&mut cmd);
@@ -295,9 +316,18 @@ impl BackendFactory for OnePasswordFactory {
     fn create(
         &self,
         instance_name: &str,
-        mut config: HashMap<String, String>,
+        config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let op_account = config.remove("op_account");
+        let op_account = match config.get("op_account") {
+            None => None,
+            Some(v) => Some(v.as_str().map(str::to_owned).ok_or_else(|| {
+                anyhow!(
+                    "1password instance '{instance_name}': field 'op_account' must be a \
+                     string, got {}",
+                    v.type_str()
+                )
+            })?),
+        };
         Ok(Box::new(OnePasswordBackend {
             backend_type: "1password",
             instance_name: instance_name.to_owned(),
@@ -369,7 +399,8 @@ mod tests {
     #[test]
     fn factory_builds_backend_with_no_required_fields() {
         let factory = OnePasswordFactory::new();
-        let b = factory.create("1password-personal", HashMap::new()).unwrap();
+        let cfg: HashMap<String, toml::Value> = HashMap::new();
+        let b = factory.create("1password-personal", &cfg).unwrap();
         assert_eq!(b.backend_type(), "1password");
         assert_eq!(b.instance_name(), "1password-personal");
     }
@@ -377,9 +408,21 @@ mod tests {
     #[test]
     fn factory_accepts_op_account() {
         let factory = OnePasswordFactory::new();
-        let mut cfg = HashMap::new();
-        cfg.insert("op_account".to_owned(), "myteam.1password.com".to_owned());
-        assert!(factory.create("1password-team", cfg).is_ok());
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("op_account".to_owned(), toml::Value::String("myteam.1password.com".to_owned()));
+        assert!(factory.create("1password-team", &cfg).is_ok());
+    }
+
+    #[test]
+    fn factory_rejects_non_string_op_account() {
+        let factory = OnePasswordFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("op_account".to_owned(), toml::Value::Boolean(true));
+        let Err(err) = factory.create("1password-team", &cfg) else {
+            panic!("expected error for non-string op_account");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("op_account"), "names the field: {msg}");
     }
 
     #[test]

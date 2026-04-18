@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(config.registries["default"].sources.len(), 1);
         let backend = &config.backends["aws-ssm-prod"];
         assert_eq!(backend.backend_type, "aws-ssm");
-        assert_eq!(backend.raw_fields["aws_region"], "us-east-1");
+        assert_eq!(backend.raw_fields["aws_region"].as_str(), Some("us-east-1"));
     }
 
     // ---- toml_key edge cases ----

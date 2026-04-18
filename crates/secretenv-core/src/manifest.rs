@@ -93,27 +93,59 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// Walk the ancestors of `starting_dir` until the nearest
-    /// `secretenv.toml` is found, returning its absolute path.
+    /// Walk the ancestors of `starting_dir` looking for `secretenv.toml`,
+    /// stopping at the first project-root sentinel encountered.
+    ///
+    /// Sentinels: `.git`, `.hg`, `.svn`, or an explicit `.secretenv-root`
+    /// file/directory. If a sentinel is found, only the manifest within
+    /// that project root (or below) is considered — the walk will not
+    /// cross the boundary into a parent directory. This prevents a
+    /// hostile `secretenv.toml` dropped upstream of the user's project
+    /// from hijacking alias resolution when the user `cd`s into their
+    /// own repo (review finding CV-6).
+    ///
+    /// If no sentinel is ever found before hitting the filesystem root,
+    /// falls back to v0.1 behavior (return the deepest manifest found
+    /// anywhere up to `/`). This preserves compatibility with single-
+    /// file setups that aren't under version control.
+    ///
+    /// Resolves `starting_dir` to an absolute path via `canonicalize`
+    /// when possible, falling back to `current_dir().join(…)` if
+    /// canonicalize fails (broken symlink, deleted CWD, container-style
+    /// transient dirs).
     ///
     /// # Errors
-    /// Returns an error if no `secretenv.toml` is found from
-    /// `starting_dir` upward to the filesystem root, or if
-    /// `starting_dir` cannot be canonicalized.
+    /// Returns an error if no `secretenv.toml` is found within the
+    /// bounded search (or, in fallback mode, anywhere up to the
+    /// filesystem root).
     pub fn find_upward(starting_dir: &Path) -> Result<PathBuf> {
-        let canonical = starting_dir.canonicalize().with_context(|| {
-            format!("failed to resolve starting directory '{}'", starting_dir.display())
-        })?;
-        for ancestor in canonical.ancestors() {
+        const SENTINELS: &[&str] = &[".git", ".hg", ".svn", ".secretenv-root"];
+
+        let start = absolutize(starting_dir);
+        let mut found: Option<PathBuf> = None;
+        for ancestor in start.ancestors() {
             let candidate = ancestor.join("secretenv.toml");
-            if candidate.is_file() {
-                return Ok(candidate);
+            if found.is_none() && candidate.is_file() {
+                found = Some(candidate);
+            }
+            let has_sentinel = SENTINELS.iter().any(|s| ancestor.join(s).exists());
+            if has_sentinel {
+                return found.ok_or_else(|| {
+                    anyhow!(
+                        "no secretenv.toml found in project rooted at '{}' \
+                         (stopped at version-control sentinel)",
+                        ancestor.display()
+                    )
+                });
             }
         }
-        Err(anyhow!(
-            "no secretenv.toml found from '{}' upward to the filesystem root",
-            canonical.display()
-        ))
+
+        found.ok_or_else(|| {
+            anyhow!(
+                "no secretenv.toml found from '{}' upward to the filesystem root",
+                start.display()
+            )
+        })
     }
 
     fn validate(&self) -> Result<()> {
@@ -132,6 +164,25 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+/// Resolve `path` to an absolute form. Prefers `canonicalize` for the
+/// physical-location semantics (unwraps `..`, resolves symlinks) but
+/// falls back to `current_dir().join(path)` when canonicalize fails —
+/// e.g. the path has a broken-symlink component or the CWD was deleted
+/// while the process was running. Last-resort returns the input as-is
+/// so callers never get blocked on absolutization alone.
+fn absolutize(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        return cwd.join(path);
+    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -283,5 +334,88 @@ default = "info"
         let found = Manifest::find_upward(dir.path()).unwrap();
         assert!(found.is_absolute());
         assert!(found.ends_with("secretenv.toml"));
+    }
+
+    /// Write a sentinel file so `find_upward` treats a directory as a
+    /// project root.
+    fn write_git_sentinel(dir: &Path) {
+        fs::write(dir.join(".git"), "gitdir: /fake").unwrap();
+    }
+
+    #[test]
+    fn find_upward_stops_at_git_sentinel_preferring_manifest_within_project() {
+        // Layout:
+        //   root/
+        //     secretenv.toml  ← hostile upstream manifest
+        //     project/
+        //       .git
+        //       secretenv.toml  ← legit project manifest
+        //       src/            ← starting dir
+        let root = TempDir::new().unwrap();
+        write_manifest(root.path(), "[secrets.HOSTILE]\nfrom = \"secretenv://x\"");
+
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        write_git_sentinel(&project);
+        write_manifest(&project, "[secrets.LEGIT]\nfrom = \"secretenv://x\"");
+
+        let src = project.join("src");
+        fs::create_dir(&src).unwrap();
+
+        let found = Manifest::find_upward(&src).unwrap();
+        let manifest = Manifest::load_from(&found).unwrap();
+        assert!(manifest.secrets.contains_key("LEGIT"));
+        assert!(!manifest.secrets.contains_key("HOSTILE"), "must not cross VCS boundary");
+    }
+
+    #[test]
+    fn find_upward_stops_at_sentinel_with_no_manifest_inside_errors() {
+        // Layout:
+        //   root/
+        //     secretenv.toml   ← hostile
+        //     project/
+        //       .git           ← boundary but no manifest inside
+        //       src/           ← starting dir
+        let root = TempDir::new().unwrap();
+        write_manifest(root.path(), "[secrets.HOSTILE]\nfrom = \"secretenv://x\"");
+
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        write_git_sentinel(&project);
+
+        let src = project.join("src");
+        fs::create_dir(&src).unwrap();
+
+        let err = Manifest::find_upward(&src).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("project rooted at"), "error cites project-root bounding: {msg}");
+    }
+
+    #[test]
+    fn find_upward_falls_back_to_root_when_no_sentinel_anywhere() {
+        // No `.git` / sentinel anywhere — v0.1 behavior preserved.
+        let dir = TempDir::new().unwrap();
+        write_manifest(dir.path(), "[secrets.T]\nfrom = \"secretenv://x\"");
+        let nested = dir.path().join("a").join("b");
+        fs::create_dir_all(&nested).unwrap();
+        let found = Manifest::find_upward(&nested).unwrap();
+        assert!(found.ends_with("secretenv.toml"));
+    }
+
+    #[test]
+    fn find_upward_respects_explicit_secretenv_root_sentinel() {
+        // A user can mark a non-VCS directory as a project root with
+        // `.secretenv-root`. Useful for nix, non-git checkouts, etc.
+        let root = TempDir::new().unwrap();
+        write_manifest(root.path(), "[secrets.UPSTREAM]\nfrom = \"secretenv://x\"");
+
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join(".secretenv-root"), "").unwrap();
+        write_manifest(&project, "[secrets.BOUNDED]\nfrom = \"secretenv://x\"");
+
+        let found = Manifest::find_upward(&project).unwrap();
+        let manifest = Manifest::load_from(&found).unwrap();
+        assert!(manifest.secrets.contains_key("BOUNDED"));
     }
 }

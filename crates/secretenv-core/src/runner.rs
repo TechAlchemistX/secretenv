@@ -131,7 +131,15 @@ pub async fn build_env(
                     continue;
                 }
                 if verbose {
-                    eprintln!("secretenv: fetching {} from {}", secret.env_var, uri.raw);
+                    // Log scheme (instance name) only — never `uri.raw`
+                    // which contains the full backend path and would
+                    // leak registry topology into CI build logs on any
+                    // `--verbose` run. Full URI is reserved for
+                    // `--dry-run` output, which is user-explicit.
+                    eprintln!(
+                        "secretenv: fetching {} from instance '{}'",
+                        secret.env_var, uri.scheme
+                    );
                 }
                 let backend: &dyn Backend = backends.get(&uri.scheme).ok_or_else(|| {
                     anyhow!(
@@ -142,9 +150,16 @@ pub async fn build_env(
                         uri.scheme
                     )
                 })?;
-                let value = backend.get(uri).await.with_context(|| {
-                    format!("secret '{}': failed to fetch from '{}'", secret.env_var, uri.raw)
-                })?;
+                let op_label = format!("{}::get (secret '{}')", uri.scheme, secret.env_var);
+                let value =
+                    crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(uri))
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "secret '{}': failed to fetch from '{}'",
+                                secret.env_var, uri.raw
+                            )
+                        })?;
                 env.push(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) });
             }
         }
@@ -152,6 +167,12 @@ pub async fn build_env(
 
     Ok(env)
 }
+
+/// SecretEnv-reserved env vars scrubbed from the child process
+/// environment before `exec`/`spawn`. These carry CLI-layer
+/// configuration (registry selection, config path) and should not leak
+/// their provenance into whatever command the user ran.
+const RESERVED_ENV_VARS: &[&str] = &["SECRETENV_REGISTRY", "SECRETENV_CONFIG"];
 
 #[cfg(unix)]
 fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
@@ -161,6 +182,9 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     let args = &command[1..];
     let mut cmd = Command::new(program);
     cmd.args(args);
+    for reserved in RESERVED_ENV_VARS {
+        cmd.env_remove(reserved);
+    }
     for entry in env {
         cmd.env(&entry.key, entry.value.as_str());
     }
@@ -176,6 +200,9 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     let args = &command[1..];
     let mut cmd = Command::new(program);
     cmd.args(args);
+    for reserved in RESERVED_ENV_VARS {
+        cmd.env_remove(reserved);
+    }
     for entry in env {
         cmd.env(&entry.key, entry.value.as_str());
     }
@@ -258,7 +285,7 @@ mod tests {
         fn create(
             &self,
             instance_name: &str,
-            _: HashMap<String, String>,
+            _: &HashMap<String, toml::Value>,
         ) -> Result<Box<dyn Backend>> {
             Ok(Box::new(FakeValueBackend {
                 backend_type: self.backend_type.clone(),
@@ -445,5 +472,15 @@ mod tests {
         // public API; the wrapper lives only inside the struct.
         let s: &str = env[0].value();
         assert_eq!(s, "the-secret-value");
+    }
+
+    // ---- Reserved env-var scrub (CV-7 / SEC-1) ----
+
+    #[test]
+    fn reserved_env_vars_contains_registry_and_config() {
+        // Ensures any future SECRETENV_* var intended to pass CLI config
+        // into the process is added here before it leaks to child procs.
+        assert!(RESERVED_ENV_VARS.contains(&"SECRETENV_REGISTRY"));
+        assert!(RESERVED_ENV_VARS.contains(&"SECRETENV_CONFIG"));
     }
 }

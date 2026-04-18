@@ -113,7 +113,7 @@ pub async fn run_setup(opts: &SetupOpts) -> Result<()> {
             .with_context(|| format!("reloading just-written config at '{}'", target.display()))?;
         let backends = build_registry(&config)?;
         // Informational — a doctor failure does not un-write the config.
-        if let Err(err) = run_doctor(&backends, false).await {
+        if let Err(err) = run_doctor(&config, &backends, false).await {
             eprintln!(
                 "\nNote: {err:#}. Fix the underlying issue and re-run `secretenv doctor` \
                  to verify."

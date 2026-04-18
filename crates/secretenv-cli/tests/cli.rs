@@ -318,6 +318,45 @@ fn doctor_json_output_has_stable_schema() {
 }
 
 #[test]
+fn doctor_renders_registries_section_with_per_source_status() {
+    // Phase 9: the Registries section shows per-source reachability.
+    // Our full_fixture has `[registries.default]` with one local:/// source.
+    let (dir, config) = full_fixture();
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Registries (1 configured)"))
+        .stdout(predicate::str::contains("default"))
+        // Local backend is always Ok, so the source renders with ✓.
+        .stdout(predicate::str::contains("✓ local://"))
+        .stdout(predicate::str::contains("reachable"));
+}
+
+#[test]
+fn doctor_json_includes_registries_key_with_sources_array() {
+    let (dir, config) = full_fixture();
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let registries = parsed["registries"].as_array().expect("registries array");
+    assert_eq!(registries.len(), 1);
+    assert_eq!(registries[0]["name"], "default");
+    let sources = registries[0]["sources"].as_array().expect("sources array");
+    assert_eq!(sources.len(), 1);
+    let src = &sources[0];
+    assert!(src["uri"].as_str().unwrap().starts_with("local://"));
+    assert_eq!(src["status"], "ok");
+}
+
+#[test]
 fn setup_writes_config_for_local_backend() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("config.toml");

@@ -85,6 +85,21 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Changed
 
+- **`secretenv doctor`** gains a `Registries` section that reports
+  per-source reachability for every cascade source in `config.toml`.
+  Each source line shows ✓/✗ + the source URI + a one-word suffix
+  (`reachable` / `backend not authenticated` / `backend CLI 'x' missing`
+  / `backend error`); non-OK sources render an indented `→ <hint>`
+  with the actionable remediation. A single backend-instance status
+  feeds every source that uses it (no duplicate `check()` calls).
+  `--json` gains a top-level `registries: [{name, sources: [{uri,
+  status, hint}]}]` key. `skip_serializing_if = "Vec::is_empty"`
+  means consumers of the v0.1 doctor JSON shape see no new key when
+  no registries are configured — backward-compatible.
+- **`doctor` exit code still driven by backend-level summary only.**
+  A backend failure already propagates to every source that uses it,
+  so doubling the signal at the source level would double-count.
+  Registry section is informational.
 - **`secretenv resolve <alias>`** now emits a tabular metadata report
   instead of printing only the resolved URI. Rows: `alias`, `env var`
   (reverse-lookup from the manifest, `(none)` if unused),

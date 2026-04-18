@@ -162,7 +162,7 @@ pub async fn build_env(
     // failure's error message. Multi-failure returns a single joined
     // anyhow error so one CLI run surfaces every broken alias.
     let mut errors: Vec<anyhow::Error> = Vec::new();
-    for (idx, result) in uri_indices.iter().zip(results.into_iter()) {
+    for (idx, result) in uri_indices.iter().zip(results) {
         match result {
             Ok(Some(entry)) => slots[*idx] = Some(entry),
             Ok(None) => { /* dry-run; nothing to place */ }

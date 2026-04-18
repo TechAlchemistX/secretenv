@@ -202,7 +202,7 @@ impl BackendFactory for LocalFactory {
     fn create(
         &self,
         instance_name: &str,
-        _config: HashMap<String, String>,
+        _config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
         Ok(Box::new(LocalBackend::new(instance_name.to_owned())))
     }
@@ -227,7 +227,8 @@ mod tests {
     fn factory_builds_backend_with_instance_name() {
         let factory = LocalFactory::new();
         assert_eq!(factory.backend_type(), "local");
-        let backend = factory.create("local-main", HashMap::new()).unwrap();
+        let cfg: HashMap<String, toml::Value> = HashMap::new();
+        let backend = factory.create("local-main", &cfg).unwrap();
         assert_eq!(backend.backend_type(), "local");
         assert_eq!(backend.instance_name(), "local-main");
     }
@@ -235,10 +236,10 @@ mod tests {
     #[test]
     fn factory_ignores_unknown_config_fields() {
         let factory = LocalFactory::new();
-        let mut cfg = HashMap::new();
-        cfg.insert("unexpected".to_owned(), "value".to_owned());
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("unexpected".to_owned(), toml::Value::String("value".to_owned()));
         // No error — factory ignores all fields.
-        assert!(factory.create("local", cfg).is_ok());
+        assert!(factory.create("local", &cfg).is_ok());
     }
 
     #[tokio::test]

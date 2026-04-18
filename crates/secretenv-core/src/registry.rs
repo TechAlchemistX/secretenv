@@ -82,7 +82,7 @@ impl BackendRegistry {
                 )
             })?;
             let instance = factory
-                .create(instance_name, backend_cfg.raw_fields.clone())
+                .create(instance_name, &backend_cfg.raw_fields)
                 .with_context(|| {
                     format!(
                         "failed to build backend instance '{instance_name}' of type '{}'",
@@ -161,7 +161,7 @@ mod tests {
         fn create(
             &self,
             instance_name: &str,
-            _: HashMap<String, String>,
+            _: &HashMap<String, toml::Value>,
         ) -> Result<Box<dyn Backend>> {
             Ok(Box::new(FakeBackend {
                 backend_type: self.0.to_owned(),
@@ -263,7 +263,7 @@ mod tests {
             fn create(
                 &self,
                 _instance_name: &str,
-                _config: HashMap<String, String>,
+                _config: &HashMap<String, toml::Value>,
             ) -> Result<Box<dyn Backend>> {
                 Err(anyhow!("missing required field 'region'"))
             }

@@ -347,7 +347,7 @@ mod tests {
         fn create(
             &self,
             instance_name: &str,
-            _: HashMap<String, String>,
+            _: &HashMap<String, toml::Value>,
         ) -> Result<Box<dyn Backend>> {
             Ok(Box::new(FakeListBackend {
                 backend_type: self.backend_type.clone(),

@@ -34,6 +34,17 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Changed
 
+- **Parallel secret fetch.** `runner::build_env` dispatches every
+  alias-backed secret concurrently via `futures::future::join_all`
+  instead of awaiting them one at a time. `Default`-sourced entries
+  stay inline (zero I/O). Declaration order in the emitted env map is
+  preserved regardless of backend completion order.
+- **Multi-error aggregation.** When more than one alias fetch fails,
+  the returned error now lists every failure in one message
+  (`<N> secrets failed to resolve:` followed by one line per alias
+  with env-var, URI, and upstream cause). Single-failure error shape
+  is unchanged so operators with one broken alias see the same
+  message as before (RE-7).
 - `ResolvedSource::Uri` is now a struct variant `{ target, source }`
   instead of `Uri(BackendUri)`. The added `source` field carries the
   cascade layer URI the alias resolved from, for future `--verbose`

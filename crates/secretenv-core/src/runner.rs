@@ -33,10 +33,13 @@
 //!
 //! # Errors
 //!
-//! The runner fails fast on the first fetch error and propagates it
-//! with context (the env-var name plus the upstream error chain).
-//! If `exec()` itself fails (e.g., the target command is missing),
-//! the function returns with an error; it never silently crashes.
+//! A single alias failure propagates its error as-is (env-var name +
+//! URI + upstream error chain). **Multiple** alias failures are
+//! aggregated into one error that lists every failed alias — operators
+//! troubleshooting a misconfigured environment see every broken alias
+//! in one pass. If `exec()` itself fails (e.g., the target command is
+//! missing), the function returns with an error; it never silently
+//! crashes.
 #![allow(clippy::module_name_repetitions)]
 
 use std::process::Command;
@@ -104,68 +107,144 @@ pub async fn run(
 /// callers that want the env map without executing (e.g., `doctor`
 /// pre-flight validation).
 ///
+/// `Default`-sourced entries resolve inline with zero I/O.
+/// `Uri`-sourced entries are fetched concurrently via
+/// [`futures::future::join_all`]. On dry-run, no backend is invoked.
+///
 /// # Errors
-/// Same as [`run`] minus the empty-command and exec-failure cases.
+///
+/// If a single alias fetch fails, its error is returned as-is (with
+/// the backend error chain plus an alias/URI context line).
+///
+/// If **multiple** alias fetches fail, the returned error aggregates
+/// every failure — one per line, each naming the env-var, the target
+/// URI, and the upstream error. This is intentional: operators
+/// troubleshooting a misconfigured environment see every broken alias
+/// in one pass rather than fixing one, re-running, fixing the next,
+/// and so on.
 pub async fn build_env(
     resolved: &[ResolvedSecret],
     backends: &BackendRegistry,
     dry_run: bool,
     verbose: bool,
 ) -> Result<Vec<EnvEntry>> {
-    let mut env: Vec<EnvEntry> = Vec::with_capacity(resolved.len());
+    // Output preserves `resolved`'s declaration order. We collect into
+    // a `Vec<Option<EnvEntry>>` of the same length and then drop the
+    // dry-run `None`s at the end.
+    let mut slots: Vec<Option<EnvEntry>> = (0..resolved.len()).map(|_| None).collect();
 
-    for secret in resolved {
+    // First pass: handle `Default` inline (no I/O) and collect indices
+    // for the `Uri` branch.
+    let mut uri_indices: Vec<usize> = Vec::new();
+    for (idx, secret) in resolved.iter().enumerate() {
         match &secret.source {
             ResolvedSource::Default(value) => {
                 if dry_run {
                     println!("{} = {value}  (default)", secret.env_var);
                 }
-                env.push(EnvEntry {
+                slots[idx] = Some(EnvEntry {
                     key: secret.env_var.clone(),
                     value: Zeroizing::new(value.clone()),
                 });
             }
-            ResolvedSource::Uri { target, source: _ } => {
-                if dry_run {
-                    println!("{} ← {}", secret.env_var, target.raw);
-                    continue;
-                }
-                if verbose {
-                    // Log scheme (instance name) only — never `target.raw`
-                    // which contains the full backend path and would
-                    // leak registry topology into CI build logs on any
-                    // `--verbose` run. Full URI is reserved for
-                    // `--dry-run` output, which is user-explicit.
-                    eprintln!(
-                        "secretenv: fetching {} from instance '{}'",
-                        secret.env_var, target.scheme
-                    );
-                }
-                let backend: &dyn Backend = backends.get(&target.scheme).ok_or_else(|| {
-                    anyhow!(
-                        "secret '{}': no backend instance '{}' is registered — \
-                         add it to [backends.{}] in config.toml",
-                        secret.env_var,
-                        target.scheme,
-                        target.scheme
-                    )
-                })?;
-                let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
-                let value =
-                    crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(target))
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "secret '{}': failed to fetch from '{}'",
-                                secret.env_var, target.raw
-                            )
-                        })?;
-                env.push(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) });
-            }
+            ResolvedSource::Uri { .. } => uri_indices.push(idx),
         }
     }
 
-    Ok(env)
+    // Second pass: dispatch all URI fetches concurrently. `fetch_one`
+    // returns `Ok(None)` in dry-run mode (printed the placeholder,
+    // nothing to inject), `Ok(Some(entry))` on success.
+    let fetches =
+        uri_indices.iter().map(|&idx| fetch_one(&resolved[idx], backends, dry_run, verbose));
+    let results = futures::future::join_all(fetches).await;
+
+    // Collect successes into their original slots; aggregate every
+    // failure's error message. Multi-failure returns a single joined
+    // anyhow error so one CLI run surfaces every broken alias.
+    let mut errors: Vec<anyhow::Error> = Vec::new();
+    for (idx, result) in uri_indices.iter().zip(results) {
+        match result {
+            Ok(Some(entry)) => slots[*idx] = Some(entry),
+            Ok(None) => { /* dry-run; nothing to place */ }
+            Err(err) => errors.push(err),
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(aggregate_errors(errors));
+    }
+
+    Ok(slots.into_iter().flatten().collect())
+}
+
+/// Fetch a single `Uri`-sourced secret. Returns `Ok(None)` in dry-run
+/// (placeholder printed, caller should not inject anything). Returns
+/// `Ok(Some(entry))` on a successful fetch.
+///
+/// Runs under the global `DEFAULT_GET_TIMEOUT` via
+/// [`crate::with_timeout`].
+async fn fetch_one(
+    secret: &ResolvedSecret,
+    backends: &BackendRegistry,
+    dry_run: bool,
+    verbose: bool,
+) -> Result<Option<EnvEntry>> {
+    let target = match &secret.source {
+        ResolvedSource::Uri { target, .. } => target,
+        ResolvedSource::Default(_) => {
+            // Unreachable: `build_env` only calls `fetch_one` for
+            // `Uri` entries. Kept as defensive no-op rather than a
+            // panic because one-shot helper misuse should not abort.
+            return Ok(None);
+        }
+    };
+
+    if dry_run {
+        println!("{} ← {}", secret.env_var, target.raw);
+        return Ok(None);
+    }
+
+    if verbose {
+        // Log scheme (instance name) only — never `target.raw`, which
+        // contains the full backend path and would leak registry
+        // topology into CI build logs on any `--verbose` run. Full
+        // URI is reserved for `--dry-run` output, which is explicit.
+        eprintln!("secretenv: fetching {} from instance '{}'", secret.env_var, target.scheme);
+    }
+
+    let backend: &dyn Backend = backends.get(&target.scheme).ok_or_else(|| {
+        anyhow!(
+            "secret '{}': no backend instance '{}' is registered — \
+             add it to [backends.{}] in config.toml",
+            secret.env_var,
+            target.scheme,
+            target.scheme
+        )
+    })?;
+    let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
+    let value = crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(target))
+        .await
+        .with_context(|| {
+            format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw)
+        })?;
+    Ok(Some(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) }))
+}
+
+/// Combine N>1 fetch failures into a single anyhow error whose
+/// `{:#}` rendering lists every failure on its own line. For N=1
+/// returns the original error unwrapped so single-failure messages
+/// don't get decorated with a misleading "2 aliases failed" header.
+fn aggregate_errors(mut errors: Vec<anyhow::Error>) -> anyhow::Error {
+    if errors.len() == 1 {
+        // Single-failure path: preserve the original error chain
+        // intact so operators see the same shape as v0.1 when only
+        // one alias was broken. `swap_remove(0)` is bounds-safe by
+        // the just-checked len.
+        return errors.swap_remove(0);
+    }
+    let count = errors.len();
+    let body = errors.iter().map(|e| format!("  - {e:#}")).collect::<Vec<_>>().join("\n");
+    anyhow!("{count} secrets failed to resolve:\n{body}")
 }
 
 /// SecretEnv-reserved env vars scrubbed from the child process
@@ -226,14 +305,16 @@ mod tests {
     use crate::uri::BackendUri;
 
     /// Fake backend that returns canned `get()` values keyed by
-    /// URI.path, and counts `get()` invocations so dry-run tests
-    /// can assert no fetch happened.
+    /// URI.path, counts `get()` invocations, and optionally sleeps
+    /// (for parallelism-regression tests) or fails on a set of paths
+    /// (for multi-error aggregation tests).
     struct FakeValueBackend {
         backend_type: String,
         instance_name: String,
         values: HashMap<String, String>,
         get_count: Arc<AtomicUsize>,
-        fail_on: Option<String>,
+        fail_on: Vec<String>,
+        delay: std::time::Duration,
     }
 
     #[async_trait]
@@ -252,7 +333,10 @@ mod tests {
         }
         async fn get(&self, uri: &BackendUri) -> Result<String> {
             self.get_count.fetch_add(1, Ordering::SeqCst);
-            if self.fail_on.as_deref() == Some(&uri.path) {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            if self.fail_on.iter().any(|p| p == &uri.path) {
                 bail!("simulated backend error for path '{}'", uri.path);
             }
             self.values
@@ -271,11 +355,13 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     struct FakeValueFactory {
         backend_type: String,
         values: HashMap<String, String>,
         get_count: Arc<AtomicUsize>,
-        fail_on: Option<String>,
+        fail_on: Vec<String>,
+        delay: std::time::Duration,
     }
 
     impl BackendFactory for FakeValueFactory {
@@ -293,6 +379,7 @@ mod tests {
                 values: self.values.clone(),
                 get_count: self.get_count.clone(),
                 fail_on: self.fail_on.clone(),
+                delay: self.delay,
             }))
         }
     }
@@ -301,13 +388,26 @@ mod tests {
         values: &[(&str, &str)],
         fail_on: Option<&str>,
     ) -> (BackendRegistry, Arc<AtomicUsize>) {
+        set_up_full(
+            values,
+            &fail_on.map_or_else(Vec::new, |p| vec![p.to_owned()]),
+            std::time::Duration::ZERO,
+        )
+    }
+
+    fn set_up_full(
+        values: &[(&str, &str)],
+        fail_on: &[String],
+        delay: std::time::Duration,
+    ) -> (BackendRegistry, Arc<AtomicUsize>) {
         let counter = Arc::new(AtomicUsize::new(0));
         let mut backends = BackendRegistry::new();
         backends.register_factory(Box::new(FakeValueFactory {
             backend_type: "fake".into(),
             values: values.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
             get_count: counter.clone(),
-            fail_on: fail_on.map(ToOwned::to_owned),
+            fail_on: fail_on.to_vec(),
+            delay,
         }));
         let config = Config {
             backends: std::iter::once((
@@ -409,17 +509,116 @@ mod tests {
         assert!(msg.contains("simulated backend error"), "root cause preserved: {msg}");
     }
 
-    // ---- Fail fast ----
+    // ---- Parallel fetch + multi-error aggregation (Phase 2) ----
 
+    /// Parallelism regression: 5 aliases, each with a 50 ms simulated
+    /// backend round-trip. Serial execution would take ≥ 250 ms; a
+    /// healthy concurrent path finishes in close to 50 ms. We assert
+    /// "well under the serial bound" rather than a tight wall-time —
+    /// CI machines are noisy and a flaky timing assertion is worse
+    /// than a loose one.
     #[tokio::test]
-    async fn build_env_fails_fast_on_first_fetch_error() {
-        let (backends, count) = set_up(&[("/good", "v")], Some("/bad"));
-        let resolved = vec![secret_alias("A", "fake:///bad"), secret_alias("B", "fake:///good")];
+    async fn build_env_fetches_aliased_secrets_concurrently() {
+        let values: Vec<(&str, &str)> = (0..5)
+            .map(|i| match i {
+                0 => ("/a", "va"),
+                1 => ("/b", "vb"),
+                2 => ("/c", "vc"),
+                3 => ("/d", "vd"),
+                _ => ("/e", "ve"),
+            })
+            .collect();
+        let (backends, count) = set_up_full(&values, &[], std::time::Duration::from_millis(50));
+        let resolved = vec![
+            secret_alias("A", "fake:///a"),
+            secret_alias("B", "fake:///b"),
+            secret_alias("C", "fake:///c"),
+            secret_alias("D", "fake:///d"),
+            secret_alias("E", "fake:///e"),
+        ];
+
+        let start = std::time::Instant::now();
+        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(env.len(), 5, "every alias returned");
+        assert_eq!(count.load(Ordering::SeqCst), 5, "every alias fetched exactly once");
+        // Serial lower bound would be 5 × 50 = 250 ms. Anything under
+        // 200 ms proves fetches overlapped. Generous upper bound to
+        // avoid CI flakes.
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "expected concurrent fetch (< 200 ms), elapsed = {elapsed:?}"
+        );
+    }
+
+    /// Declaration order must be preserved even when backends return
+    /// out of dispatch order (which they can in concurrent mode).
+    #[tokio::test]
+    async fn build_env_preserves_declaration_order_with_parallel_fetch() {
+        let (backends, _) =
+            set_up_full(&[("/a", "1"), ("/b", "2"), ("/c", "3")], &[], std::time::Duration::ZERO);
+        let resolved = vec![
+            secret_alias("FIRST", "fake:///a"),
+            secret_default("MIDDLE", "middle"),
+            secret_alias("THIRD", "fake:///b"),
+            secret_alias("LAST", "fake:///c"),
+        ];
+        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let keys: Vec<_> = env.iter().map(|e| e.key.clone()).collect();
+        assert_eq!(keys, vec!["FIRST", "MIDDLE", "THIRD", "LAST"]);
+    }
+
+    /// When multiple aliases fail, the returned error enumerates
+    /// **every** failure in one message — not just the first one
+    /// the concurrent dispatch happened to complete.
+    #[tokio::test]
+    async fn build_env_aggregates_all_fetch_errors() {
+        let (backends, count) = set_up_full(
+            &[("/ok", "good")],
+            &["/bad1".to_owned(), "/bad2".to_owned()],
+            std::time::Duration::ZERO,
+        );
+        let resolved = vec![
+            secret_alias("ALPHA", "fake:///bad1"),
+            secret_alias("BETA", "fake:///ok"),
+            secret_alias("GAMMA", "fake:///bad2"),
+        ];
+        let Err(err) = build_env(&resolved, &backends, false, false).await else {
+            panic!("expected build_env to error on two failing aliases");
+        };
+        let msg = format!("{err:#}");
+
+        assert!(msg.contains("ALPHA"), "error names first failing env-var: {msg}");
+        assert!(msg.contains("GAMMA"), "error names second failing env-var: {msg}");
+        assert!(msg.contains("fake:///bad1"), "error includes first bad URI: {msg}");
+        assert!(msg.contains("fake:///bad2"), "error includes second bad URI: {msg}");
+        assert!(msg.contains("2 secrets failed"), "header surfaces the count: {msg}");
+        // GAMMA-after-ALPHA preserves `resolved`'s declaration order
+        // in the aggregated message (regardless of completion order).
+        assert!(
+            msg.find("ALPHA").unwrap() < msg.find("GAMMA").unwrap(),
+            "aggregation preserves declaration order: {msg}"
+        );
+        // Every alias was dispatched — aggregation does not short-circuit.
+        assert_eq!(count.load(Ordering::SeqCst), 3, "all 3 alias fetches dispatched");
+    }
+
+    /// Single failure: the aggregation path should NOT wrap the error
+    /// in a "1 secrets failed:" header. Preserves v0.1-style single-
+    /// failure error shape for operators with one broken alias.
+    #[tokio::test]
+    async fn build_env_single_failure_passes_error_through_unwrapped() {
+        let (backends, _) = set_up_full(&[], &["/only".to_owned()], std::time::Duration::ZERO);
+        let resolved = vec![secret_alias("ONLY", "fake:///only")];
         let Err(err) = build_env(&resolved, &backends, false, false).await else {
             panic!("expected build_env to error");
         };
-        assert!(format!("{err:#}").contains('A'));
-        assert_eq!(count.load(Ordering::SeqCst), 1, "should stop after first failure");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("ONLY"), "env-var present: {msg}");
+        assert!(msg.contains("fake:///only"), "uri present: {msg}");
+        assert!(msg.contains("simulated backend error"), "root cause preserved: {msg}");
+        assert!(!msg.contains("secrets failed to resolve"), "no aggregation header: {msg}");
     }
 
     // ---- run() command-level errors ----

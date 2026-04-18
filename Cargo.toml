@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.1.1"
+version      = "0.2.0"
 edition      = "2021"
 license      = "MIT"
 repository   = "https://github.com/TechAlchemistX/secretenv"
@@ -25,10 +25,10 @@ readme       = "README.md"
 # `cargo publish` metadata. Both must match the workspace.package.version.
 # Directory names stay unprefixed (`backends/backend-local`); only the
 # published crate names carry the `secretenv-` prefix to keep crates.io tidy.
-secretenv-core               = { path = "crates/secretenv-core",              version = "0.1.1" }
-secretenv-backend-local      = { path = "crates/backends/backend-local",      version = "0.1.1" }
-secretenv-backend-aws-ssm    = { path = "crates/backends/backend-aws-ssm",    version = "0.1.1" }
-secretenv-backend-1password  = { path = "crates/backends/backend-1password",  version = "0.1.1" }
+secretenv-core               = { path = "crates/secretenv-core",              version = "0.2.0" }
+secretenv-backend-local      = { path = "crates/backends/backend-local",      version = "0.2.0" }
+secretenv-backend-aws-ssm    = { path = "crates/backends/backend-aws-ssm",    version = "0.2.0" }
+secretenv-backend-1password  = { path = "crates/backends/backend-1password",  version = "0.2.0" }
 anyhow             = "1"
 async-trait        = "0.1"
 clap               = { version = "4", features = ["derive"] }

@@ -110,7 +110,11 @@ fn run_errors_when_no_manifest_exists() {
 // ---- resolve ----
 
 #[test]
-fn resolve_prints_backend_uri_for_alias() {
+fn resolve_prints_full_report_with_alias_and_env_var_and_source() {
+    // Phase 8: resolve emits tabular metadata — alias, env var,
+    // resolved URI, cascade source, backend status. The fixture's
+    // manifest maps `STRIPE = { from = "secretenv://stripe-key" }`,
+    // so env var reverse-lookup should find STRIPE.
     let (dir, config) = full_fixture();
     secretenv()
         .current_dir(dir.path())
@@ -118,7 +122,13 @@ fn resolve_prints_backend_uri_for_alias() {
         .args(["resolve", "stripe-key"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("local://"));
+        .stdout(predicate::str::contains("alias:      stripe-key"))
+        .stdout(predicate::str::contains("env var:    STRIPE"))
+        .stdout(predicate::str::contains("resolved:   local://"))
+        .stdout(predicate::str::contains("source:"))
+        .stdout(predicate::str::contains("cascade layer 0"))
+        .stdout(predicate::str::contains("backend:"))
+        .stdout(predicate::str::contains("local instance 'local'"));
 }
 
 #[test]
@@ -130,7 +140,75 @@ fn resolve_errors_on_unknown_alias() {
         .args(["resolve", "not-in-registry"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not-in-registry"));
+        .stderr(predicate::str::contains("not-in-registry"))
+        // Spec: error lists the sources checked.
+        .stderr(predicate::str::contains("registry cascade"));
+}
+
+#[test]
+fn resolve_json_output_has_documented_schema() {
+    // Phase 8: --json emits a structured shape for editor/IDE consumers.
+    let (dir, config) = full_fixture();
+    let out = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["resolve", "stripe-key", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(parsed["alias"], "stripe-key");
+    assert_eq!(parsed["env_var"], "STRIPE");
+    assert!(parsed["resolved"].as_str().unwrap().contains("local://"));
+    assert_eq!(parsed["source"]["layer"], 0);
+    assert!(parsed["source"]["uri"].is_string());
+    assert_eq!(parsed["backend"]["backend_type"], "local");
+    assert_eq!(parsed["backend"]["instance"], "local");
+    // Local backend has no CLI so its check returns BackendStatus::Ok
+    // unconditionally — status should be "ok" in the JSON.
+    assert_eq!(parsed["backend"]["status"], "ok");
+}
+
+#[test]
+fn resolve_env_var_is_null_when_alias_unused_in_manifest() {
+    // Registry has two aliases but manifest only uses one. Resolving
+    // the unused alias should still succeed; env_var shows (none) /
+    // null because no secrets entry references it.
+    let dir = TempDir::new().unwrap();
+    let registry_path = dir.path().join("registry.toml");
+    let config_path = dir.path().join("config.toml");
+    let manifest_path = dir.path().join("secretenv.toml");
+    let secret_path = dir.path().join("secret.toml");
+
+    // Registry with TWO aliases — STRIPE uses one, the other is
+    // unreferenced by the manifest.
+    write_file(
+        &registry_path,
+        &format!(
+            "stripe-key = \"local://{secret}\"\n\
+             orphan-key = \"local://{secret}\"\n",
+            secret = secret_path.to_str().unwrap()
+        ),
+    );
+    write_file(&secret_path, "v");
+    write_file(
+        &config_path,
+        &format!(
+            "[registries.default]\nsources = [\"local://{reg}\"]\n\n[backends.local]\ntype = \"local\"\n",
+            reg = registry_path.to_str().unwrap()
+        ),
+    );
+    write_file(&manifest_path, "[secrets]\nSTRIPE = { from = \"secretenv://stripe-key\" }\n");
+
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["resolve", "orphan-key"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alias:      orphan-key"))
+        .stdout(predicate::str::contains("env var:    (none)"));
 }
 
 // ---- registry list ----

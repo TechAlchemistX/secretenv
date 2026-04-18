@@ -42,8 +42,9 @@ pub enum Command {
     /// Registry document operations.
     #[command(subcommand)]
     Registry(RegistryCommand),
-    /// Print the backend URI an alias resolves to (no fetch).
-    Resolve(AliasArgs),
+    /// Print the backend URI an alias resolves to (no fetch) plus
+    /// the cascade source and backend auth status.
+    Resolve(ResolveArgs),
     /// Fetch a secret value by alias. Prompts for confirmation
     /// before printing to stdout.
     Get(GetArgs),
@@ -109,12 +110,17 @@ pub enum RegistryCommand {
     },
 }
 
-/// Shared shape for `resolve <alias>`.
+/// `secretenv resolve <alias>` — print the alias → URI mapping plus
+/// cascade source, env-var binding, and backend auth status. Pure
+/// metadata — never fetches the secret value.
 #[derive(Debug, Args)]
-pub struct AliasArgs {
+pub struct ResolveArgs {
     pub alias: String,
     #[arg(long)]
     pub registry: Option<String>,
+    /// Emit machine-readable JSON instead of human tabular output.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `secretenv get <alias>` — prompts for confirmation by default.
@@ -277,19 +283,228 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
 
 // ---- resolve -----------------------------------------------------------
 
-async fn cmd_resolve(args: &AliasArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+async fn cmd_resolve(
+    args: &ResolveArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<()> {
+    use secretenv_core::{Manifest, DEFAULT_CHECK_TIMEOUT};
+
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
     let mut cache = RegistryCache::new();
     let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
-    let (target, _source) = aliases.get(&args.alias).ok_or_else(|| {
+
+    let (target, source) = aliases.get(&args.alias).ok_or_else(|| {
         anyhow!(
             "alias '{}' not found in registry cascade [{}]",
             args.alias,
             format_sources(&aliases)
         )
     })?;
-    println!("{}", target.raw);
+    let target = target.clone();
+    let source = source.clone();
+
+    // Cascade layer index — position in `aliases.sources()` whose URI
+    // matches the source we just resolved.
+    let layer_index = aliases.sources().position(|u| u.raw == source.raw).unwrap_or(0);
+
+    // Reverse-lookup env var from the manifest. Best-effort: if no
+    // manifest exists (user is in a repo without `secretenv.toml`),
+    // the env-var row shows `(none)` / null instead of erroring —
+    // `resolve` is a debugging tool that should work anywhere.
+    let env_var = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| Manifest::load(&cwd).ok())
+        .and_then(|m| manifest_env_var_for_alias(&m, &args.alias));
+
+    // Backend auth status. Timed out per the Phase 0.5 check-timeout
+    // wrapper. Resolve still succeeds even if check fails — operators
+    // debug broken auth by seeing the status line, not by being
+    // denied the alias→URI mapping.
+    // Backend::check returns a bare BackendStatus (no Result), so wrap
+    // it in Ok(..) inside an async block so with_timeout's
+    // Future<Output = Result<T>> bound is satisfied. Same idiom as
+    // doctor::run_doctor.
+    let backend_check = match backends.get(&target.scheme) {
+        Some(b) => {
+            let op_label = format!("{}::check", b.backend_type());
+            let check_future = async { Ok(b.check().await) };
+            match secretenv_core::with_timeout(DEFAULT_CHECK_TIMEOUT, &op_label, check_future).await
+            {
+                Ok(status) => ResolveBackendCheck::Checked {
+                    backend_type: b.backend_type().to_owned(),
+                    status,
+                },
+                Err(err) => ResolveBackendCheck::CheckFailed {
+                    backend_type: b.backend_type().to_owned(),
+                    message: format!("{err:#}"),
+                },
+            }
+        }
+        None => ResolveBackendCheck::UnregisteredScheme,
+    };
+
+    let report = ResolveReport {
+        alias: args.alias.clone(),
+        env_var,
+        resolved: target.raw.clone(),
+        source_uri: source.raw.clone(),
+        layer_index,
+        backend_scheme: target.scheme.clone(),
+        check: backend_check,
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+    } else {
+        print!("{}", report.render_human());
+    }
     Ok(())
+}
+
+/// Scan the manifest's `[secrets]` entries for the first key whose
+/// `from = "secretenv://<alias>"` (or `"secretenv:///<alias>"`)
+/// references the given alias. Returns `None` if nothing references
+/// the alias.
+fn manifest_env_var_for_alias(manifest: &secretenv_core::Manifest, alias: &str) -> Option<String> {
+    for (env_var, decl) in &manifest.secrets {
+        if let secretenv_core::SecretDecl::Alias { from } = decl {
+            let Ok(parsed) = secretenv_core::BackendUri::parse(from) else {
+                continue;
+            };
+            if parsed.is_alias() {
+                let found = parsed.path.trim_start_matches('/');
+                if found == alias {
+                    return Some(env_var.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Backend-check outcome for a resolved alias. Kept separate from
+/// `doctor::DoctorStatus` so the resolve handler doesn't depend on
+/// doctor's internal shape.
+enum ResolveBackendCheck {
+    Checked { backend_type: String, status: secretenv_core::BackendStatus },
+    CheckFailed { backend_type: String, message: String },
+    UnregisteredScheme,
+}
+
+struct ResolveReport {
+    alias: String,
+    env_var: Option<String>,
+    resolved: String,
+    source_uri: String,
+    layer_index: usize,
+    backend_scheme: String,
+    check: ResolveBackendCheck,
+}
+
+impl ResolveReport {
+    fn render_human(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        writeln!(out, "alias:      {}", self.alias).ok();
+        writeln!(out, "env var:    {}", self.env_var.as_deref().unwrap_or("(none)")).ok();
+        writeln!(out, "resolved:   {}", self.resolved).ok();
+        writeln!(out, "source:     {}  (cascade layer {})", self.source_uri, self.layer_index).ok();
+        writeln!(out, "backend:    {}", self.render_backend_line()).ok();
+        out
+    }
+
+    fn render_backend_line(&self) -> String {
+        use secretenv_core::BackendStatus;
+        match &self.check {
+            ResolveBackendCheck::Checked { backend_type, status } => {
+                let (state, detail) = match status {
+                    BackendStatus::Ok { cli_version: _, identity } => {
+                        ("authenticated".to_owned(), format!("({identity})"))
+                    }
+                    BackendStatus::NotAuthenticated { hint } => {
+                        ("NOT authenticated".to_owned(), format!("(hint: {hint})"))
+                    }
+                    BackendStatus::CliMissing { cli_name, install_hint } => {
+                        (format!("CLI '{cli_name}' missing"), format!("(install: {install_hint})"))
+                    }
+                    BackendStatus::Error { message } => {
+                        ("error".to_owned(), format!("({message})"))
+                    }
+                };
+                format!("{backend_type} instance '{}' — {state} {detail}", self.backend_scheme)
+            }
+            ResolveBackendCheck::CheckFailed { backend_type, message } => {
+                format!(
+                    "{backend_type} instance '{}' — check failed ({message})",
+                    self.backend_scheme
+                )
+            }
+            ResolveBackendCheck::UnregisteredScheme => {
+                format!(
+                    "instance '{}' is not registered in config.toml (resolve succeeded; fetch would fail)",
+                    self.backend_scheme
+                )
+            }
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        use secretenv_core::BackendStatus;
+        let check = match &self.check {
+            ResolveBackendCheck::Checked { backend_type, status } => {
+                let (status_key, detail) = match status {
+                    BackendStatus::Ok { cli_version, identity } => (
+                        "ok",
+                        serde_json::json!({
+                            "cli_version": cli_version,
+                            "identity": identity,
+                        }),
+                    ),
+                    BackendStatus::NotAuthenticated { hint } => {
+                        ("not_authenticated", serde_json::json!({ "hint": hint }))
+                    }
+                    BackendStatus::CliMissing { cli_name, install_hint } => (
+                        "cli_missing",
+                        serde_json::json!({
+                            "cli_name": cli_name,
+                            "install_hint": install_hint,
+                        }),
+                    ),
+                    BackendStatus::Error { message } => {
+                        ("error", serde_json::json!({ "message": message }))
+                    }
+                };
+                serde_json::json!({
+                    "backend_type": backend_type,
+                    "instance": self.backend_scheme,
+                    "status": status_key,
+                    "detail": detail,
+                })
+            }
+            ResolveBackendCheck::CheckFailed { backend_type, message } => serde_json::json!({
+                "backend_type": backend_type,
+                "instance": self.backend_scheme,
+                "status": "check_failed",
+                "detail": { "message": message },
+            }),
+            ResolveBackendCheck::UnregisteredScheme => serde_json::json!({
+                "instance": self.backend_scheme,
+                "status": "unregistered_scheme",
+                "detail": {},
+            }),
+        };
+        serde_json::json!({
+            "alias": self.alias,
+            "env_var": self.env_var,
+            "resolved": self.resolved,
+            "source": {
+                "uri": self.source_uri,
+                "layer": self.layer_index,
+            },
+            "backend": check,
+        })
+    }
 }
 
 // ---- get (with confirmation) -------------------------------------------

@@ -7,14 +7,19 @@
 //! active registry.
 //!
 //! The optional `#<fragment>` suffix indicates a sub-field of the returned
-//! secret — used in v0.2+ by backends whose secret values are structured
-//! (e.g. AWS Secrets Manager JSON blobs). The fragment is parsed here but
-//! interpreted by each backend's `get` implementation.
+//! secret or a per-request directive (e.g. a version pin) — used from v0.2.1+
+//! under a canonical `key=value[,key=value]*` grammar. [`BackendUri::parse`]
+//! preserves the fragment verbatim; typed parsing happens on demand via
+//! [`BackendUri::fragment_directives`], which enforces the grammar. Each
+//! backend interprets its own directive keys.
 //!
-//! Parsing is intentionally loose: the scheme and path are split on the
-//! first `://` occurrence and returned verbatim. Backend-specific
-//! validation happens in each plugin's factory.
+//! Parsing is intentionally loose at the scheme/path layer: the scheme and
+//! path are split on the first `://` occurrence and returned verbatim.
+//! Backend-specific validation happens in each plugin's factory; fragment
+//! grammar is enforced in [`BackendUri::fragment_directives`].
 #![allow(clippy::module_name_repetitions)]
+
+use std::collections::HashMap;
 
 use thiserror::Error;
 
@@ -102,6 +107,39 @@ impl BackendUri {
     pub fn is_alias(&self) -> bool {
         self.scheme == "secretenv"
     }
+
+    /// Parse the fragment as a `key=value[,key=value]*` directive map.
+    ///
+    /// Returns `Ok(None)` when the URI has no fragment.
+    /// Returns `Ok(Some(directives))` when the fragment parses cleanly.
+    /// Returns `Err(FragmentError)` when the fragment is non-empty but
+    /// does not match the grammar — shorthand form (no `=`), empty
+    /// directive, empty key or value, malformed key, duplicate key, or
+    /// unescaped `=` in value.
+    ///
+    /// # Canonical grammar
+    ///
+    /// ```text
+    /// fragment  := directive ("," directive)*
+    /// directive := key "=" value
+    /// key       := [a-z][a-z0-9-]*
+    /// value     := non-empty, does not contain ',' or '='
+    /// ```
+    ///
+    /// Backends interpret their own directive keys. See each backend's
+    /// spec doc and the central fragment-vocabulary registry.
+    ///
+    /// # Errors
+    ///
+    /// See [`FragmentError`] for the full list of rejection conditions.
+    /// In particular, legacy plain-string fragments (`#password`, no `=`)
+    /// are rejected with a migration hint as of v0.2.1.
+    pub fn fragment_directives(&self) -> Result<Option<HashMap<String, String>>, FragmentError> {
+        let Some(raw) = self.fragment.as_deref() else {
+            return Ok(None);
+        };
+        parse_fragment_directives(&self.raw, raw).map(Some)
+    }
 }
 
 /// A scheme must be non-empty, contain only ASCII letters, digits, `_`,
@@ -122,6 +160,101 @@ fn is_valid_scheme(scheme: &str) -> bool {
 /// registry smuggle terminal-control sequences into error messages.
 fn has_forbidden_control_char(s: &str) -> bool {
     s.bytes().any(|b| b == 0 || (b < 0x20 && b != b'\t'))
+}
+
+/// Parse a fragment string under the canonical `k=v[,k=v]*` grammar.
+///
+/// `uri_raw` is the full URI (including scheme and path) — included in
+/// error messages so users see where the bad fragment came from.
+/// `frag` is the fragment body (already split off from the leading `#`).
+fn parse_fragment_directives(
+    uri_raw: &str,
+    frag: &str,
+) -> Result<HashMap<String, String>, FragmentError> {
+    // Shorthand detection runs first: a fragment containing no `=` is the
+    // legacy plain-string form ([[build-plan-v0.2.1-fragment-canonicalization]]).
+    // We reject with a migration hint that names the canonical replacement.
+    if !frag.contains('=') {
+        return Err(FragmentError::ShorthandRejected {
+            uri: uri_raw.to_owned(),
+            raw: frag.to_owned(),
+        });
+    }
+    let mut out: HashMap<String, String> = HashMap::new();
+    for part in frag.split(',') {
+        if part.is_empty() {
+            return Err(FragmentError::Malformed {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                reason: "empty directive (consecutive, leading, or trailing comma)".to_owned(),
+            });
+        }
+        let Some((key, value)) = part.split_once('=') else {
+            return Err(FragmentError::Malformed {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                reason: format!("directive '{part}' has no '=' separator"),
+            });
+        };
+        if key.is_empty() {
+            return Err(FragmentError::Malformed {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                reason: format!("directive '{part}' has empty key"),
+            });
+        }
+        if value.is_empty() {
+            return Err(FragmentError::Malformed {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                reason: format!("directive '{part}' has empty value"),
+            });
+        }
+        if value.contains('=') {
+            return Err(FragmentError::Malformed {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                reason: format!(
+                    "directive '{part}' value contains '=' (unescaped equals \
+                     are not permitted — use commas between directives)"
+                ),
+            });
+        }
+        if !is_valid_fragment_key(key) {
+            return Err(FragmentError::Malformed {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                reason: format!(
+                    "directive key '{key}' must match [a-z][a-z0-9-]* \
+                     (lowercase kebab-case, letter-led)"
+                ),
+            });
+        }
+        if out.contains_key(key) {
+            return Err(FragmentError::DuplicateKey {
+                uri: uri_raw.to_owned(),
+                raw: frag.to_owned(),
+                key: key.to_owned(),
+            });
+        }
+        out.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(out)
+}
+
+/// A fragment-directive key must start with an ASCII lowercase letter and
+/// contain only lowercase letters, digits, and ASCII hyphens. Keeps the
+/// directive vocabulary visually consistent across backends; no
+/// `snake_case`, no `camelCase`, no punctuation.
+fn is_valid_fragment_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Emit a one-line warning if `raw` contains any Unicode bidirectional
@@ -170,6 +303,58 @@ pub enum UriError {
     InvalidCharacter {
         /// The full URI the bad character appeared in.
         raw: String,
+    },
+}
+
+/// Errors returned by [`BackendUri::fragment_directives`].
+///
+/// The canonical fragment grammar is `key=value[,key=value]*` under rules
+/// defined in the `fragment-vocabulary` doc. Any fragment that does not
+/// match the grammar surfaces through this enum with enough context for
+/// a caller to produce a helpful user-facing message.
+#[derive(Debug, Error)]
+pub enum FragmentError {
+    /// The fragment is a legacy plain-string shorthand (contains no `=`).
+    /// Rejected as of v0.2.1 — the canonical form is always `<key>=<value>`.
+    /// Each backend documents the keys it supports.
+    #[error(
+        "fragment '#{raw}' on URI '{uri}' uses legacy plain-string shorthand; \
+         rewrite as '#<directive>=<value>' (for example, the aws-secrets backend \
+         now requires '#json-key={raw}'). See docs/fragment-vocabulary.md"
+    )]
+    ShorthandRejected {
+        /// The full URI the shorthand fragment appeared in.
+        uri: String,
+        /// The raw fragment body that triggered the shorthand rejection.
+        raw: String,
+    },
+    /// The fragment is not shorthand but does not satisfy the directive
+    /// grammar — malformed key, empty value, unescaped `=` in value, etc.
+    #[error(
+        "fragment '#{raw}' on URI '{uri}' is malformed: {reason}. \
+         See docs/fragment-vocabulary.md"
+    )]
+    Malformed {
+        /// The full URI the malformed fragment appeared in.
+        uri: String,
+        /// The raw fragment body.
+        raw: String,
+        /// Human-readable explanation naming the offending directive or token.
+        reason: String,
+    },
+    /// The same directive key appears more than once in the fragment.
+    /// Each directive key may appear at most once; no implicit merging.
+    #[error(
+        "fragment '#{raw}' on URI '{uri}' repeats key '{key}'; each directive \
+         key may appear at most once"
+    )]
+    DuplicateKey {
+        /// The full URI the duplicate-key fragment appeared in.
+        uri: String,
+        /// The raw fragment body.
+        raw: String,
+        /// The key that appeared more than once.
+        key: String,
     },
 }
 
@@ -433,5 +618,176 @@ mod tests {
         // just confirms parse still succeeds.
         let uri = BackendUri::parse("local:///safe\u{202E}path").unwrap();
         assert_eq!(uri.scheme, "local");
+    }
+
+    // ------------------------------------------------------------------
+    // fragment_directives() — canonical k=v[,k=v]* grammar (v0.2.1+)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn fragment_directives_returns_none_when_no_fragment() {
+        let uri = BackendUri::parse("aws-secrets:///db-creds").unwrap();
+        assert!(uri.fragment_directives().unwrap().is_none());
+    }
+
+    #[test]
+    fn fragment_directives_parses_single_directive() {
+        let uri = BackendUri::parse("aws-secrets:///db-creds#json-key=password").unwrap();
+        let dirs = uri.fragment_directives().unwrap().unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs.get("json-key").map(String::as_str), Some("password"));
+    }
+
+    #[test]
+    fn fragment_directives_parses_multiple_directives() {
+        let uri = BackendUri::parse("gcp:///my-secret#version=5,project=foo").unwrap();
+        let dirs = uri.fragment_directives().unwrap().unwrap();
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs.get("version").map(String::as_str), Some("5"));
+        assert_eq!(dirs.get("project").map(String::as_str), Some("foo"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_shorthand_with_migration_hint() {
+        // Legacy v0.2.0 shorthand — aws-secrets previously accepted `#password`
+        // as "extract the `password` JSON field." v0.2.1 rejects this and
+        // points users at the canonical `#json-key=password` replacement.
+        let uri = BackendUri::parse("aws-secrets:///db-creds#password").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::ShorthandRejected { .. }));
+        let msg = err.to_string();
+        assert!(msg.contains("shorthand"), "error names the problem: {msg}");
+        assert!(msg.contains("#json-key=password"), "error suggests canonical form: {msg}");
+        assert!(msg.contains("fragment-vocabulary"), "error links to doc: {msg}");
+        assert!(msg.contains("aws-secrets:///db-creds#password"), "error cites URI: {msg}");
+    }
+
+    #[test]
+    fn fragment_directives_rejects_empty_directive_between_commas() {
+        let uri = BackendUri::parse("gcp:///s#version=5,,project=foo").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+        assert!(err.to_string().contains("empty directive"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_leading_comma() {
+        let uri = BackendUri::parse("gcp:///s#,version=5").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_trailing_comma() {
+        let uri = BackendUri::parse("gcp:///s#version=5,").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_mixed_shorthand_and_directive() {
+        // Fragment body `version=5,bare` — the whole fragment contains `=` so
+        // shorthand detection passes, but the second part is missing `=` and
+        // must be reported as malformed (not shorthand-rejected).
+        let uri = BackendUri::parse("gcp:///s#version=5,bare").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+        assert!(err.to_string().contains("'bare'"), "error names the bad directive: {err}");
+    }
+
+    #[test]
+    fn fragment_directives_rejects_empty_key() {
+        let uri = BackendUri::parse("gcp:///s#=value").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+        assert!(err.to_string().contains("empty key"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_empty_value() {
+        let uri = BackendUri::parse("gcp:///s#version=").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+        assert!(err.to_string().contains("empty value"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_unescaped_equals_in_value() {
+        // Value contains `=` — malformed; users who need `=` in a value
+        // must use a different encoding (not addressed in v0.2.1).
+        let uri = BackendUri::parse("gcp:///s#json-key=a=b").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+        assert!(err.to_string().contains("unescaped"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_duplicate_key() {
+        let uri = BackendUri::parse("gcp:///s#version=5,version=6").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::DuplicateKey { .. }));
+        assert!(err.to_string().contains("version"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_uppercase_key() {
+        let uri = BackendUri::parse("gcp:///s#Version=5").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+        assert!(err.to_string().contains("lowercase"));
+    }
+
+    #[test]
+    fn fragment_directives_rejects_digit_leading_key() {
+        let uri = BackendUri::parse("gcp:///s#1version=5").unwrap();
+        let err = uri.fragment_directives().unwrap_err();
+        assert!(matches!(err, FragmentError::Malformed { .. }));
+    }
+
+    #[test]
+    fn fragment_directives_accepts_hyphenated_key() {
+        // aws-secrets's `json-key` is the canonical kebab-case key.
+        let uri = BackendUri::parse("aws-secrets:///s#json-key=password").unwrap();
+        let dirs = uri.fragment_directives().unwrap().unwrap();
+        assert!(dirs.contains_key("json-key"));
+    }
+
+    #[test]
+    fn fragment_directives_accepts_digits_in_key_after_first_char() {
+        let uri = BackendUri::parse("gcp:///s#version2=5").unwrap();
+        let dirs = uri.fragment_directives().unwrap().unwrap();
+        assert_eq!(dirs.get("version2").map(String::as_str), Some("5"));
+    }
+
+    #[test]
+    fn fragment_directives_accepts_value_with_dots_and_hyphens() {
+        // Real-world: a GCP secret version pin like `5.2.1-alpha.1` or an
+        // Azure Key Vault version GUID `12345678-abcd-...`.
+        let uri = BackendUri::parse("azure:///kv#version=12345678-abcd-1234-ef56-9876").unwrap();
+        let dirs = uri.fragment_directives().unwrap().unwrap();
+        assert_eq!(
+            dirs.get("version").map(String::as_str),
+            Some("12345678-abcd-1234-ef56-9876"),
+        );
+    }
+
+    #[test]
+    fn fragment_directives_error_always_includes_full_uri() {
+        // Error messages must quote the URI verbatim so a caller reading the
+        // log can copy-paste-search for the offender.
+        let uri = BackendUri::parse("aws-secrets:///db-creds#password").unwrap();
+        let msg = uri.fragment_directives().unwrap_err().to_string();
+        assert!(msg.contains("aws-secrets:///db-creds#password"), "message: {msg}");
+    }
+
+    #[test]
+    fn fragment_directives_is_idempotent() {
+        // Calling twice returns equivalent maps — no state mutated by the
+        // first call. Cheap to assert; catches an accidental `take()` or
+        // caching bug down the line.
+        let uri = BackendUri::parse("gcp:///s#version=5,project=foo").unwrap();
+        let a = uri.fragment_directives().unwrap().unwrap();
+        let b = uri.fragment_directives().unwrap().unwrap();
+        assert_eq!(a, b);
     }
 }

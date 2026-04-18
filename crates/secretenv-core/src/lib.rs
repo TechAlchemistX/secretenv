@@ -32,7 +32,8 @@ pub use config::{BackendConfig, Config, RegistryConfig};
 pub use manifest::{Manifest, SecretDecl};
 pub use registry::BackendRegistry;
 pub use resolver::{
-    resolve_manifest, resolve_registry, AliasMap, RegistrySelection, ResolvedSecret, ResolvedSource,
+    resolve_manifest, resolve_registry, AliasMap, CascadeLayer, RegistryCache, RegistrySelection,
+    ResolvedSecret, ResolvedSource,
 };
 pub use runner::{build_env, run, EnvEntry};
 pub use status::BackendStatus;

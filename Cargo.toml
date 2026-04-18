@@ -3,9 +3,9 @@ resolver = "2"
 members = [
     "crates/secretenv-core",
     "crates/secretenv-cli",
-    "crates/backends/backend-local",
-    "crates/backends/backend-aws-ssm",
-    "crates/backends/backend-1password",
+    "crates/backends/secretenv-backend-local",
+    "crates/backends/secretenv-backend-aws-ssm",
+    "crates/backends/secretenv-backend-1password",
 ]
 
 [workspace.package]
@@ -23,12 +23,14 @@ readme       = "README.md"
 [workspace.dependencies]
 # Path + version combo: cargo uses `path` for local builds and `version` for
 # `cargo publish` metadata. Both must match the workspace.package.version.
-# Directory names stay unprefixed (`backends/backend-local`); only the
-# published crate names carry the `secretenv-` prefix to keep crates.io tidy.
-secretenv-core               = { path = "crates/secretenv-core",              version = "0.2.0" }
-secretenv-backend-local      = { path = "crates/backends/backend-local",      version = "0.2.0" }
-secretenv-backend-aws-ssm    = { path = "crates/backends/backend-aws-ssm",    version = "0.2.0" }
-secretenv-backend-1password  = { path = "crates/backends/backend-1password",  version = "0.2.0" }
+# Directory names mirror published crate names for the internal crates
+# (`secretenv-core`, `secretenv-backend-*`). The CLI is the exception: it
+# lives at `crates/secretenv-cli/` but publishes as `secretenv` so
+# `cargo install secretenv` and the binary name line up.
+secretenv-core               = { path = "crates/secretenv-core",                           version = "0.2.0" }
+secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.2.0" }
+secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.2.0" }
+secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.2.0" }
 anyhow             = "1"
 async-trait        = "0.1"
 clap               = { version = "4", features = ["derive"] }

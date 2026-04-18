@@ -11,7 +11,7 @@ A backend crate provides two things:
 1. A **factory** — constructs named instances from raw config
 2. A **backend implementation** — implements the `Backend` trait
 
-The core binary wires factories at startup via Cargo feature flags. The factory creates instances from `config.toml` blocks. The trait is all core ever calls.
+The core binary registers every compiled-in factory unconditionally at startup. There are no Cargo feature flags — all backends are present in the single binary, and `[backends.<name>]` blocks in `config.toml` determine which ones are actually instantiated at runtime. The factory creates instances from those blocks. The trait is all core ever calls.
 
 ---
 
@@ -32,23 +32,39 @@ members = [
   # ...existing members
 ]
 
-[features]
-myservice = ["backend-myservice"]
+[workspace.dependencies]
+backend-myservice = { path = "crates/backends/backend-myservice" }
+# ...existing pins
 ```
 
-Add dependencies to `crates/backends/backend-myservice/Cargo.toml`:
+Add the crate manifest at `crates/backends/backend-myservice/Cargo.toml` inheriting workspace metadata:
 
 ```toml
 [package]
-name = "backend-myservice"
-version = "0.1.0"
-edition = "2021"
+name        = "backend-myservice"
+description = "MyService backend for SecretEnv"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
 
 [dependencies]
-secretenv-core = { path = "../../secretenv-core" }
-async-trait = "0.1"
-anyhow = "1"
-tokio = { version = "1", features = ["process"] }
+secretenv-core.workspace = true
+anyhow.workspace         = true
+async-trait.workspace    = true
+tokio.workspace          = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
 ```
 
 ---
@@ -259,11 +275,24 @@ impl Backend for MyServiceBackend {
 
 ## 3. Register at Startup
 
-In `crates/secretenv-cli/src/main.rs`, add the feature-gated registration:
+In `crates/secretenv-cli/src/backends_init.rs`, add your factory to the registration list — unconditionally, alongside the other backends:
 
 ```rust
-#[cfg(feature = "myservice")]
-registry.register_factory(Box::new(backend_myservice::MyServiceFactory));
+pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
+    let mut registry = BackendRegistry::new();
+    registry.register_factory(Box::new(backend_local::LocalFactory::new()));
+    registry.register_factory(Box::new(backend_aws_ssm::AwsSsmFactory::new()));
+    registry.register_factory(Box::new(backend_1password::OnePasswordFactory::new()));
+    registry.register_factory(Box::new(backend_myservice::MyServiceFactory::new())); // ← your line
+    registry.load_from_config(config)?;
+    Ok(registry)
+}
+```
+
+Also add the path dep to `crates/secretenv-cli/Cargo.toml`:
+
+```toml
+backend-myservice.workspace = true
 ```
 
 ---
@@ -343,15 +372,15 @@ Users will encounter missing CLIs. The install hint should be a real, copy-paste
 
 ## Checklist Before Opening a PR
 
-- [ ] Factory registered behind a Cargo feature flag
-- [ ] All five `Backend` trait methods implemented
+- [ ] Factory registered in `secretenv-cli/src/backends_init.rs` alongside the other factories
+- [ ] All seven `Backend` trait methods implemented (`backend_type`, `instance_name`, `check`, `check_extensive`, `get`, `set`, `delete`, `list`)
 - [ ] `check()` implements both Level 1 (CLI present) and Level 2 (authenticated)
 - [ ] `check_extensive()` implemented
 - [ ] All CLI calls use `.args()` with separate strings — no `sh -c` with interpolation
-- [ ] Error messages include instance name and URI
-- [ ] Tests cover `get()`, `check()` success and failure cases
+- [ ] Error messages include instance name and `uri.raw` plus trimmed CLI stderr
+- [ ] Tests cover `get()`, `check()` success + failure variants via the mock-CLI harness pattern (see `install_mock_aws` in `backend-aws-ssm/src/lib.rs` tests)
 - [ ] `docs/backends/<your-backend>.md` written following the existing format
-- [ ] Feature flag added to workspace `Cargo.toml`
+- [ ] Path-dep added to `workspace.dependencies` and to `secretenv-cli/Cargo.toml`
 
 ---
 

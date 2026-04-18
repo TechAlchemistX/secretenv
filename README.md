@@ -8,8 +8,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
-[![Build](https://img.shields.io/github/actions/workflow/status/your-org/secretenv/ci.yml?branch=main)](https://github.com/your-org/secretenv/actions)
-[![Backends](https://img.shields.io/badge/backends-15-green)](#supported-backends)
+[![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
+[![Backends](https://img.shields.io/badge/backends-3-green)](#supported-backends)
 
 *No SaaS. No re-encryption. No lock-in. No .env files.*
 
@@ -430,26 +430,28 @@ For a full CI/CD guide see [docs/ci-cd.md](docs/ci-cd.md).
 
 secretenv delegates all authentication to each backend's native CLI. Authentication is always handled by the backend's own tooling — secretenv inherits whatever credentials are already configured on the machine.
 
-| Backend | Type | URI Scheme | CLI Required |
-|---|---|---|---|
-| AWS SSM Parameter Store | `aws-ssm` | `aws-ssm-<instance>:///path` | `aws` |
-| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name` | `aws` |
-| GCP Secret Manager | `gcp` | `gcp-<instance>://project/secret` | `gcloud` |
-| Azure Key Vault | `azure` | `azure-<instance>://vault/secret` | `az` |
-| HashiCorp Vault | `vault` | `vault-<instance>://mount/path` | `vault` |
-| OpenBao | `openbao` | `openbao-<instance>://mount/path` | `bao` |
-| CyberArk Conjur | `conjur` | `conjur-<instance>://account/path` | `conjur` |
-| Delinea Secret Server | `delinea` | `delinea-<instance>://folder/secret` | `tss` |
-| 1Password | `1password` | `1password-<instance>://vault/item/field` | `op` |
-| Doppler | `doppler` | `doppler-<instance>://project/config/secret` | `doppler` |
-| Infisical | `infisical` | `infisical-<instance>://project/env/path` | `infisical` |
-| Bitwarden Secrets Manager | `bitwarden` | `bitwarden-<instance>://organization/secret` | `bws` |
-| Keeper | `keeper` | `keeper-<instance>://folder/item/field` | `keeper` |
-| macOS Keychain | `keychain` | `keychain-<instance>://service/account` | `security` |
-| Linux Secret Service | `secret-service` | `secret-service-<instance>://collection/label` | `secret-tool` |
-| Local file | `local` | `local:///path/to/registry.toml` | — |
+| Backend | Type | URI Scheme | CLI Required | Status |
+|---|---|---|---|---|
+| Local file | `local` | `local:///path/to/file.toml` | — | Available |
+| AWS SSM Parameter Store | `aws-ssm` | `aws-ssm-<instance>:///path` | `aws` | Available |
+| 1Password | `1password` | `1password-<instance>://vault/item/field` | `op` | Available |
+| HashiCorp Vault | `vault` | `vault-<instance>://mount/path` | `vault` | Coming Soon |
+| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name` | `aws` | Coming Soon |
+| GCP Secret Manager | `gcp` | `gcp-<instance>://project/secret` | `gcloud` | Coming Soon |
+| Azure Key Vault | `azure` | `azure-<instance>://vault/secret` | `az` | Coming Soon |
+| macOS Keychain | `keychain` | `keychain-<instance>://service/account` | `security` | Coming Soon |
+| Linux Secret Service | `secret-service` | `secret-service-<instance>://collection/label` | `secret-tool` | Coming Soon |
+| Keeper | `keeper` | `keeper-<instance>://folder/item/field` | `keeper` | Coming Soon |
+| Doppler | `doppler` | `doppler-<instance>://project/config/secret` | `doppler` | Coming Soon |
+| Infisical | `infisical` | `infisical-<instance>://project/env/path` | `infisical` | Coming Soon |
+| Bitwarden Secrets Manager | `bitwarden` | `bitwarden-<instance>://organization/secret` | `bws` | Coming Soon |
+| OpenBao | `openbao` | `openbao-<instance>://mount/path` | `bao` | Coming Soon |
+| CyberArk Conjur | `conjur` | `conjur-<instance>://account/path` | `conjur` | Coming Soon |
+| Delinea Secret Server | `delinea` | `delinea-<instance>://folder/secret` | `tss` | Coming Soon |
 
 The URI scheme is your named instance. Multiple instances of the same backend type — for multiple accounts, multiple vaults, or multiple credential sets — are configured in `config.toml` and referenced by their instance name.
+
+Backends marked *Coming Soon* follow the one-per-minor-release cadence on the [roadmap](docs/) — each v0.x release after v0.1 adds one backend.
 
 > **secretenv never calls cloud APIs directly.** Every fetch is a shell-out to the native CLI. This means secretenv inherits your MFA, SSO, biometric unlock, and any other auth your backend requires — with no new auth surface to audit.
 
@@ -458,39 +460,50 @@ The URI scheme is your named instance. Multiple instances of the same backend ty
 ## CLI Reference
 
 ```
-secretenv
+secretenv [--config <path>] <command>
+│
 ├── run [--registry <name-or-uri>] [--dry-run] [--verbose] -- <command>
 │
 ├── registry
 │   ├── list   [--registry <name-or-uri>]
 │   ├── get    <alias>  [--registry <name-or-uri>]
 │   ├── set    <alias> <backend-uri>  [--registry <name-or-uri>]
-│   ├── unset  <alias>  [--registry <name-or-uri>]
-│   ├── history  [--registry <name-or-uri>]
-│   └── invite
+│   └── unset  <alias>  [--registry <name-or-uri>]
 │
-├── setup <registry-uri>
+├── setup <registry-uri> [--region R] [--profile P] [--account A] [--force] [--skip-doctor]
 │
-├── doctor [--extensive] [--json]
+├── doctor [--json]
 │
 ├── resolve <alias> [--registry <name-or-uri>]
-└── get <alias> [--registry <name-or-uri>]
+└── get <alias> [--registry <name-or-uri>] [--yes]
 ```
 
 **Global flags:**
 
 ```
---registry <name-or-uri>   Named registry from config, or direct URI
---dry-run                  Show what would be injected without running
---verbose                  Show full resolution steps
---json                     Machine-readable output (doctor only)
+--config <path>            Config file path (default: $XDG_CONFIG_HOME/secretenv/config.toml)
+```
+
+**Per-command flags:**
+
+```
+--registry <name-or-uri>   Named registry from config, or direct URI (run/resolve/get/registry-*)
+--dry-run                  Show what would be injected without running (run)
+--verbose                  Emit fetch progress to stderr (run)
+--json                     Machine-readable output (doctor)
+--yes, -y                  Skip the interactive confirm prompt (get)
+--force                    Overwrite existing config (setup)
+--skip-doctor              Skip the post-write health check (setup)
 ```
 
 **Environment variables:**
 
 ```
 SECRETENV_REGISTRY=<name-or-uri>   Registry override — primary CI mechanism
+RUST_LOG=secretenv=debug           Structured logging (default: secretenv=warn)
 ```
+
+**v0.2 roadmap:** `registry history`, `registry invite`, cascading multi-source registries (currently v0.1 uses `sources[0]` with a stderr warning), parallel secret fetching.
 
 ---
 
@@ -582,7 +595,7 @@ For the step-by-step guide to writing a new backend, see [docs/adding-a-backend.
 secretenv is built in Rust and welcomes contributions. The easiest entry point is adding a new backend — each one is a self-contained crate with a focused, well-defined interface.
 
 ```bash
-git clone https://github.com/your-org/secretenv
+git clone https://github.com/TechAlchemistX/secretenv
 cd secretenv
 cargo build
 cargo test
@@ -590,7 +603,7 @@ cargo test
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide and [docs/adding-a-backend.md](docs/adding-a-backend.md) for the backend development walkthrough.
 
-Issues tagged [`good first issue`](https://github.com/your-org/secretenv/issues?q=label%3A%22good+first+issue%22) are scoped for first-time contributors. Each new backend is a meaningful, isolated OSS contribution.
+Issues tagged [`good first issue`](https://github.com/TechAlchemistX/secretenv/issues?q=label%3A%22good+first+issue%22) are scoped for first-time contributors. Each new backend is a meaningful, isolated OSS contribution.
 
 ---
 
@@ -604,6 +617,6 @@ MIT — see [LICENSE](LICENSE).
 
 Built with frustration at `.env` files and too many password managers.
 
-**[⭐ Star on GitHub](https://github.com/your-org/secretenv)**
+**[⭐ Star on GitHub](https://github.com/TechAlchemistX/secretenv)**
 
 </div>

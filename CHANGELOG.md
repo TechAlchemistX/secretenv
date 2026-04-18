@@ -8,6 +8,53 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-19
+
+**Headline:** canonical `#key=value` fragment grammar. One deliberate pre-launch breaking change that locks the URI vocabulary before public eyes see the v0.2.0 shorthand form.
+
+### Changed — BREAKING (pre-launch correction window)
+
+- **Fragment grammar canonicalized.** URI fragments now must match
+  `#key=value[,key=value]*` under a single grammar enforced by
+  `BackendUri::fragment_directives()` in `secretenv-core`. Each backend
+  declares the directive keys it recognizes; unknown keys error with
+  the full URI and a list of recognized directives. See
+  [`docs/fragment-vocabulary.md`](docs/fragment-vocabulary.md) for the
+  grammar and the per-backend directive registry.
+- **aws-secrets**: `#<field>` shorthand (v0.2.0) → `#json-key=<field>`
+  canonical (v0.2.1). The shorthand is rejected at URI-parse time with
+  a `ShorthandRejected` error that names the canonical replacement
+  literally (e.g. `aws-secrets:///db#password` fails with a hint
+  suggesting `aws-secrets:///db#json-key=password`). The backend
+  recognizes only `json-key`; any other directive — alone or alongside
+  `json-key` — surfaces as a single error listing every offender.
+
+  This is the only deliberate breaking change permitted inside a 0.2.x
+  patch. It was taken before public launch while the install base was
+  zero (v0.2.0 tag was ~1 day old; Show HN not yet posted). Post-launch,
+  0.x.y patches remain non-breaking per standard semver.
+
+### Added
+
+- `BackendUri::fragment_directives()` — typed accessor that parses
+  the fragment body into a directive map per the canonical grammar.
+  `FragmentError` (re-exported from `secretenv_core`) reports
+  `ShorthandRejected`, `Malformed`, and `DuplicateKey` with enough
+  context for a caller to produce a helpful user-facing message.
+- Canonical grammar doc at `docs/fragment-vocabulary.md` (user-facing)
+  and `kb/wiki/fragment-vocabulary.md` (project wiki). Both include
+  the directive registry and the migration table for v0.2.0 shorthand
+  URIs.
+
+### Migration
+
+| v0.2.0 (removed) | v0.2.1+ (canonical) |
+|---|---|
+| `aws-secrets-prod:///db-creds#password` | `aws-secrets-prod:///db-creds#json-key=password` |
+| `aws-secrets-prod:///db-creds#host` | `aws-secrets-prod:///db-creds#json-key=host` |
+
+If an error message in your logs mentions "legacy plain-string shorthand", rewrite the cited URI per the table above. No config or registry changes needed beyond the URI bodies.
+
 ## [0.2.0] - 2026-04-18
 
 **Headline:** 2 new backends (Vault, AWS Secrets Manager), cascading registries, parallel secret fetch, shell completions, enriched `resolve` report, per-cascade-source doctor, shared `secretenv-testing` crate, and a 7-item security preflight. 13 PRs (#22–#34) from scaffolding to tag.
@@ -250,6 +297,7 @@ First public release of SecretEnv.
 - Errors include alias + URI + instance name + trimmed backend stderr,
   never the secret value.
 
-[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.1
 [0.2.0]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.0
 [0.1.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.1.1

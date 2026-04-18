@@ -70,6 +70,13 @@ pub async fn run_setup(opts: &SetupOpts) -> Result<()> {
             opts.registry_uri
         );
     }
+    if backend_type == "aws-secrets" && opts.region.is_none() {
+        bail!(
+            "aws-secrets backends require --region \
+             (e.g. `secretenv setup {} --region us-east-1`)",
+            opts.registry_uri
+        );
+    }
     if backend_type == "vault" && opts.vault_address.is_none() {
         bail!(
             "vault backends require --vault-address \
@@ -126,6 +133,8 @@ fn backend_type_from_scheme(scheme: &str) -> Result<&'static str> {
         Ok("local")
     } else if scheme == "aws-ssm" || scheme.starts_with("aws-ssm-") {
         Ok("aws-ssm")
+    } else if scheme == "aws-secrets" || scheme.starts_with("aws-secrets-") {
+        Ok("aws-secrets")
     } else if scheme == "1password" || scheme.starts_with("1password-") {
         Ok("1password")
     } else if scheme == "vault" || scheme.starts_with("vault-") {
@@ -133,7 +142,7 @@ fn backend_type_from_scheme(scheme: &str) -> Result<&'static str> {
     } else {
         bail!(
             "unknown backend scheme '{scheme}' — supported: local, aws-ssm(-*), \
-             1password(-*), vault(-*). Did you mean one of these?"
+             aws-secrets(-*), 1password(-*), vault(-*). Did you mean one of these?"
         )
     }
 }
@@ -164,7 +173,7 @@ fn build_config_toml(uri: &BackendUri, backend_type: &str, opts: &SetupOpts) -> 
     writeln!(out, "type = {}", toml_string(backend_type)).unwrap();
 
     match backend_type {
-        "aws-ssm" => {
+        "aws-ssm" | "aws-secrets" => {
             if let Some(r) = &opts.region {
                 writeln!(out, "aws_region = {}", toml_string(r)).unwrap();
             }

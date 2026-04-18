@@ -642,6 +642,7 @@ dependencies = [
  "futures",
  "predicates",
  "secretenv-backend-1password",
+ "secretenv-backend-aws-secrets",
  "secretenv-backend-aws-ssm",
  "secretenv-backend-local",
  "secretenv-backend-vault",
@@ -670,6 +671,21 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "secretenv-backend-aws-secrets"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "secretenv-testing",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

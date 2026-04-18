@@ -22,6 +22,7 @@ secretenv-backend-local.workspace    = true
 secretenv-backend-aws-ssm.workspace  = true
 secretenv-backend-1password.workspace = true
 secretenv-backend-vault.workspace     = true
+secretenv-backend-aws-secrets.workspace = true
 anyhow.workspace              = true
 clap.workspace                = true
 directories.workspace         = true

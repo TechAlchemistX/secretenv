@@ -60,7 +60,11 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 const CLI_NAME: &str = "vault";
-const INSTALL_HINT: &str = "brew install vault  OR  https://developer.hashicorp.com/vault/install";
+// HashiCorp moved vault out of homebrew-core after the BSL license
+// change (Aug 2023); the bare `brew install vault` formula no longer
+// exists. Point at the tap form that actually works. The general
+// install page still covers Linux, Windows, and manual downloads.
+const INSTALL_HINT: &str = "brew tap hashicorp/tap && brew install hashicorp/tap/vault  OR  https://developer.hashicorp.com/vault/install";
 
 /// A live instance of the HashiCorp Vault backend.
 pub struct VaultBackend {
@@ -544,7 +548,14 @@ mod tests {
         match b.check().await {
             BackendStatus::CliMissing { cli_name, install_hint } => {
                 assert_eq!(cli_name, "vault");
-                assert!(install_hint.contains("brew install vault"));
+                // Loose check — survives future hint rewording but
+                // fails if the tap-less `brew install vault` form
+                // (broken post-BSL, see INSTALL_HINT comment) slips
+                // back in.
+                assert!(
+                    install_hint.contains("hashicorp/tap/vault"),
+                    "expected tap-form install hint, got: {install_hint}"
+                );
             }
             other => panic!("expected CliMissing, got {other:?}"),
         }

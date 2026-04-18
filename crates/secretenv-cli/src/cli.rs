@@ -154,6 +154,14 @@ pub struct SetupArgs {
     #[arg(long)]
     pub account: Option<String>,
 
+    /// Vault instance URL — required for vault backends.
+    #[arg(long)]
+    pub vault_address: Option<String>,
+
+    /// Vault Enterprise namespace — optional, vault only.
+    #[arg(long)]
+    pub vault_namespace: Option<String>,
+
     /// Overwrite an existing config.toml.
     #[arg(long)]
     pub force: bool,
@@ -460,7 +468,9 @@ fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Res
         "local" | "1password" => toml::to_string(map).with_context(|| {
             format!("serializing registry as TOML for backend type '{backend_type}'")
         }),
-        "aws-ssm" => serde_json::to_string(map).with_context(|| {
+        // `vault` stores registry documents as a single KV secret whose
+        // value is a JSON alias→URI map — same wire shape as aws-ssm.
+        "aws-ssm" | "vault" => serde_json::to_string(map).with_context(|| {
             format!("serializing registry as JSON for backend type '{backend_type}'")
         }),
         other => Err(anyhow!(
@@ -483,6 +493,8 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         region: args.region.clone(),
         profile: args.profile.clone(),
         account: args.account.clone(),
+        vault_address: args.vault_address.clone(),
+        vault_namespace: args.vault_namespace.clone(),
         force: args.force,
         skip_doctor: args.skip_doctor,
         target: target_config.map(std::path::Path::to_path_buf),

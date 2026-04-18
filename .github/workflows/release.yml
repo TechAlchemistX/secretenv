@@ -172,6 +172,8 @@ jobs:
           cargo publish -p secretenv-backend-local --locked
           cargo publish -p secretenv-backend-aws-ssm --locked
           cargo publish -p secretenv-backend-1password --locked
+          cargo publish -p secretenv-backend-vault --locked
+          cargo publish -p secretenv-backend-aws-secrets --locked
 
       - name: Wait for crates.io to index backend crates
         run: sleep 45
@@ -262,6 +264,7 @@ jobs:
 
             def install
               bin.install "secretenv"
+              generate_completions_from_executable(bin/"secretenv", "completions")
             end
 
             test do

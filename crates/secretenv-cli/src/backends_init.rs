@@ -22,6 +22,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_aws_ssm::AwsSsmFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_1password::OnePasswordFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_vault::VaultFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_aws_secrets::AwsSecretsFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

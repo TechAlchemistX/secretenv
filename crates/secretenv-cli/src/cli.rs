@@ -470,7 +470,8 @@ fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Res
         }),
         // `vault` stores registry documents as a single KV secret whose
         // value is a JSON alias→URI map — same wire shape as aws-ssm.
-        "aws-ssm" | "vault" => serde_json::to_string(map).with_context(|| {
+        // `aws-secrets` uses the same shape (one AWS secret, JSON body).
+        "aws-ssm" | "vault" | "aws-secrets" => serde_json::to_string(map).with_context(|| {
             format!("serializing registry as JSON for backend type '{backend_type}'")
         }),
         other => Err(anyhow!(

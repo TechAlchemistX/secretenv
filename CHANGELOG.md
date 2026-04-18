@@ -10,6 +10,24 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Added
 
+- **AWS Secrets Manager backend** (`type = "aws-secrets"`). Wraps the
+  same `aws` CLI as `aws-ssm` — auth story is identical (every
+  profile / SSO / IAM-role flow works unchanged). URI shape:
+  `aws-secrets-<instance>:///<secret-id>[#<json-key>]`. First consumer
+  of the `BackendUri.fragment` field added in Phase 0.5 RE-2:
+  `#<json-key>` extracts a top-level field from a JSON-valued secret,
+  coercing scalars (string/number/boolean/null) to strings and
+  erroring on nested objects/arrays with the available field names
+  listed so operators can correct the URI. `set` pipes through child
+  stdin via `--secret-string file:///dev/stdin` (CV-1 discipline);
+  `delete` is unconditionally `--force-delete-without-recovery` to
+  keep semantics symmetric with aws-ssm/vault. Update-only — creating
+  new secrets requires `aws secretsmanager create-secret` (deferred
+  to v0.3 alongside `SecretBinary` + nested-field extraction). 26
+  mock-CLI tests cover every row of the spec's harness table.
+- `secretenv setup` routes `aws-secrets(-*)` schemes to the new
+  backend type; `--region` + `--profile` flags apply to both AWS
+  backends identically.
 - **HashiCorp Vault backend** (`type = "vault"`). Wraps the `vault` CLI
   — every auth flow the CLI supports (`VAULT_TOKEN`, `AppRole`, OIDC,
   Kubernetes, AWS IAM) works transparently with no secretenv auth

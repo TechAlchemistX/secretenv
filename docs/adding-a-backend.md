@@ -28,20 +28,20 @@ Add to workspace `Cargo.toml`:
 ```toml
 [workspace]
 members = [
-  "crates/backends/backend-myservice",
+  "crates/backends/secretenv-backend-myservice",
   # ...existing members
 ]
 
 [workspace.dependencies]
-backend-myservice = { path = "crates/backends/backend-myservice" }
+secretenv-backend-myservice = { path = "crates/backends/secretenv-backend-myservice" }
 # ...existing pins
 ```
 
-Add the crate manifest at `crates/backends/backend-myservice/Cargo.toml` inheriting workspace metadata:
+Add the crate manifest at `crates/backends/secretenv-backend-myservice/Cargo.toml` inheriting workspace metadata:
 
 ```toml
 [package]
-name        = "backend-myservice"
+name        = "secretenv-backend-myservice"
 description = "MyService backend for SecretEnv"
 version.workspace      = true
 edition.workspace      = true
@@ -72,7 +72,7 @@ workspace = true
 ## 2. Implement the Backend
 
 ```rust
-// crates/backends/backend-myservice/src/lib.rs
+// crates/backends/secretenv-backend-myservice/src/lib.rs
 
 use std::collections::HashMap;
 use async_trait::async_trait;

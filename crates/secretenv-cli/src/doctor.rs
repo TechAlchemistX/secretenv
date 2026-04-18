@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 
 use anyhow::{anyhow, Result};
 use futures::future::join_all;
-use secretenv_core::{BackendRegistry, BackendStatus};
+use secretenv_core::{with_timeout, BackendRegistry, BackendStatus, DEFAULT_CHECK_TIMEOUT};
 use serde::Serialize;
 
 /// Machine-readable shape for `--json`.
@@ -109,7 +109,19 @@ struct DoctorReport {
 /// pre-flight gate.
 pub async fn run_doctor(backends: &BackendRegistry, json: bool) -> Result<()> {
     let list: Vec<&dyn secretenv_core::Backend> = backends.all().collect();
-    let statuses: Vec<BackendStatus> = join_all(list.iter().map(|b| b.check())).await;
+    // Each check() wrapped in its own timeout so one wedged backend
+    // cannot hang the whole doctor run. A timeout surfaces as a
+    // synthesized `BackendStatus::Error` so the JSON shape stays
+    // uniform.
+    let statuses: Vec<BackendStatus> = join_all(list.iter().map(|b| async {
+        let label = format!("{}::check", b.instance_name());
+        match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async { Ok(b.check().await) }).await
+        {
+            Ok(status) => status,
+            Err(err) => BackendStatus::Error { message: err.to_string() },
+        }
+    }))
+    .await;
 
     let mut entries: Vec<DoctorEntry> = list
         .iter()

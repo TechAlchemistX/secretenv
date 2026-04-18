@@ -142,9 +142,17 @@ pub async fn build_env(
                         uri.scheme
                     )
                 })?;
-                let value = backend.get(uri).await.with_context(|| {
-                    format!("secret '{}': failed to fetch from '{}'", secret.env_var, uri.raw)
-                })?;
+                let op_label =
+                    format!("{}::get (secret '{}')", uri.scheme, secret.env_var);
+                let value =
+                    crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(uri))
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "secret '{}': failed to fetch from '{}'",
+                                secret.env_var, uri.raw
+                            )
+                        })?;
                 env.push(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) });
             }
         }

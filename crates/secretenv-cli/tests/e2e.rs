@@ -7,59 +7,32 @@
 //! prove the wrapper-backend codepath end-to-end: parent spawns
 //! `secretenv`, which spawns `aws`/`op`, which is our mock script.
 //!
-//! Mock-CLI harness pattern: the `install_mock_*` helpers write a
-//! `#!/bin/sh` script to a tempdir, chmod 0o755, then probe-spawn in a
-//! retry loop until `execve` succeeds (Linux ETXTBSY workaround
-//! established in Phase 5). The helpers are copy-pasted from the
-//! backend crates because they're in separate test modules; v0.2 is
-//! the point to extract them into a shared `secretenv-testing` crate
-//! (per the Phase 6 build-log note).
+//! Mock-CLI harness pattern: write a `#!/bin/sh` script to a tempdir,
+//! chmod 0o755, then probe-spawn in a retry loop until `execve`
+//! succeeds (Linux ETXTBSY workaround). Lives in the shared
+//! `secretenv-testing` crate since v0.2 Phase 4 — this file just
+//! calls into it with `TempDir`-shaped helpers.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 // ---- Mock-CLI install helpers -----------------------------------------
-
-/// Write a bash script to `dir/<bin_name>`, chmod +x, probe-retry until
-/// `execve` succeeds (defeats Linux ETXTBSY race on parallel tests).
-fn install_mock(dir: &TempDir, bin_name: &str, body: &str) -> PathBuf {
-    let path = dir.path().join(bin_name);
-    let full = format!("#!/bin/sh\n{body}\n");
-    {
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(full.as_bytes()).unwrap();
-        f.sync_all().unwrap();
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let deadline = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < deadline {
-        match std::process::Command::new(&path).arg("--probe").output() {
-            Err(e) if e.raw_os_error() == Some(26) => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(_) | Err(_) => return path,
-        }
-    }
-    path
-}
+//
+// These preserve the `&TempDir` shape the existing scenarios use.
+// The actual script-writer + ETXTBSY probe loop lives in
+// `secretenv_testing::install_mock`.
 
 fn install_mock_aws(dir: &TempDir, body: &str) -> PathBuf {
-    install_mock(dir, "aws", body)
+    secretenv_testing::install_mock_aws(dir.path(), body)
 }
 
 fn install_mock_op(dir: &TempDir, body: &str) -> PathBuf {
-    install_mock(dir, "op", body)
+    secretenv_testing::install_mock_op(dir.path(), body)
 }
 
 // ---- Test fixture helpers ---------------------------------------------

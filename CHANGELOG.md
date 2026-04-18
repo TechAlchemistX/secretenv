@@ -116,6 +116,15 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Internal
 
+- **Extracted `secretenv-testing` crate** (unpublished). The `install_mock`
+  shell-script writer with its Linux ETXTBSY probe loop previously lived
+  in three separate locations (`backend-aws-ssm/src/lib.rs`,
+  `backend-1password/src/lib.rs`, `secretenv-cli/tests/e2e.rs`). All
+  three now call into the shared crate. Public surface is
+  `install_mock(dir, bin_name, body) -> PathBuf` plus thin
+  `install_mock_aws` / `install_mock_op` wrappers. `publish = false`
+  for v0.2 — revisit once Phase 5 (Vault) + Phase 6 (AWS Secrets
+  Manager) have proven the API shape.
 - v0.2 development baseline: branch `feat/v0.2-prep` opened, workspace bumped
   to 0.2.0, roadmap updated to reflect the Vault + AWS Secrets Manager
   dual-backend release.

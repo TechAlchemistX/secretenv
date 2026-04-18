@@ -1,0 +1,20 @@
+[package]
+name        = "secretenv-testing"
+description = "Shared test harness for SecretEnv backend crates — mock-CLI installation + probe-loop helpers"
+# Not published to crates.io in v0.2. Revisit publishing once the
+# surface has proven itself across three or more backend consumers.
+# (v0.1 Phase 13 rename notes + v0.2 plan §Phase 4 "Why not publish yet".)
+publish = false
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

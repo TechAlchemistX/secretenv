@@ -645,6 +645,7 @@ dependencies = [
  "secretenv-backend-aws-ssm",
  "secretenv-backend-local",
  "secretenv-core",
+ "secretenv-testing",
  "serde",
  "serde_json",
  "tempfile",
@@ -661,6 +662,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "secretenv-core",
+ "secretenv-testing",
  "serde",
  "serde_json",
  "tempfile",
@@ -676,6 +678,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "secretenv-core",
+ "secretenv-testing",
  "serde",
  "serde_json",
  "tempfile",
@@ -711,6 +714,13 @@ dependencies = [
  "toml",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "secretenv-testing"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

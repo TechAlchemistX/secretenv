@@ -340,40 +340,17 @@ impl BackendFactory for OnePasswordFactory {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use tempfile::TempDir;
 
     use super::*;
 
-    /// Write a bash script to `dir/op`, chmod +x, return the path.
-    /// Mirrors `install_mock_aws` in backend-aws-ssm (same ETXTBSY
-    /// workaround for parallel-test flakiness on Linux).
-    fn install_mock_op(dir: &TempDir, body: &str) -> PathBuf {
-        use std::io::Write;
-
-        let path = dir.path().join("op");
-        let full = format!("#!/bin/sh\n{body}\n");
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            f.write_all(full.as_bytes()).unwrap();
-            f.sync_all().unwrap();
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < deadline {
-            match std::process::Command::new(&path).arg("--probe").output() {
-                Err(e) if e.raw_os_error() == Some(26) => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Ok(_) | Err(_) => return path,
-            }
-        }
-        path
+    /// Thin wrapper preserving the existing `&TempDir → PathBuf`
+    /// shape. The real installer lives in the shared
+    /// `secretenv-testing` crate.
+    fn install_mock_op(dir: &TempDir, body: &str) -> std::path::PathBuf {
+        secretenv_testing::install_mock_op(dir.path(), body)
     }
 
     fn backend(mock_path: &Path, account: Option<&str>) -> OnePasswordBackend {

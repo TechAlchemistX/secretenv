@@ -10,6 +10,13 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Added
 
+- **Shell completions.** New `secretenv completions <bash|zsh|fish>`
+  subcommand emits a completion script generated from clap's command
+  tree. Writes to `--output <path>` (chmod 0o644) or stdout. When
+  stdout is a TTY, a shell-specific install hint is printed to
+  stderr; when redirected (the usual `... > _secretenv` pipeline)
+  stderr stays silent. PowerShell/Elvish deliberately omitted from
+  v0.2 — no reason to carry the surface preemptively.
 - **AWS Secrets Manager backend** (`type = "aws-secrets"`). Wraps the
   same `aws` CLI as `aws-ssm` — auth story is identical (every
   profile / SSO / IAM-role flow works unchanged). URI shape:

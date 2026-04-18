@@ -402,3 +402,72 @@ fn run_execs_with_secrets_injected_as_env_vars() {
         .stdout(predicate::str::contains("STRIPE=super-secret-value"))
         .stdout(predicate::str::contains("LOG_LEVEL=debug"));
 }
+
+// ---- completions (Phase 7) ----------------------------------------------
+
+#[test]
+fn completions_zsh_emits_script_with_secretenv_completion_function() {
+    // Zsh clap output defines `_secretenv` as the completion function
+    // name. If the binary name ever changed, this would need updating.
+    let out = secretenv().args(["completions", "zsh"]).assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.is_empty(), "zsh completion script should not be empty");
+    assert!(
+        stdout.contains("_secretenv"),
+        "zsh script should define _secretenv function; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn completions_bash_emits_non_empty_script() {
+    let out = secretenv().args(["completions", "bash"]).assert().success();
+    let stdout = out.get_output().stdout.clone();
+    assert!(!stdout.is_empty(), "bash completion script should not be empty");
+    let s = String::from_utf8(stdout).unwrap();
+    assert!(
+        s.contains("complete") && s.contains("secretenv"),
+        "bash output should reference `complete` + `secretenv`"
+    );
+}
+
+#[test]
+fn completions_fish_emits_non_empty_script() {
+    let out = secretenv().args(["completions", "fish"]).assert().success();
+    let stdout = out.get_output().stdout.clone();
+    assert!(!stdout.is_empty(), "fish completion script should not be empty");
+    let s = String::from_utf8(stdout).unwrap();
+    assert!(s.contains("secretenv"), "fish output should mention `secretenv`");
+}
+
+#[test]
+fn completions_output_flag_writes_file_with_mode_0o644() {
+    let dir = TempDir::new().unwrap();
+    let out_path = dir.path().join("_secretenv");
+    secretenv()
+        .args(["completions", "zsh", "--output", out_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&out_path).unwrap();
+    assert!(contents.contains("_secretenv"), "file should contain the zsh completion function");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&out_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "expected 0o644, got 0o{mode:o}");
+    }
+}
+
+#[test]
+fn completions_rejects_unknown_shell() {
+    // Clap emits exit code 2 on usage errors. `pwsh` is not in the
+    // `Shell` value_enum, so the subcommand rejects it before any
+    // handler runs.
+    secretenv()
+        .args(["completions", "pwsh"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value"));
+}

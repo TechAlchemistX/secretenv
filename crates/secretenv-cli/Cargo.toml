@@ -25,6 +25,7 @@ secretenv-backend-vault.workspace     = true
 secretenv-backend-aws-secrets.workspace = true
 anyhow.workspace              = true
 clap.workspace                = true
+clap_complete.workspace       = true
 directories.workspace         = true
 futures.workspace             = true
 serde.workspace               = true

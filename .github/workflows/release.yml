@@ -1,0 +1,288 @@
+name: Release
+
+# Fires on semver tags like v0.1.0, v1.2.3-rc1, etc. The tag itself is
+# the release trigger — no manual workflow_dispatch for v0.1 (avoids
+# accidental double-publishes). Add one later if we need patch releases
+# from non-main branches.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write      # create GitHub Release + upload artifacts
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. Cross-compile the binary for every target in the matrix,
+  #    strip, tar+gz with README + LICENSE, upload artifact.
+  # ------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use-cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use-cross: true     # cross for Linux arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use-cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use-cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross (Linux arm64 only)
+        if: matrix.use-cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.use-cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} -p secretenv-cli
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p secretenv-cli
+          fi
+
+      - name: Strip symbols
+        if: runner.os == 'Linux'
+        run: strip target/${{ matrix.target }}/release/secretenv || true
+
+      - name: Strip symbols (macOS)
+        if: runner.os == 'macOS'
+        run: strip -x target/${{ matrix.target }}/release/secretenv || true
+
+      - name: Package tarball
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/secretenv dist/
+          cp README.md LICENSE dist/
+          tarball="secretenv-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          tar -C dist -czf "$tarball" secretenv README.md LICENSE
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$tarball" > "$tarball.sha256"
+          else
+            shasum -a 256 "$tarball" > "$tarball.sha256"
+          fi
+          ls -l "$tarball" "$tarball.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secretenv-${{ matrix.target }}
+          path: |
+            secretenv-*.tar.gz
+            secretenv-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # 2. Consolidate every per-target artifact into one GitHub Release
+  #    with a unified `checksums.txt`.
+  # ------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Consolidate artifacts + regenerate checksums.txt
+        shell: bash
+        run: |
+          mkdir -p release
+          find artifacts -name 'secretenv-*.tar.gz' -exec cp {} release/ \;
+          cd release
+          sha256sum *.tar.gz > checksums.txt
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/checksums.txt
+          body: |
+            ## secretenv ${{ github.ref_name }}
+
+            Install via any of:
+
+            ```sh
+            # Shell installer (universal)
+            curl -sfSL https://secretenv.dev/install.sh | sh
+
+            # Homebrew
+            brew install TechAlchemistX/secretenv/secretenv
+
+            # Cargo
+            cargo install secretenv
+            ```
+
+            Verify a downloaded tarball with the `checksums.txt` asset.
+
+            Full build plan and design notes: [kb/wiki](https://github.com/TechAlchemistX/secretenv/tree/main/../../kb/wiki).
+
+  # ------------------------------------------------------------------
+  # 3. Publish every crate to crates.io in dependency order.
+  #    Brief sleeps between steps let the index catch up so the next
+  #    crate's path+version dep can resolve the just-published version.
+  # ------------------------------------------------------------------
+  publish-crates:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish secretenv-core
+        run: cargo publish -p secretenv-core --locked
+
+      - name: Wait for crates.io to index secretenv-core
+        run: sleep 45
+
+      - name: Publish backend crates (parallel dep-wise; sequential here for simplicity)
+        run: |
+          cargo publish -p backend-local --locked
+          cargo publish -p backend-aws-ssm --locked
+          cargo publish -p backend-1password --locked
+
+      - name: Wait for crates.io to index backend crates
+        run: sleep 45
+
+      - name: Publish secretenv-cli
+        run: cargo publish -p secretenv-cli --locked
+
+  # ------------------------------------------------------------------
+  # 4. Render + push the Homebrew formula to the tap repo.
+  # ------------------------------------------------------------------
+  homebrew:
+    name: Update Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: TechAlchemistX/homebrew-secretenv
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          path: tap
+
+      - name: Download checksums from the just-created release
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+          # Small retry in case the Release assets aren't yet visible via
+          # the browser-download URL (cache propagation is fast but not
+          # instantaneous).
+          for attempt in 1 2 3 4 5; do
+            if curl -sfSL -o checksums.txt "${BASE}/checksums.txt"; then
+              break
+            fi
+            echo "checksums.txt not yet available, retrying in 5s..."
+            sleep 5
+          done
+          test -s checksums.txt || { echo "failed to fetch checksums.txt" >&2; exit 1; }
+          cat checksums.txt
+
+      - name: Render formula
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VER="${VERSION#v}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+
+          extract() {
+            awk -v f="$1" '$2==f {print $1; exit}' checksums.txt
+          }
+          SHA_MAC_ARM=$(extract "secretenv-${VERSION}-aarch64-apple-darwin.tar.gz")
+          SHA_MAC_X86=$(extract "secretenv-${VERSION}-x86_64-apple-darwin.tar.gz")
+          SHA_LIN_ARM=$(extract "secretenv-${VERSION}-aarch64-unknown-linux-gnu.tar.gz")
+          SHA_LIN_X86=$(extract "secretenv-${VERSION}-x86_64-unknown-linux-gnu.tar.gz")
+
+          for sha in "$SHA_MAC_ARM" "$SHA_MAC_X86" "$SHA_LIN_ARM" "$SHA_LIN_X86"; do
+            test -n "$sha" || { echo "missing checksum for one of the targets" >&2; exit 1; }
+          done
+
+          mkdir -p tap/Formula
+          cat > tap/Formula/secretenv.rb <<EOF
+          # Generated by the release workflow. Do not edit by hand.
+          class Secretenv < Formula
+            desc "Run any process with secrets from all your backends"
+            homepage "https://secretenv.dev"
+            version "${VER}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE}/secretenv-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_ARM}"
+              else
+                url "${BASE}/secretenv-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_X86}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${BASE}/secretenv-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LIN_ARM}"
+              else
+                url "${BASE}/secretenv-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LIN_X86}"
+              end
+            end
+
+            def install
+              bin.install "secretenv"
+            end
+
+            test do
+              assert_match "secretenv ${VER}", shell_output("#{bin}/secretenv --version")
+            end
+          end
+          EOF
+
+          echo "--- rendered formula ---"
+          cat tap/Formula/secretenv.rb
+
+      - name: Commit + push formula
+        shell: bash
+        working-directory: tap
+        run: |
+          git config user.name  "secretenv-release-bot"
+          git config user.email "release-bot@secretenv.dev"
+          git add Formula/secretenv.rb
+          if git diff --staged --quiet; then
+            echo "no formula changes — skipping commit"
+            exit 0
+          fi
+          git commit -m "secretenv ${GITHUB_REF_NAME}"
+          git push

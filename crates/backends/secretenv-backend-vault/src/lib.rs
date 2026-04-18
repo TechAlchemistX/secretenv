@@ -147,9 +147,18 @@ impl VaultBackend {
         let mut cmd = Command::new(&self.vault_bin);
         cmd.arg(subcommand);
         cmd.args(extra_args);
-        cmd.args(["-address", &self.vault_address]);
+        // Route address + namespace via env rather than argv. The
+        // earlier argv form (`vault kv get ... -address=<addr>`) was
+        // rejected by the real vault binary ("Command flags must be
+        // provided before positional arguments") — flags must precede
+        // positional args and can't go where they previously landed.
+        // Env-var config is the idiomatic vault CLI pattern anyway
+        // and keeps argv stable so mock harnesses match `$1 $2 =
+        // kv get/put/delete`. Set per-Command only so parent-process
+        // env is untouched. Caught in integration validation 2026-04-18.
+        cmd.env("VAULT_ADDR", &self.vault_address);
         if let Some(ns) = &self.vault_namespace {
-            cmd.args(["-namespace", ns]);
+            cmd.env("VAULT_NAMESPACE", ns);
         }
         cmd
     }
@@ -914,16 +923,16 @@ exit 1
     // ---- Namespace flag omission / inclusion in argv ----
 
     #[tokio::test]
-    async fn command_omits_namespace_flag_when_not_configured() {
-        // Record every argv element. Backend is configured without a
-        // namespace; the mock asserts `-namespace` never appears.
+    async fn command_omits_namespace_env_when_not_configured() {
+        // Record every VAULT_* env var. Backend is configured without a
+        // namespace; the mock asserts `VAULT_NAMESPACE` never appears.
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv.log");
+        let log_path = dir.path().join("env.log");
         let log_path_str = log_path.to_string_lossy();
         let script = format!(
             r#"
 LOG="{log_path_str}"
-for a in "$@"; do echo "arg=$a" >> "$LOG"; done
+env | grep "^VAULT_" | sort > "$LOG"
 if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
   echo "v"
   exit 0
@@ -938,22 +947,22 @@ exit 1
 
         let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
         assert!(
-            !log.contains("arg=-namespace"),
-            "OSS vault would reject -namespace; flag must be absent:\n{log}"
+            !log.contains("VAULT_NAMESPACE"),
+            "OSS vault would reject VAULT_NAMESPACE; env var must be absent:\n{log}"
         );
-        // Sanity: -address IS always passed.
-        assert!(log.contains("arg=-address"), "expected -address in argv:\n{log}");
+        // Sanity: VAULT_ADDR IS always set.
+        assert!(log.contains("VAULT_ADDR="), "expected VAULT_ADDR in env:\n{log}");
     }
 
     #[tokio::test]
-    async fn command_includes_namespace_flag_when_configured() {
+    async fn command_includes_namespace_env_when_configured() {
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv.log");
+        let log_path = dir.path().join("env.log");
         let log_path_str = log_path.to_string_lossy();
         let script = format!(
             r#"
 LOG="{log_path_str}"
-for a in "$@"; do echo "arg=$a" >> "$LOG"; done
+env | grep "^VAULT_" | sort > "$LOG"
 if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
   echo "v"
   exit 0
@@ -967,7 +976,9 @@ exit 1
         b.get(&uri).await.unwrap();
 
         let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
-        assert!(log.contains("arg=-namespace"), "expected -namespace in argv:\n{log}");
-        assert!(log.contains("arg=engineering"), "expected namespace value in argv:\n{log}");
+        assert!(
+            log.contains("VAULT_NAMESPACE=engineering"),
+            "expected VAULT_NAMESPACE=engineering in env:\n{log}"
+        );
     }
 }

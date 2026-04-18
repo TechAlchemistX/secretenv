@@ -85,6 +85,17 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Changed
 
+- **`secretenv resolve <alias>`** now emits a tabular metadata report
+  instead of printing only the resolved URI. Rows: `alias`, `env var`
+  (reverse-lookup from the manifest, `(none)` if unused),
+  `resolved` (target backend URI), `source` (cascade layer URI + the
+  layer index), and `backend` (one-line Level 2 status of the target
+  backend instance — doubles as a lightweight pre-flight check). New
+  `--json` flag emits the same data as structured JSON for editor /
+  IDE consumers. Manifest loading is best-effort: a missing
+  `secretenv.toml` no longer blocks resolve, it just sets `env_var`
+  to `(none)`. Backend check failure does not fail resolve — the
+  mapping is still printed so operators can debug auth separately.
 - **`resolve_registry` signature.** Added a `cache: &mut RegistryCache`
   parameter. Callers must now construct a `RegistryCache::new()`
   (typically per command) and pass it through. Breaking change for

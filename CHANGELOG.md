@@ -8,7 +8,7 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-04-19
+## [0.2.1]
 
 **Headline:** canonical `#key=value` fragment grammar. One deliberate pre-launch breaking change that locks the URI vocabulary before public eyes see the v0.2.0 shorthand form.
 

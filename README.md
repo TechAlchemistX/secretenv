@@ -436,7 +436,7 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | AWS SSM Parameter Store | `aws-ssm` | `aws-ssm-<instance>:///path` | `aws` | Available |
 | 1Password | `1password` | `1password-<instance>://vault/item/field` | `op` | Available |
 | HashiCorp Vault | `vault` | `vault-<instance>://mount/path` | `vault` | Available |
-| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name[#json-key]` | `aws` | Available |
+| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name[#json-key=<field>]` | `aws` | Available |
 | GCP Secret Manager | `gcp` | `gcp-<instance>://project/secret` | `gcloud` | Coming Soon |
 | Azure Key Vault | `azure` | `azure-<instance>://vault/secret` | `az` | Coming Soon |
 | macOS Keychain | `keychain` | `keychain-<instance>://service/account` | `security` | Coming Soon |
@@ -450,6 +450,8 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Delinea Secret Server | `delinea` | `delinea-<instance>://folder/secret` | `tss` | Coming Soon |
 
 The URI scheme is your named instance. Multiple instances of the same backend type — for multiple accounts, multiple vaults, or multiple credential sets — are configured in `config.toml` and referenced by their instance name.
+
+**Fragment directives.** URIs optionally carry a `#key=value[,key=value]*` fragment that each backend interprets per its own registered directives — for example, aws-secrets uses `#json-key=<field>` to pick a value out of a JSON-shaped secret. See [docs/fragment-vocabulary.md](docs/fragment-vocabulary.md) for the full grammar and the per-backend directive registry.
 
 Backends marked *Coming Soon* follow the one-per-minor-release cadence on the [roadmap](docs/) — each v0.x release after v0.1 adds one backend.
 

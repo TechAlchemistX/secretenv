@@ -7,10 +7,14 @@
 //!
 //! # URI shape
 //!
-//! `<instance>:///<secret-id>[#<json-key>]` — scheme is the instance
-//! name (e.g. `aws-secrets-prod`); path is the Secret ARN or friendly
-//! name passed verbatim to `--secret-id`. The optional `#<json-key>`
-//! fragment selects a top-level field of a JSON-shaped secret.
+//! `<instance>:///<secret-id>[#json-key=<field>]` — scheme is the
+//! instance name (e.g. `aws-secrets-prod`); path is the Secret ARN or
+//! friendly name passed verbatim to `--secret-id`. The optional
+//! `#json-key=<field>` fragment directive selects a top-level field of
+//! a JSON-shaped secret. Per the canonical fragment grammar introduced
+//! in v0.2.1, legacy plain-string shorthand (`#password`) is rejected
+//! at URI-parse time with a migration hint. `json-key` is the sole
+//! directive aws-secrets recognizes.
 //!
 //! # Config fields
 //!
@@ -23,10 +27,12 @@
 //! - [`get`](AwsSecretsBackend) runs
 //!   `aws secretsmanager get-secret-value --query SecretString --output text`
 //!   and then:
-//!   - `uri.fragment == None` → returns the value verbatim (plain
-//!     string OR whole JSON blob — user's choice).
-//!   - `uri.fragment == Some(key)` → parses the value as a JSON
-//!     object and extracts the top-level `key` field.
+//!   - No fragment → returns the value verbatim (plain string OR whole
+//!     JSON blob — user's choice).
+//!   - `#json-key=<field>` fragment → parses the value as a JSON object
+//!     and extracts the top-level `<field>`. Any other directive key is
+//!     rejected; plain-string shorthand (`#password`) is rejected at
+//!     URI-parse time by [`secretenv_core::BackendUri::fragment_directives`].
 //! - [`set`](AwsSecretsBackend) runs
 //!   `aws secretsmanager put-secret-value --secret-string file:///dev/stdin`
 //!   and pipes the secret through child stdin — **never** argv.
@@ -268,12 +274,42 @@ impl Backend for AwsSecretsBackend {
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         let raw = self.get_raw(uri).await?;
-        match &uri.fragment {
+        let Some(directives) = uri.fragment_directives()? else {
             // No fragment: return the raw SecretString verbatim.
-            None => Ok(raw),
-            // Fragment: parse as JSON object and extract the named field.
-            Some(key) => extract_json_field(&self.instance_name, uri, &raw, key),
+            return Ok(raw);
+        };
+        // The only directive aws-secrets recognizes is `json-key`. Any
+        // other key — alone or alongside `json-key` — is an error. We
+        // list every unsupported key in one message rather than drip-
+        // feeding them, so a caller sees all the problems at once.
+        let key = directives.get("json-key").ok_or_else(|| {
+            let mut unsupported: Vec<&str> = directives.keys().map(String::as_str).collect();
+            unsupported.sort_unstable();
+            anyhow!(
+                "aws-secrets backend '{}': URI '{}' has unsupported fragment \
+                 directive(s) [{}]; aws-secrets recognizes only 'json-key' \
+                 (example: '#json-key=password')",
+                self.instance_name,
+                uri.raw,
+                unsupported.join(", ")
+            )
+        })?;
+        if directives.len() > 1 {
+            let mut extra: Vec<&str> = directives
+                .keys()
+                .filter(|k| k.as_str() != "json-key")
+                .map(String::as_str)
+                .collect();
+            extra.sort_unstable();
+            bail!(
+                "aws-secrets backend '{}': URI '{}' has unsupported directive(s) \
+                 [{}] alongside 'json-key'; aws-secrets recognizes only 'json-key'",
+                self.instance_name,
+                uri.raw,
+                extra.join(", ")
+            );
         }
+        extract_json_field(&self.instance_name, uri, &raw, key)
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -372,8 +408,8 @@ fn extract_json_field(
 ) -> Result<String> {
     let map: HashMap<String, serde_json::Value> = serde_json::from_str(raw).with_context(|| {
         format!(
-            "aws-secrets backend '{instance_name}': URI '{}' has #{key} fragment but \
-                 secret value at '{}' is not a JSON object",
+            "aws-secrets backend '{instance_name}': URI '{}' selects JSON key '{key}' \
+             but secret value at '{}' is not a JSON object",
             uri.raw, uri.path
         )
     })?;
@@ -707,7 +743,7 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#password").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "hunter2");
     }
 
@@ -725,9 +761,9 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let port_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#port").unwrap();
+        let port_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=port").unwrap();
         assert_eq!(b.get(&port_uri).await.unwrap(), "5432");
-        let tls_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#tls").unwrap();
+        let tls_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=tls").unwrap();
         assert_eq!(b.get(&tls_uri).await.unwrap(), "true");
     }
 
@@ -745,10 +781,10 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri = BackendUri::parse("aws-secrets-prod:///myapp/plain#field").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/plain#json-key=field").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("#field"), "names the fragment: {msg}");
+        assert!(msg.contains("'field'"), "names the JSON key: {msg}");
         assert!(msg.contains("not a JSON object"), "specific error: {msg}");
     }
 
@@ -766,13 +802,74 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#password").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("password"), "names missing field: {msg}");
         // Both available fields listed in the error.
         assert!(msg.contains("user"), "lists available fields: {msg}");
         assert!(msg.contains("host"), "lists available fields: {msg}");
+    }
+
+    // v0.2.1: shorthand + unsupported-directive rejection locks the
+    // canonical `#json-key=<field>` fragment form as the ONLY accepted
+    // shape. Both failure modes must surface without ever invoking `aws`.
+
+    #[tokio::test]
+    async fn get_rejects_legacy_shorthand_fragment_with_migration_hint() {
+        // `#password` was the v0.2.0 shorthand. v0.2.1 canonicalized the
+        // grammar — this URI must fail at `fragment_directives()` before
+        // any AWS call, with a hint naming the canonical replacement.
+        let dir = TempDir::new().unwrap();
+        let mock = install_mock_aws(
+            &dir,
+            // If the backend reached `aws`, this mock returns success —
+            // so the test asserts the error surfaces *before* argv-level
+            // dispatch (the shorthand is rejected in core).
+            r#"echo '{"password":"hunter2"}'; exit 0"#,
+        );
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#password").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("shorthand"), "error names the problem: {msg}");
+        assert!(
+            msg.contains("#json-key=password"),
+            "error suggests the canonical form verbatim: {msg}"
+        );
+        assert!(msg.contains("fragment-vocabulary"), "error links to doc: {msg}");
+    }
+
+    #[tokio::test]
+    async fn get_rejects_unsupported_directive_with_enumerated_list() {
+        // `#version=5` is a valid canonical fragment but uses a directive
+        // aws-secrets does not recognize. Must fail cleanly naming the
+        // offender, without any AWS call.
+        let dir = TempDir::new().unwrap();
+        let mock = install_mock_aws(&dir, r#"echo "never-reached"; exit 0"#);
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#version=5").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unsupported"), "error names the problem: {msg}");
+        assert!(msg.contains("'version'") || msg.contains("[version]"), "lists offender: {msg}");
+        assert!(msg.contains("json-key"), "names the supported directive: {msg}");
+    }
+
+    #[tokio::test]
+    async fn get_rejects_extra_directives_alongside_json_key() {
+        // `#json-key=password,version=5` — json-key is present, but aws-secrets
+        // does not recognize `version`. Must error with the extra keys listed.
+        let dir = TempDir::new().unwrap();
+        let mock = install_mock_aws(&dir, r#"echo '{"password":"hunter2"}'; exit 0"#);
+        let b = backend(&mock, None);
+        let uri =
+            BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password,version=5").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unsupported"), "error names the problem: {msg}");
+        assert!(msg.contains("version"), "lists extra directive: {msg}");
+        assert!(msg.contains("json-key"), "references the recognized directive: {msg}");
     }
 
     #[tokio::test]
@@ -789,7 +886,7 @@ exit 1
 "#,
         );
         let b = backend(&mock, None);
-        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#meta").unwrap();
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=meta").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("meta"), "names the field: {msg}");

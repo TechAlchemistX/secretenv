@@ -38,4 +38,4 @@ pub use resolver::{
 pub use runner::{build_env, run, EnvEntry};
 pub use status::BackendStatus;
 pub use timeouts::{with_timeout, DEFAULT_CHECK_TIMEOUT, DEFAULT_GET_TIMEOUT};
-pub use uri::{BackendUri, UriError};
+pub use uri::{BackendUri, FragmentError, UriError};

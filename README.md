@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
 [![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
-[![Backends](https://img.shields.io/badge/backends-3-green)](#supported-backends)
+[![Backends](https://img.shields.io/badge/backends-5-green)](#supported-backends)
 
 *No SaaS. No re-encryption. No lock-in. No .env files.*
 
@@ -435,8 +435,8 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Local file | `local` | `local:///path/to/file.toml` | — | Available |
 | AWS SSM Parameter Store | `aws-ssm` | `aws-ssm-<instance>:///path` | `aws` | Available |
 | 1Password | `1password` | `1password-<instance>://vault/item/field` | `op` | Available |
-| HashiCorp Vault | `vault` | `vault-<instance>://mount/path` | `vault` | Coming Soon |
-| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name` | `aws` | Coming Soon |
+| HashiCorp Vault | `vault` | `vault-<instance>://mount/path` | `vault` | Available |
+| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name[#json-key]` | `aws` | Available |
 | GCP Secret Manager | `gcp` | `gcp-<instance>://project/secret` | `gcloud` | Coming Soon |
 | Azure Key Vault | `azure` | `azure-<instance>://vault/secret` | `az` | Coming Soon |
 | macOS Keychain | `keychain` | `keychain-<instance>://service/account` | `security` | Coming Soon |

@@ -8,6 +8,10 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-18
+
+**Headline:** 2 new backends (Vault, AWS Secrets Manager), cascading registries, parallel secret fetch, shell completions, enriched `resolve` report, per-cascade-source doctor, shared `secretenv-testing` crate, and a 7-item security preflight. 13 PRs (#22–#34) from scaffolding to tag.
+
 ### Added
 
 - **Shell completions.** New `secretenv completions <bash|zsh|fish>`
@@ -246,5 +250,6 @@ First public release of SecretEnv.
 - Errors include alias + URI + instance name + trimmed backend stderr,
   never the secret value.
 
-[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.0
 [0.1.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.1.1

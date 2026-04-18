@@ -299,30 +299,51 @@ backend-myservice.workspace = true
 
 ## 4. Write Tests
 
-Each backend crate should have tests that mock the CLI binary. Use `assert_cmd` and a mock binary that returns known responses:
+Each backend crate should have tests that mock the CLI binary. Add the shared `secretenv-testing` harness under `[dev-dependencies]`:
+
+```toml
+[dev-dependencies]
+secretenv-testing.workspace = true
+tempfile.workspace          = true
+```
+
+Then call `install_mock` to drop a POSIX shell script on disk with the ETXTBSY probe loop already handled:
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_get_returns_value() {
-        // Use a mock CLI binary or environment variable to control output
-        // See tests/mock_cli/ in the repository for the test harness
+        let dir = TempDir::new().unwrap();
+        let mock = secretenv_testing::install_mock(
+            dir.path(),
+            "myservice",
+            r#"
+if [ "$1" = "secret" ] && [ "$2" = "get" ]; then
+  echo "test-value"
+  exit 0
+fi
+exit 1
+            "#,
+        );
         let backend = MyServiceBackend {
             instance_name: "myservice-test".into(),
             api_url: "https://myservice.example.com".into(),
             token_env: "MYSERVICE_TOKEN".into(),
+            cli_bin: mock.to_string_lossy().into_owned(),
         };
 
         let uri = BackendUri::parse("myservice-test:///my/secret").unwrap();
-        // With mock CLI returning "test-value":
-        // let result = backend.get(&uri).await.unwrap();
-        // assert_eq!(result, "test-value");
+        let result = backend.get(&uri).await.unwrap();
+        assert_eq!(result, "test-value");
     }
 }
 ```
+
+For backends shelling out to a well-known CLI with a fixed binary name, `install_mock_aws` / `install_mock_op` already exist as convenience wrappers — add one in the shared crate if your backend's CLI sees frequent reuse.
 
 ---
 
@@ -378,7 +399,7 @@ Users will encounter missing CLIs. The install hint should be a real, copy-paste
 - [ ] `check_extensive()` implemented
 - [ ] All CLI calls use `.args()` with separate strings — no `sh -c` with interpolation
 - [ ] Error messages include instance name and `uri.raw` plus trimmed CLI stderr
-- [ ] Tests cover `get()`, `check()` success + failure variants via the mock-CLI harness pattern (see `install_mock_aws` in `backend-aws-ssm/src/lib.rs` tests)
+- [ ] Tests cover `get()`, `check()` success + failure variants via the shared `secretenv-testing::install_mock` harness (see `§4 Write Tests` above)
 - [ ] `docs/backends/<your-backend>.md` written following the existing format
 - [ ] Path-dep added to `workspace.dependencies` and to `secretenv-cli/Cargo.toml`
 

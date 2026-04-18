@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/secretenv-core",
     "crates/secretenv-cli",
+    "crates/secretenv-testing",
     "crates/backends/secretenv-backend-local",
     "crates/backends/secretenv-backend-aws-ssm",
     "crates/backends/secretenv-backend-1password",
@@ -31,6 +32,9 @@ secretenv-core               = { path = "crates/secretenv-core",                
 secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.2.0" }
 secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.2.0" }
 secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.2.0" }
+# Unpublished test harness — path-only, no version. Revisit publishing once
+# the API has proven itself across Vault + AWS Secrets backends (v0.3+).
+secretenv-testing            = { path = "crates/secretenv-testing" }
 anyhow             = "1"
 async-trait        = "0.1"
 clap               = { version = "4", features = ["derive"] }

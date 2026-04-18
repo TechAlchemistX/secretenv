@@ -10,6 +10,15 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Added
 
+- **Session-scoped registry cache.** New `secretenv_core::RegistryCache`
+  memoizes `backend.list(source)` results by source URI for the life of
+  a process. `resolve_registry` takes `&mut RegistryCache` and only
+  issues a backend call on cache miss; subsequent references to the
+  same source return a zero-I/O `Arc<CascadeLayer>`. Within a single
+  `resolve_registry` call, the cache is warmed concurrently via
+  `futures::future::join_all` so Phase 1's cascade parallelism is
+  preserved. The cache holds alias-to-URI pointers only — secret
+  values are never cached.
 - **Registry cascades.** `[registries.<name>]` now accepts multiple
   `sources = [...]` entries. Lookup is first-match-wins from `sources[0]`
   downward; `sources[0]` remains the single write target for
@@ -34,6 +43,24 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Changed
 
+- **`resolve_registry` signature.** Added a `cache: &mut RegistryCache`
+  parameter. Callers must now construct a `RegistryCache::new()`
+  (typically per command) and pass it through. Breaking change for
+  anyone consuming `secretenv-core` as a library.
+- **`AliasMap` internals.** Layers are now held as
+  `Vec<Arc<CascadeLayer>>` instead of `Vec<CascadeLayer>`.
+  `AliasMap::layers()` returns `&[Arc<CascadeLayer>]`. Enables
+  shared-layer semantics between the cache and returned maps with
+  zero deep clones.
+- **Backend crate directories** renamed to match their published
+  crate names: `crates/backends/backend-local` →
+  `crates/backends/secretenv-backend-local` (and same for
+  `aws-ssm`, `1password`). The v0.1 crates.io-prep rename deliberately
+  left the directories unchanged; aligning them removes the
+  path-vs-package-name inconsistency that was tripping readers. The
+  CLI directory (`crates/secretenv-cli/`) stays as-is — it publishes
+  as plain `secretenv` so `cargo install secretenv` lines up with the
+  binary name.
 - **Parallel secret fetch.** `runner::build_env` dispatches every
   alias-backed secret concurrently via `futures::future::join_all`
   instead of awaiting them one at a time. `Default`-sourced entries

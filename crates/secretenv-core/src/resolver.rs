@@ -41,6 +41,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::future::join_all;
@@ -104,20 +105,23 @@ pub struct CascadeLayer {
 /// Every URI value in every layer is validated at load time: parseable
 /// [`BackendUri`] whose scheme matches a [`Backend`](crate::Backend)
 /// registered in the [`BackendRegistry`].
+///
+/// Layers are held as `Arc<CascadeLayer>` so [`RegistryCache`] can hand
+/// out shared references without cloning the map on every resolve.
 #[derive(Debug, Clone)]
 pub struct AliasMap {
-    layers: Vec<CascadeLayer>,
+    layers: Vec<Arc<CascadeLayer>>,
 }
 
 impl AliasMap {
-    /// Construct an `AliasMap` from pre-built layers — typically only
-    /// used by [`resolve_registry`] and tests.
+    /// Construct an `AliasMap` from pre-built layer `Arc`s — typically
+    /// only used by [`resolve_registry`] and tests.
     ///
     /// # Panics
     /// Panics if `layers` is empty. [`resolve_registry`] guarantees at
     /// least one layer; tests should pass at least one.
     #[must_use]
-    pub fn new(layers: Vec<CascadeLayer>) -> Self {
+    pub fn new(layers: Vec<Arc<CascadeLayer>>) -> Self {
         assert!(!layers.is_empty(), "AliasMap requires at least one cascade layer");
         Self { layers }
     }
@@ -129,9 +133,9 @@ impl AliasMap {
         self.layers.iter().find_map(|l| l.map.get(alias).map(|u| (u, &l.source)))
     }
 
-    /// Read-only view of the layers in declaration order.
+    /// Read-only view of the layer `Arc`s in declaration order.
     #[must_use]
-    pub fn layers(&self) -> &[CascadeLayer] {
+    pub fn layers(&self) -> &[Arc<CascadeLayer>] {
         &self.layers
     }
 
@@ -209,12 +213,128 @@ pub enum ResolvedSource {
     },
 }
 
+/// Session-scoped cache for loaded [`CascadeLayer`]s.
+///
+/// A single `secretenv` invocation can reference the same registry
+/// source multiple times (e.g. a handler that calls
+/// [`resolve_registry`] during both pre-flight validation and the
+/// actual resolve, or future flows that cross-check a cascade from
+/// several angles). Without a cache each reference would re-invoke
+/// the backend's `list` — potentially spawning a fresh `aws` or `op`
+/// CLI process each time.
+///
+/// `RegistryCache` memoizes `list` results by source [`BackendUri`],
+/// hands out shared [`Arc<CascadeLayer>`] views, and **only caches
+/// registry maps (alias → URI pointers), never secret values**.
+/// Secret values flow straight from backend to child env through the
+/// runner; nothing about this cache changes that.
+///
+/// # Scope
+///
+/// - Process-scoped. Construct a fresh [`RegistryCache::new`] per
+///   top-level command; nothing persists to disk or IPC.
+/// - No eviction. The process dies on `exec()`; the cache goes with it.
+/// - Not thread-hostile (the `&mut` borrow forces single-writer access)
+///   but also not concurrent — for v0.2 the design target is a single
+///   command dispatched sequentially, with parallelism inside each
+///   `resolve_registry` call via [`futures::future::join_all`].
+#[derive(Debug, Default)]
+pub struct RegistryCache {
+    inner: HashMap<BackendUri, Arc<CascadeLayer>>,
+}
+
+impl RegistryCache {
+    /// Construct an empty cache. Call once per `secretenv` invocation.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fetch a cascade layer for `source`. On a cache hit, returns a
+    /// zero-I/O [`Arc::clone`] of the previously-loaded layer. On a
+    /// miss, calls `backend.list(source)` exactly once, validates
+    /// every entry, stores the result under `source`, and returns a
+    /// clone of the stored `Arc`.
+    ///
+    /// # Errors
+    ///
+    /// - `source` references a backend instance not registered in
+    ///   `backends`.
+    /// - `backend.list(source)` itself fails.
+    /// - Any entry in the loaded document is not a parseable URI,
+    ///   targets an `secretenv://` alias (chained), or references an
+    ///   unregistered backend instance.
+    pub async fn fetch(
+        &mut self,
+        source: &BackendUri,
+        backends: &BackendRegistry,
+    ) -> Result<Arc<CascadeLayer>> {
+        if let Some(hit) = self.inner.get(source) {
+            return Ok(Arc::clone(hit));
+        }
+        let layer = Arc::new(fetch_layer(source, backends).await?);
+        self.inner.insert(source.clone(), Arc::clone(&layer));
+        Ok(layer)
+    }
+
+    /// Concurrently fetch any source URIs in `sources` that are not
+    /// already cached, inserting each result into the cache. Sources
+    /// already present are left untouched.
+    ///
+    /// This preserves Phase 1's within-cascade parallelism while
+    /// letting subsequent resolves within the same process hit the
+    /// cache instead of reissuing `backend.list`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RegistryCache::fetch`]. Any single failure aborts
+    /// the warm pass — callers should treat partial cache state as
+    /// untrusted when this errors.
+    pub async fn warm(&mut self, sources: &[BackendUri], backends: &BackendRegistry) -> Result<()> {
+        // Partition into already-cached + newly-needed URIs.
+        let mut seen: std::collections::HashSet<&BackendUri> = std::collections::HashSet::new();
+        let to_fetch: Vec<&BackendUri> = sources
+            .iter()
+            .filter(|src| !self.inner.contains_key(*src) && seen.insert(*src))
+            .collect();
+
+        if to_fetch.is_empty() {
+            return Ok(());
+        }
+
+        let fetches = to_fetch.iter().map(|src| async move {
+            let layer = fetch_layer(src, backends).await?;
+            Ok::<_, anyhow::Error>(((*src).clone(), Arc::new(layer)))
+        });
+        for result in join_all(fetches).await {
+            let (uri, layer) = result?;
+            self.inner.insert(uri, layer);
+        }
+        Ok(())
+    }
+
+    /// Number of cached layers. Primarily useful for tests asserting
+    /// cache-hit vs cache-miss behavior.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// `true` if no layers are cached yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
 /// Load every source in the cascade indicated by `selection` and
 /// return a validated [`AliasMap`].
 ///
-/// All sources are fetched concurrently. If any source fails (missing
-/// CLI, auth error, I/O error, malformed document) the entire call
-/// errors — silent fall-through would mask environment problems.
+/// Sources are fetched concurrently via `cache.fetch`; repeat sources
+/// within one cascade (or across resolves in the same process) hit
+/// the cache. If any source fails (missing CLI, auth error, I/O
+/// error, malformed document) the entire call errors — silent
+/// fall-through would mask environment problems.
 ///
 /// # Errors
 ///
@@ -230,17 +350,21 @@ pub async fn resolve_registry(
     config: &Config,
     selection: &RegistrySelection,
     backends: &BackendRegistry,
+    cache: &mut RegistryCache,
 ) -> Result<AliasMap> {
     let source_uris = pick_sources(config, selection)?;
 
-    // Fetch every source concurrently. Errors carry the source URI
-    // context so the caller can tell which layer failed.
-    let fetches = source_uris.iter().map(|src| fetch_layer(src, backends));
-    let results = join_all(fetches).await;
+    // Warm the cache concurrently for any un-cached source URIs,
+    // preserving Phase 1's within-cascade parallelism. After warm
+    // returns Ok, every URI in `source_uris` is present in the cache.
+    cache.warm(&source_uris, backends).await?;
 
-    let mut layers: Vec<CascadeLayer> = Vec::with_capacity(results.len());
-    for result in results {
-        layers.push(result?);
+    // Build the `AliasMap` from the cache. Each fetch here is a pure
+    // HashMap lookup + `Arc::clone` — zero I/O. Duplicate sources in
+    // a cascade yield the same `Arc` without re-invoking the backend.
+    let mut layers: Vec<Arc<CascadeLayer>> = Vec::with_capacity(source_uris.len());
+    for src in &source_uris {
+        layers.push(cache.fetch(src, backends).await?);
     }
     Ok(AliasMap::new(layers))
 }
@@ -373,11 +497,14 @@ mod tests {
 
     // ---- FakeListBackend: returns canned list entries per-instance ----
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     struct FakeListBackend {
         backend_type: String,
         instance_name: String,
         entries: Vec<(String, String)>,
         fail_list: bool,
+        list_count: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -404,6 +531,7 @@ mod tests {
             Ok(())
         }
         async fn list(&self, _: &BackendUri) -> Result<Vec<(String, String)>> {
+            self.list_count.fetch_add(1, Ordering::SeqCst);
             if self.fail_list {
                 bail!("simulated list failure for instance '{}'", self.instance_name);
             }
@@ -432,6 +560,7 @@ mod tests {
     struct FakeListFactory {
         backend_type: String,
         instances: InstanceTable,
+        list_count: Arc<AtomicUsize>,
     }
 
     impl BackendFactory for FakeListFactory {
@@ -450,6 +579,7 @@ mod tests {
                 instance_name: instance_name.to_owned(),
                 entries,
                 fail_list,
+                list_count: self.list_count.clone(),
             }))
         }
     }
@@ -458,7 +588,8 @@ mod tests {
         registries: &[(&str, &[&str])],
         backends_decl: &[(&str, &str)],
         instances: &InstanceTable,
-    ) -> (Config, BackendRegistry) {
+    ) -> (Config, BackendRegistry, Arc<AtomicUsize>) {
+        let counter = Arc::new(AtomicUsize::new(0));
         let config = Config {
             registries: registries
                 .iter()
@@ -492,11 +623,12 @@ mod tests {
                 backends.register_factory(Box::new(FakeListFactory {
                     backend_type: (*ty).to_owned(),
                     instances: instances.clone(),
+                    list_count: counter.clone(),
                 }));
             }
         }
         backends.load_from_config(&config).unwrap();
-        (config, backends)
+        (config, backends, counter)
     }
 
     fn manifest(decls: &[(&str, SecretDecl)]) -> Manifest {
@@ -506,7 +638,10 @@ mod tests {
     fn single_layer(source_uri: &str, entries: &[(&str, &str)]) -> AliasMap {
         let map =
             entries.iter().map(|(a, u)| ((*a).to_owned(), BackendUri::parse(u).unwrap())).collect();
-        AliasMap::new(vec![CascadeLayer { source: BackendUri::parse(source_uri).unwrap(), map }])
+        AliasMap::new(vec![Arc::new(CascadeLayer {
+            source: BackendUri::parse(source_uri).unwrap(),
+            map,
+        })])
     }
 
     // ---- RegistrySelection::from_str ----
@@ -540,15 +675,19 @@ mod tests {
             "local",
             &[("stripe-key", "aws-ssm-prod:///prod/stripe"), ("db-url", "local:///etc/db-url")],
         );
-        let (config, backends) = build(
+        let (config, backends, _) = build(
             &[("default", &["local:///tmp/registry.toml"])],
             &[("local", "local"), ("aws-ssm-prod", "aws-ssm")],
             &instances,
         );
-        let aliases =
-            resolve_registry(&config, &RegistrySelection::Name("default".into()), &backends)
-                .await
-                .unwrap();
+        let aliases = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(aliases.layers().len(), 1);
         assert_eq!(aliases.len(), 2);
         assert_eq!(aliases.get("stripe-key").unwrap().0.scheme, "aws-ssm-prod");
@@ -559,12 +698,17 @@ mod tests {
     #[tokio::test]
     async fn resolve_registry_by_direct_uri_selection() {
         let instances = InstanceTable::default().with("local", &[("k", "local:///etc/k")]);
-        let (_, backends) = build(&[], &[("local", "local")], &instances);
+        let (_, backends, _) = build(&[], &[("local", "local")], &instances);
         let cfg = Config::default();
         let direct = BackendUri::parse("local:///tmp/registry.toml").unwrap();
-        let aliases = resolve_registry(&cfg, &RegistrySelection::Uri(direct.clone()), &backends)
-            .await
-            .unwrap();
+        let aliases = resolve_registry(
+            &cfg,
+            &RegistrySelection::Uri(direct.clone()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(aliases.layers().len(), 1);
         assert_eq!(aliases.primary_source().raw, direct.raw);
         assert_eq!(aliases.len(), 1);
@@ -577,15 +721,19 @@ mod tests {
         let instances = InstanceTable::default()
             .with("local-a", &[("only-in-a", "local-a:///a")])
             .with("local-b", &[]);
-        let (config, backends) = build(
+        let (config, backends, _) = build(
             &[("cascade", &["local-a:///tmp/a.toml", "local-b:///tmp/b.toml"])],
             &[("local-a", "local"), ("local-b", "local")],
             &instances,
         );
-        let aliases =
-            resolve_registry(&config, &RegistrySelection::Name("cascade".into()), &backends)
-                .await
-                .unwrap();
+        let aliases = resolve_registry(
+            &config,
+            &RegistrySelection::Name("cascade".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(aliases.layers().len(), 2);
         let (target, src) = aliases.get("only-in-a").unwrap();
         assert_eq!(target.raw, "local-a:///a");
@@ -597,15 +745,19 @@ mod tests {
         let instances = InstanceTable::default()
             .with("local-a", &[])
             .with("local-b", &[("only-in-b", "local-b:///b")]);
-        let (config, backends) = build(
+        let (config, backends, _) = build(
             &[("cascade", &["local-a:///tmp/a.toml", "local-b:///tmp/b.toml"])],
             &[("local-a", "local"), ("local-b", "local")],
             &instances,
         );
-        let aliases =
-            resolve_registry(&config, &RegistrySelection::Name("cascade".into()), &backends)
-                .await
-                .unwrap();
+        let aliases = resolve_registry(
+            &config,
+            &RegistrySelection::Name("cascade".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap();
         let (target, src) = aliases.get("only-in-b").unwrap();
         assert_eq!(target.raw, "local-b:///b");
         assert_eq!(src.raw, "local-b:///tmp/b.toml");
@@ -616,15 +768,19 @@ mod tests {
         let instances = InstanceTable::default()
             .with("local-a", &[("shared", "local-a:///a")])
             .with("local-b", &[("shared", "local-b:///b")]);
-        let (config, backends) = build(
+        let (config, backends, _) = build(
             &[("cascade", &["local-a:///tmp/a.toml", "local-b:///tmp/b.toml"])],
             &[("local-a", "local"), ("local-b", "local")],
             &instances,
         );
-        let aliases =
-            resolve_registry(&config, &RegistrySelection::Name("cascade".into()), &backends)
-                .await
-                .unwrap();
+        let aliases = resolve_registry(
+            &config,
+            &RegistrySelection::Name("cascade".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap();
         let (target, src) = aliases.get("shared").unwrap();
         assert_eq!(target.raw, "local-a:///a", "layer 0 wins");
         assert_eq!(src.raw, "local-a:///tmp/a.toml");
@@ -637,11 +793,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_registry_unknown_registry_name() {
         let instances = InstanceTable::default().with("local", &[]);
-        let (config, backends) =
+        let (config, backends, _) =
             build(&[("default", &["local:///x"])], &[("local", "local")], &instances);
-        let err = resolve_registry(&config, &RegistrySelection::Name("missing".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("missing".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("missing"), "names missing: {msg}");
         assert!(msg.contains("default"), "lists available: {msg}");
@@ -650,11 +811,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_registry_source_scheme_not_registered() {
         let instances = InstanceTable::default().with("local", &[]);
-        let (config, backends) =
+        let (config, backends, _) =
             build(&[("default", &["unregistered:///foo"])], &[("local", "local")], &instances);
-        let err = resolve_registry(&config, &RegistrySelection::Name("default".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("unregistered"), "names instance: {msg}");
     }
@@ -662,11 +828,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_registry_entry_not_a_uri() {
         let instances = InstanceTable::default().with("local", &[("bad", "not-a-uri")]);
-        let (config, backends) =
+        let (config, backends, _) =
             build(&[("default", &["local:///x"])], &[("local", "local")], &instances);
-        let err = resolve_registry(&config, &RegistrySelection::Name("default".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("bad"), "names alias: {msg}");
         assert!(msg.contains("not-a-uri"), "quotes bad value: {msg}");
@@ -676,11 +847,16 @@ mod tests {
     async fn resolve_registry_entry_unknown_scheme() {
         let instances =
             InstanceTable::default().with("local", &[("alias", "nonexistent-scheme:///foo")]);
-        let (config, backends) =
+        let (config, backends, _) =
             build(&[("default", &["local:///x"])], &[("local", "local")], &instances);
-        let err = resolve_registry(&config, &RegistrySelection::Name("default".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("alias"), "names alias: {msg}");
         assert!(msg.contains("nonexistent-scheme"), "names missing instance: {msg}");
@@ -689,11 +865,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_registry_entry_is_chained_alias() {
         let instances = InstanceTable::default().with("local", &[("alias", "secretenv://another")]);
-        let (config, backends) =
+        let (config, backends, _) =
             build(&[("default", &["local:///x"])], &[("local", "local")], &instances);
-        let err = resolve_registry(&config, &RegistrySelection::Name("default".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("chained"), "specific error: {msg}");
         assert!(msg.contains("secretenv://another"), "quotes bad value: {msg}");
@@ -704,14 +885,19 @@ mod tests {
         let instances = InstanceTable::default()
             .with("local-a", &[("good", "local-a:///ok")])
             .with("local-b", &[("bad", "secretenv://chained")]);
-        let (config, backends) = build(
+        let (config, backends, _) = build(
             &[("cascade", &["local-a:///tmp/a.toml", "local-b:///tmp/b.toml"])],
             &[("local-a", "local"), ("local-b", "local")],
             &instances,
         );
-        let err = resolve_registry(&config, &RegistrySelection::Name("cascade".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("cascade".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("chained"), "names the problem: {msg}");
         assert!(msg.contains("secretenv://chained"), "quotes the bad value: {msg}");
@@ -722,14 +908,19 @@ mod tests {
         let instances = InstanceTable::default()
             .with_failing("local-a")
             .with("local-b", &[("would-have-worked", "local-b:///fine")]);
-        let (config, backends) = build(
+        let (config, backends, _) = build(
             &[("cascade", &["local-a:///tmp/a.toml", "local-b:///tmp/b.toml"])],
             &[("local-a", "local"), ("local-b", "local")],
             &instances,
         );
-        let err = resolve_registry(&config, &RegistrySelection::Name("cascade".into()), &backends)
-            .await
-            .unwrap_err();
+        let err = resolve_registry(
+            &config,
+            &RegistrySelection::Name("cascade".into()),
+            &backends,
+            &mut RegistryCache::new(),
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("local-a:///tmp/a.toml"),
@@ -780,14 +971,14 @@ mod tests {
     #[test]
     fn resolve_manifest_alias_missing_lists_all_cascade_sources() {
         let aliases = AliasMap::new(vec![
-            CascadeLayer {
+            Arc::new(CascadeLayer {
                 source: BackendUri::parse("local:///primary.toml").unwrap(),
                 map: HashMap::new(),
-            },
-            CascadeLayer {
+            }),
+            Arc::new(CascadeLayer {
                 source: BackendUri::parse("local:///fallback.toml").unwrap(),
                 map: HashMap::new(),
-            },
+            }),
         ]);
         let m =
             manifest(&[("MISSING", SecretDecl::Alias { from: "secretenv://not-there".into() })]);
@@ -815,5 +1006,122 @@ mod tests {
             resolved.iter().map(|s| s.env_var.clone()).collect::<Vec<_>>(),
             vec!["FIRST", "SECOND", "THIRD"]
         );
+    }
+
+    // ---- RegistryCache (Phase 3) ----
+
+    /// Second resolve of the same registry is a zero-I/O cache hit.
+    /// Uses a shared cache across two resolve calls; asserts the
+    /// backend's `list()` was invoked exactly once total.
+    #[tokio::test]
+    async fn cache_hit_across_resolves_avoids_second_list() {
+        let instances = InstanceTable::default().with("local", &[("k", "local:///v")]);
+        let (config, backends, list_count) =
+            build(&[("default", &["local:///tmp/r.toml"])], &[("local", "local")], &instances);
+        let mut cache = RegistryCache::new();
+
+        let a1 = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        assert_eq!(list_count.load(Ordering::SeqCst), 1, "first resolve loads the source");
+
+        let a2 = resolve_registry(
+            &config,
+            &RegistrySelection::Name("default".into()),
+            &backends,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list_count.load(Ordering::SeqCst),
+            1,
+            "second resolve is a pure cache hit — no additional list() call"
+        );
+        // Both resolves return the same single alias; equality via URI.
+        assert_eq!(a1.get("k").unwrap().0.raw, a2.get("k").unwrap().0.raw);
+    }
+
+    /// Two different source URIs are independent cache entries.
+    #[tokio::test]
+    async fn cache_different_uris_miss_each_other() {
+        let instances = InstanceTable::default().with("local", &[("k", "local:///v")]);
+        let (_, backends, list_count) = build(&[], &[("local", "local")], &instances);
+        let mut cache = RegistryCache::new();
+
+        let a = BackendUri::parse("local:///tmp/a.toml").unwrap();
+        let b = BackendUri::parse("local:///tmp/b.toml").unwrap();
+        let _ = cache.fetch(&a, &backends).await.unwrap();
+        let _ = cache.fetch(&b, &backends).await.unwrap();
+
+        assert_eq!(list_count.load(Ordering::SeqCst), 2, "distinct URIs → distinct list calls");
+        assert_eq!(cache.len(), 2);
+    }
+
+    /// Two fetches of the same URI return pointer-equal `Arc`s —
+    /// verifies that cache hits share the stored layer rather than
+    /// handing back independent clones.
+    #[tokio::test]
+    async fn cache_second_fetch_shares_arc() {
+        let instances = InstanceTable::default().with("local", &[("k", "local:///v")]);
+        let (_, backends, list_count) = build(&[], &[("local", "local")], &instances);
+        let mut cache = RegistryCache::new();
+
+        let src = BackendUri::parse("local:///tmp/r.toml").unwrap();
+        let first = cache.fetch(&src, &backends).await.unwrap();
+        let second = cache.fetch(&src, &backends).await.unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second), "same URI → same Arc");
+        assert_eq!(list_count.load(Ordering::SeqCst), 1, "only one list() call");
+    }
+
+    /// Cascade with duplicate source URIs fetches each unique URI
+    /// once, not per occurrence. Defensive regression — a user
+    /// accidentally listing the same source twice in `sources = [...]`
+    /// should not double-list.
+    #[tokio::test]
+    async fn cache_cascade_with_duplicate_source_fetches_once() {
+        let instances = InstanceTable::default().with("local", &[("k", "local:///v")]);
+        let (config, backends, list_count) = build(
+            &[("dup", &["local:///tmp/r.toml", "local:///tmp/r.toml"])],
+            &[("local", "local")],
+            &instances,
+        );
+        let mut cache = RegistryCache::new();
+        let aliases = resolve_registry(
+            &config,
+            &RegistrySelection::Name("dup".into()),
+            &backends,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(list_count.load(Ordering::SeqCst), 1, "deduped source: single list()");
+        // Cascade still shows two layers (declaration order preserved),
+        // but both reference the same cached Arc.
+        assert_eq!(aliases.layers().len(), 2);
+        assert!(Arc::ptr_eq(&aliases.layers()[0], &aliases.layers()[1]));
+    }
+
+    /// A fresh cache reports empty; after one fetch it's non-empty.
+    /// Pins the `RegistryCache::len`/`is_empty` public surface.
+    #[tokio::test]
+    async fn cache_tracks_size_accurately() {
+        let instances = InstanceTable::default().with("local", &[("k", "local:///v")]);
+        let (_, backends, _) = build(&[], &[("local", "local")], &instances);
+        let mut cache = RegistryCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        let src = BackendUri::parse("local:///tmp/r.toml").unwrap();
+        let _ = cache.fetch(&src, &backends).await.unwrap();
+        assert!(!cache.is_empty());
+        assert_eq!(cache.len(), 1);
     }
 }

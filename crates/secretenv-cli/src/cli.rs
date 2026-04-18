@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use secretenv_core::{
     resolve_manifest, resolve_registry, run as runner_run, Backend, BackendRegistry, BackendUri,
-    Config, Manifest, RegistrySelection,
+    Config, Manifest, RegistryCache, RegistrySelection,
 };
 
 /// Command-line arguments for `secretenv`.
@@ -237,7 +237,8 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
     let manifest = Manifest::load(&starting_dir)
         .context("loading secretenv.toml (walked upward from $CWD)")?;
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
-    let aliases = resolve_registry(config, &selection, backends).await?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let resolved = resolve_manifest(&manifest, &aliases)?;
     runner_run(&resolved, backends, &args.command, args.dry_run, args.verbose).await
 }
@@ -246,7 +247,8 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
 
 async fn cmd_resolve(args: &AliasArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
-    let aliases = resolve_registry(config, &selection, backends).await?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let (target, _source) = aliases.get(&args.alias).ok_or_else(|| {
         anyhow!(
             "alias '{}' not found in registry cascade [{}]",
@@ -262,7 +264,8 @@ async fn cmd_resolve(args: &AliasArgs, config: &Config, backends: &BackendRegist
 
 async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
-    let aliases = resolve_registry(config, &selection, backends).await?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let target = aliases
         .get(&args.alias)
         .ok_or_else(|| {
@@ -324,7 +327,8 @@ async fn registry_list(
     backends: &BackendRegistry,
 ) -> Result<()> {
     let selection = resolve_selection_from_env(registry, config)?;
-    let aliases = resolve_registry(config, &selection, backends).await?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     // Effective cascade view — shadowed entries are filtered out by
     // AliasMap::iter. Sort alphabetically for deterministic output.
     let mut entries: Vec<_> =
@@ -343,7 +347,8 @@ async fn registry_get(
     backends: &BackendRegistry,
 ) -> Result<()> {
     let selection = resolve_selection_from_env(registry, config)?;
-    let aliases = resolve_registry(config, &selection, backends).await?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let (target, _source) = aliases.get(alias).ok_or_else(|| {
         anyhow!("alias '{alias}' not found in registry cascade [{}]", format_sources(&aliases))
     })?;

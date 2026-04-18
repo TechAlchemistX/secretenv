@@ -17,9 +17,9 @@ use secretenv_core::{BackendRegistry, Config};
 /// `create()` fails validation of its config fields.
 pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     let mut registry = BackendRegistry::new();
-    registry.register_factory(Box::new(backend_local::LocalFactory::new()));
-    registry.register_factory(Box::new(backend_aws_ssm::AwsSsmFactory::new()));
-    registry.register_factory(Box::new(backend_1password::OnePasswordFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_local::LocalFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_aws_ssm::AwsSsmFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_1password::OnePasswordFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

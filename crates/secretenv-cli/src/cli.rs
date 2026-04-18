@@ -5,7 +5,7 @@
 //! wiring.
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -247,10 +247,14 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
 async fn cmd_resolve(args: &AliasArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
     let aliases = resolve_registry(config, &selection, backends).await?;
-    let uri = aliases.get(&args.alias).ok_or_else(|| {
-        anyhow!("alias '{}' not found in registry at '{}'", args.alias, aliases.source().raw)
+    let (target, _source) = aliases.get(&args.alias).ok_or_else(|| {
+        anyhow!(
+            "alias '{}' not found in registry cascade [{}]",
+            args.alias,
+            format_sources(&aliases)
+        )
     })?;
-    println!("{}", uri.raw);
+    println!("{}", target.raw);
     Ok(())
 }
 
@@ -259,11 +263,16 @@ async fn cmd_resolve(args: &AliasArgs, config: &Config, backends: &BackendRegist
 async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
     let aliases = resolve_registry(config, &selection, backends).await?;
-    let uri = aliases
+    let target = aliases
         .get(&args.alias)
         .ok_or_else(|| {
-            anyhow!("alias '{}' not found in registry at '{}'", args.alias, aliases.source().raw)
+            anyhow!(
+                "alias '{}' not found in registry cascade [{}]",
+                args.alias,
+                format_sources(&aliases)
+            )
         })?
+        .0
         .clone();
 
     if !args.yes && !confirm_print_secret(&args.alias)? {
@@ -271,9 +280,9 @@ async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) ->
     }
 
     let backend = backends
-        .get(&uri.scheme)
-        .ok_or_else(|| anyhow!("no backend instance '{}' is configured", uri.scheme))?;
-    let value = backend.get(&uri).await?;
+        .get(&target.scheme)
+        .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
+    let value = backend.get(&target).await?;
     println!("{value}");
     Ok(())
 }
@@ -316,7 +325,10 @@ async fn registry_list(
 ) -> Result<()> {
     let selection = resolve_selection_from_env(registry, config)?;
     let aliases = resolve_registry(config, &selection, backends).await?;
-    let mut entries: Vec<_> = aliases.iter().map(|(a, u)| (a.clone(), u.raw.clone())).collect();
+    // Effective cascade view — shadowed entries are filtered out by
+    // AliasMap::iter. Sort alphabetically for deterministic output.
+    let mut entries: Vec<_> =
+        aliases.iter().map(|(a, target, _source)| (a.clone(), target.raw.clone())).collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     for (alias, uri) in entries {
         println!("{alias} = {uri}");
@@ -332,10 +344,10 @@ async fn registry_get(
 ) -> Result<()> {
     let selection = resolve_selection_from_env(registry, config)?;
     let aliases = resolve_registry(config, &selection, backends).await?;
-    let uri = aliases.get(alias).ok_or_else(|| {
-        anyhow!("alias '{alias}' not found in registry at '{}'", aliases.source().raw)
+    let (target, _source) = aliases.get(alias).ok_or_else(|| {
+        anyhow!("alias '{alias}' not found in registry cascade [{}]", format_sources(&aliases))
     })?;
-    println!("{}", uri.raw);
+    println!("{}", target.raw);
     Ok(())
 }
 
@@ -364,7 +376,9 @@ async fn registry_set(
         .list(&source_uri)
         .await
         .with_context(|| format!("reading registry document at '{}'", source_uri.raw))?;
-    let mut map: HashMap<String, String> = current.into_iter().collect();
+    // BTreeMap: deterministic ordering on write. HashMap in v0.1
+    // produced non-reproducible diffs on every `registry set`.
+    let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.insert(alias.to_owned(), target_uri.to_owned());
     let serialized = serialize_registry(backend.backend_type(), &map)?;
     backend
@@ -386,7 +400,7 @@ async fn registry_unset(
         .list(&source_uri)
         .await
         .with_context(|| format!("reading registry document at '{}'", source_uri.raw))?;
-    let mut map: HashMap<String, String> = current.into_iter().collect();
+    let mut map: BTreeMap<String, String> = current.into_iter().collect();
     if map.remove(alias).is_none() {
         bail!("alias '{alias}' not found in registry at '{}'", source_uri.raw);
     }
@@ -430,9 +444,13 @@ fn pick_registry_source<'a>(
 }
 
 /// Serialize `map` in whatever format `backend_type` uses for its
-/// registry documents. Unknown types error — v0.1 supports local,
+/// registry documents. Unknown types error — v0.2 supports local,
 /// aws-ssm, 1password only.
-fn serialize_registry(backend_type: &str, map: &HashMap<String, String>) -> Result<String> {
+///
+/// A `BTreeMap` is required (not just preferred): it guarantees
+/// alphabetical key order, so `registry set`/`unset` writes are
+/// deterministic and diff-friendly.
+fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Result<String> {
     match backend_type {
         "local" | "1password" => toml::to_string(map).with_context(|| {
             format!("serializing registry as TOML for backend type '{backend_type}'")
@@ -441,9 +459,15 @@ fn serialize_registry(backend_type: &str, map: &HashMap<String, String>) -> Resu
             format!("serializing registry as JSON for backend type '{backend_type}'")
         }),
         other => Err(anyhow!(
-            "writing registry documents through backend type '{other}' is not supported in v0.1"
+            "writing registry documents through backend type '{other}' is not supported"
         )),
     }
+}
+
+/// Join every cascade source URI into a comma-separated list for
+/// error messages. Used when an alias is not found in any layer.
+fn format_sources(aliases: &secretenv_core::AliasMap) -> String {
+    aliases.sources().map(|u| u.raw.as_str()).collect::<Vec<_>>().join(", ")
 }
 
 // ---- setup --------------------------------------------------------------
@@ -549,7 +573,7 @@ mod tests {
 
     #[test]
     fn serialize_registry_produces_toml_for_local() {
-        let mut m = HashMap::new();
+        let mut m = BTreeMap::new();
         m.insert("k".to_owned(), "aws-ssm:///v".to_owned());
         let s = serialize_registry("local", &m).unwrap();
         assert!(s.contains("k = \"aws-ssm:///v\""), "TOML shape: {s}");
@@ -557,7 +581,7 @@ mod tests {
 
     #[test]
     fn serialize_registry_produces_json_for_aws_ssm() {
-        let mut m = HashMap::new();
+        let mut m = BTreeMap::new();
         m.insert("k".to_owned(), "aws-ssm:///v".to_owned());
         let s = serialize_registry("aws-ssm", &m).unwrap();
         assert!(s.starts_with('{'), "JSON shape: {s}");
@@ -566,8 +590,31 @@ mod tests {
 
     #[test]
     fn serialize_registry_rejects_unknown_type() {
-        let m = HashMap::new();
+        let m = BTreeMap::new();
         let err = serialize_registry("unknown-backend", &m).unwrap_err();
         assert!(format!("{err:#}").contains("not supported"));
+    }
+
+    /// `BTreeMap` must produce alphabetical output for both TOML and
+    /// JSON, independent of insertion order. This is the v0.2 CV-4
+    /// determinism fix.
+    #[test]
+    fn serialize_registry_is_alphabetical_regardless_of_insertion_order() {
+        let mut m = BTreeMap::new();
+        m.insert("zeta".to_owned(), "local:///z".to_owned());
+        m.insert("alpha".to_owned(), "local:///a".to_owned());
+        m.insert("mu".to_owned(), "local:///m".to_owned());
+
+        let toml_out = serialize_registry("local", &m).unwrap();
+        let alpha = toml_out.find("alpha").unwrap();
+        let mu = toml_out.find("mu").unwrap();
+        let zeta = toml_out.find("zeta").unwrap();
+        assert!(alpha < mu && mu < zeta, "TOML not alphabetical: {toml_out}");
+
+        let json_out = serialize_registry("aws-ssm", &m).unwrap();
+        let j_alpha = json_out.find("alpha").unwrap();
+        let j_mu = json_out.find("mu").unwrap();
+        let j_zeta = json_out.find("zeta").unwrap();
+        assert!(j_alpha < j_mu && j_mu < j_zeta, "JSON not alphabetical: {json_out}");
     }
 }

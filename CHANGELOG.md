@@ -10,6 +10,17 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Added
 
+- **Registry cascades.** `[registries.<name>]` now accepts multiple
+  `sources = [...]` entries. Lookup is first-match-wins from `sources[0]`
+  downward; `sources[0]` remains the single write target for
+  `registry set/unset`. All sources are fetched concurrently via
+  `futures::future::join_all`; any source failure fails the whole
+  resolve (silent fall-through would hide environment problems).
+- `secretenv_core::CascadeLayer` public type exposing per-source
+  `{source, map}` for future doctor/verbose reporting.
+- `AliasMap::get` now returns `(target_uri, source_uri)` so callers can
+  tell which cascade layer an alias was resolved from.
+- `AliasMap::primary_source`, `layers`, `sources` accessors.
 - `BackendUri.fragment: Option<String>` — parses the `#<fragment>` suffix
   of `scheme://path#fragment` URIs. Not yet consumed by any backend; v0.2
   Phase 6 (aws-secrets) will use it for `#json-key` extraction (RE-2).
@@ -23,6 +34,13 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Changed
 
+- `ResolvedSource::Uri` is now a struct variant `{ target, source }`
+  instead of `Uri(BackendUri)`. The added `source` field carries the
+  cascade layer URI the alias resolved from, for future `--verbose`
+  and `doctor --extensive` surfacing.
+- `registry set`/`unset` writes use `BTreeMap<String, String>` internally
+  so alias output is alphabetically sorted and deterministic across
+  runs — no more spurious diffs on every write (CV-4).
 - `BackendFactory::create` signature: `config: &HashMap<String, toml::Value>`
   (was `config: HashMap<String, String>` by value). Borrowed config removes
   a per-load clone and matches core's borrowed-config convention (RE-5).

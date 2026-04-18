@@ -125,39 +125,39 @@ pub async fn build_env(
                     value: Zeroizing::new(value.clone()),
                 });
             }
-            ResolvedSource::Uri(uri) => {
+            ResolvedSource::Uri { target, source: _ } => {
                 if dry_run {
-                    println!("{} ← {}", secret.env_var, uri.raw);
+                    println!("{} ← {}", secret.env_var, target.raw);
                     continue;
                 }
                 if verbose {
-                    // Log scheme (instance name) only — never `uri.raw`
+                    // Log scheme (instance name) only — never `target.raw`
                     // which contains the full backend path and would
                     // leak registry topology into CI build logs on any
                     // `--verbose` run. Full URI is reserved for
                     // `--dry-run` output, which is user-explicit.
                     eprintln!(
                         "secretenv: fetching {} from instance '{}'",
-                        secret.env_var, uri.scheme
+                        secret.env_var, target.scheme
                     );
                 }
-                let backend: &dyn Backend = backends.get(&uri.scheme).ok_or_else(|| {
+                let backend: &dyn Backend = backends.get(&target.scheme).ok_or_else(|| {
                     anyhow!(
                         "secret '{}': no backend instance '{}' is registered — \
                          add it to [backends.{}] in config.toml",
                         secret.env_var,
-                        uri.scheme,
-                        uri.scheme
+                        target.scheme,
+                        target.scheme
                     )
                 })?;
-                let op_label = format!("{}::get (secret '{}')", uri.scheme, secret.env_var);
+                let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
                 let value =
-                    crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(uri))
+                    crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(target))
                         .await
                         .with_context(|| {
                             format!(
                                 "secret '{}': failed to fetch from '{}'",
-                                secret.env_var, uri.raw
+                                secret.env_var, target.raw
                             )
                         })?;
                 env.push(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) });
@@ -322,9 +322,12 @@ mod tests {
     }
 
     fn secret_alias(env_var: &str, uri: &str) -> ResolvedSecret {
+        let parsed = BackendUri::parse(uri).unwrap();
         ResolvedSecret {
             env_var: env_var.to_owned(),
-            source: ResolvedSource::Uri(BackendUri::parse(uri).unwrap()),
+            // Tests don't exercise cascade-source surfacing; use the
+            // target URI as the source placeholder.
+            source: ResolvedSource::Uri { target: parsed.clone(), source: parsed },
         }
     }
 

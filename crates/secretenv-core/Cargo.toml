@@ -16,6 +16,7 @@ readme.workspace       = true
 anyhow.workspace      = true
 async-trait.workspace = true
 directories.workspace = true
+futures.workspace     = true
 indexmap.workspace    = true
 serde.workspace       = true
 thiserror.workspace   = true

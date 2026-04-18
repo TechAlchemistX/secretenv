@@ -374,10 +374,13 @@ fn setup_written_config_is_usable_by_resolve() {
 fn setup_rejects_unknown_scheme() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("config.toml");
+    // `gcp-prod://` is a genuinely-unknown scheme post-Phase-5 (vault
+    // now maps to the vault backend). Use gcp as the stand-in for
+    // "a scheme we don't support yet".
     secretenv()
         .current_dir(dir.path())
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["setup", "vault-prod:///secrets/reg", "--skip-doctor"])
+        .args(["setup", "gcp-prod:///secrets/reg", "--skip-doctor"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown backend scheme"));

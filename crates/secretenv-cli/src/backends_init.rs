@@ -1,4 +1,4 @@
-//! Build a [`BackendRegistry`] pre-populated with every v0.1 backend
+//! Build a [`BackendRegistry`] pre-populated with every shipped backend
 //! factory + instances loaded from `config`.
 //!
 //! Shared between `main.rs` (startup wiring) and `setup.rs` (post-write
@@ -8,8 +8,9 @@
 use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
-/// Register all three v0.1 factories (`local`, `aws-ssm`, `1password`)
-/// and instantiate the backends declared in `config`.
+/// Register every compiled-in backend factory (`local`, `aws-ssm`,
+/// `1password`, `vault`) and instantiate the backends declared in
+/// `config`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a
@@ -20,6 +21,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_local::LocalFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_aws_ssm::AwsSsmFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_1password::OnePasswordFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_vault::VaultFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

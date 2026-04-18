@@ -31,6 +31,10 @@ pub struct SetupOpts {
     pub profile: Option<String>,
     /// 1Password account shorthand or URL — optional, `1password` only.
     pub account: Option<String>,
+    /// Vault address — required when the URI scheme resolves to `vault`.
+    pub vault_address: Option<String>,
+    /// Vault Enterprise namespace — optional, `vault` only.
+    pub vault_namespace: Option<String>,
     /// Overwrite an existing config.toml instead of erroring.
     pub force: bool,
     /// Skip the post-write `doctor` run.
@@ -63,6 +67,13 @@ pub async fn run_setup(opts: &SetupOpts) -> Result<()> {
     if backend_type == "aws-ssm" && opts.region.is_none() {
         bail!(
             "aws-ssm backends require --region (e.g. `secretenv setup {} --region us-east-1`)",
+            opts.registry_uri
+        );
+    }
+    if backend_type == "vault" && opts.vault_address.is_none() {
+        bail!(
+            "vault backends require --vault-address \
+             (e.g. `secretenv setup {} --vault-address https://vault.company.com`)",
             opts.registry_uri
         );
     }
@@ -107,9 +118,9 @@ pub async fn run_setup(opts: &SetupOpts) -> Result<()> {
 }
 
 /// Map a URI scheme to its backend type. Accepts exact matches
-/// (`local`, `aws-ssm`, `1password`) and dash-suffixed forms
-/// (`aws-ssm-prod`, `1password-personal`) since instance names can
-/// carry a suffix to distinguish credentials.
+/// (`local`, `aws-ssm`, `1password`, `vault`) and dash-suffixed forms
+/// (`aws-ssm-prod`, `1password-personal`, `vault-eng`) since instance
+/// names can carry a suffix to distinguish credentials.
 fn backend_type_from_scheme(scheme: &str) -> Result<&'static str> {
     if scheme == "local" {
         Ok("local")
@@ -117,10 +128,12 @@ fn backend_type_from_scheme(scheme: &str) -> Result<&'static str> {
         Ok("aws-ssm")
     } else if scheme == "1password" || scheme.starts_with("1password-") {
         Ok("1password")
+    } else if scheme == "vault" || scheme.starts_with("vault-") {
+        Ok("vault")
     } else {
         bail!(
-            "unknown backend scheme '{scheme}' — v0.1 supports local, aws-ssm(-*), \
-             1password(-*). Did you mean one of these?"
+            "unknown backend scheme '{scheme}' — supported: local, aws-ssm(-*), \
+             1password(-*), vault(-*). Did you mean one of these?"
         )
     }
 }
@@ -164,6 +177,14 @@ fn build_config_toml(uri: &BackendUri, backend_type: &str, opts: &SetupOpts) -> 
                 writeln!(out, "op_account = {}", toml_string(a)).unwrap();
             }
         }
+        "vault" => {
+            if let Some(addr) = &opts.vault_address {
+                writeln!(out, "vault_address = {}", toml_string(addr)).unwrap();
+            }
+            if let Some(ns) = &opts.vault_namespace {
+                writeln!(out, "vault_namespace = {}", toml_string(ns)).unwrap();
+            }
+        }
         _ => {}
     }
 
@@ -196,6 +217,8 @@ mod tests {
             region: None,
             profile: None,
             account: None,
+            vault_address: None,
+            vault_namespace: None,
             force: false,
             skip_doctor: true,
             target: None,
@@ -228,8 +251,17 @@ mod tests {
     }
 
     #[test]
+    fn scheme_vault_bare_and_suffixed() {
+        assert_eq!(backend_type_from_scheme("vault").unwrap(), "vault");
+        assert_eq!(backend_type_from_scheme("vault-eng").unwrap(), "vault");
+        assert_eq!(backend_type_from_scheme("vault-payments").unwrap(), "vault");
+    }
+
+    #[test]
     fn scheme_unknown_errors() {
-        let err = backend_type_from_scheme("vault-prod").unwrap_err();
+        // Keep a genuinely-unknown scheme here; `vault-prod` is no
+        // longer unknown post-v0.2 Phase 5.
+        let err = backend_type_from_scheme("gcp-prod").unwrap_err();
         assert!(format!("{err:#}").contains("unknown backend scheme"));
     }
 

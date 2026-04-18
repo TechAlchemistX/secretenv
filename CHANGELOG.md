@@ -10,6 +10,23 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Added
 
+- **HashiCorp Vault backend** (`type = "vault"`). Wraps the `vault` CLI
+  — every auth flow the CLI supports (`VAULT_TOKEN`, `AppRole`, OIDC,
+  Kubernetes, AWS IAM) works transparently with no secretenv auth
+  surface. URI shape: `vault-<instance>://<mount>/<path>`. Uses the
+  unified `vault kv` CLI so KV v1 and KV v2 mounts work identically
+  (the CLI handles `data/` segment injection for v2 internally). `get`
+  uses `-field=value` for trim-one-newline single-value semantics;
+  `set` pipes the secret through child stdin via `value=-` (CV-1
+  discipline — the secret never appears on argv). Level 2 doctor
+  check uses `vault token lookup` (vs `vault status` which succeeds
+  with no token). Supports Vault Enterprise namespaces via optional
+  `vault_namespace` config field — the `-namespace` flag is omitted
+  when unset because open-source Vault rejects it. 25 mock-CLI tests
+  cover every row of the spec's harness table.
+- `secretenv setup` gains `--vault-address` and `--vault-namespace`
+  flags. Scheme prefixes `vault` and `vault-*` map to the vault
+  backend type.
 - **Session-scoped registry cache.** New `secretenv_core::RegistryCache`
   memoizes `backend.list(source)` results by source URI for the life of
   a process. `resolve_registry` takes `&mut RegistryCache` and only

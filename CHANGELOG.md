@@ -10,9 +10,66 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Added
 
+- `BackendUri.fragment: Option<String>` — parses the `#<fragment>` suffix
+  of `scheme://path#fragment` URIs. Not yet consumed by any backend; v0.2
+  Phase 6 (aws-secrets) will use it for `#json-key` extraction (RE-2).
+- `secretenv_core::with_timeout` helper and `DEFAULT_GET_TIMEOUT` (30s) /
+  `DEFAULT_CHECK_TIMEOUT` (10s) constants. Backend ops now have deadlines;
+  `doctor` and `run` cannot hang indefinitely on a wedged CLI (CV-5).
+- `BackendConfig.raw_fields` now preserves typed TOML values
+  (`HashMap<String, toml::Value>` instead of `HashMap<String, String>`).
+  Factories can read `as_str`, `as_integer`, `as_bool`, `as_array` — v0.2+
+  backends get typed config fields without a later ABI break (RE-1).
+
+### Changed
+
+- `BackendFactory::create` signature: `config: &HashMap<String, toml::Value>`
+  (was `config: HashMap<String, String>` by value). Borrowed config removes
+  a per-load clone and matches core's borrowed-config convention (RE-5).
+- `Manifest::find_upward` stops at project-root sentinels (`.git`, `.hg`,
+  `.svn`, `.secretenv-root`). A hostile `secretenv.toml` dropped upstream
+  of the user's project can no longer hijack alias resolution (CV-6).
+  Falls back to v0.1 behavior when no sentinel exists anywhere.
+- `--verbose` stderr output omits full URI paths — only env-var + backend
+  instance name. Registry topology no longer leaks into CI build logs on
+  `--verbose` runs (CV-7). Full URIs remain available under `--dry-run`.
+
+### Fixed
+
+- **AWS SSM `set`** pipes secret values via child-process stdin using
+  `--value file:///dev/stdin`. The secret never appears on argv, closing
+  the `/proc/<pid>/cmdline` local-user exposure window (CV-1 — critical).
+- **1Password `set`** documents its remaining argv exposure with an
+  inline comment + stderr warning on every call. Full stdin fix pending
+  a v0.3 follow-up with `op` CLI version gating (CV-1 — partial).
+- `BackendUri::parse` rejects invalid scheme characters (anything outside
+  `[a-zA-Z0-9][a-zA-Z0-9_-]*`), NUL bytes in path/fragment, and ASCII
+  control characters except tab. Warns on Unicode bidi-override codepoints
+  without rejecting them (CV-3).
+- `SECRETENV_REGISTRY` and `SECRETENV_CONFIG` scrubbed from the child
+  process environment before `exec()`/`spawn`. CLI-layer config provenance
+  no longer leaks to the child (SEC-1).
+
+### Security
+
+- Phase 0.5 security preflight complete. See
+  `kb/wiki/reviews/pre-v0.2-review.md` for the three-reviewer audit that
+  identified the above items, and `kb/wiki/build-plan-v0.2.md §Phase 0.5`
+  for the subtask breakdown. Remaining audit items are addressed in the
+  Phase 1+ feature work.
+
+### Internal
+
 - v0.2 development baseline: branch `feat/v0.2-prep` opened, workspace bumped
   to 0.2.0, roadmap updated to reflect the Vault + AWS Secrets Manager
-  dual-backend release. See `kb/wiki/build-plan-v0.2.md` for the phase plan.
+  dual-backend release.
+- `tokio` promoted from dev-dep to runtime dep on `secretenv-core` (needed
+  for `tokio::time::timeout` in the timeout wrapper). Workspace tokio
+  features gain `"time"`.
+- `tracing` added as a direct runtime dep on `secretenv-core` (bidi-override
+  warning) and `secretenv-backend-1password` (argv-exposure warning).
+- `toml` added as a direct runtime dep on `secretenv-backend-aws-ssm` (now
+  references `toml::Value` in the factory signature).
 
 ## [0.1.1] - 2026-04-17
 

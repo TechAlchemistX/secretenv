@@ -274,12 +274,22 @@ impl Backend for AwsSsmBackend {
         })?;
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(value.as_bytes()).await.with_context(|| {
-                format!(
-                    "aws-ssm backend '{}': failed to write secret value to aws stdin",
-                    self.instance_name
-                )
-            })?;
+            match stdin.write_all(value.as_bytes()).await {
+                Ok(()) => {}
+                // Linux produces EPIPE if the child exits before reading
+                // stdin; macOS's larger pipe buffer can swallow the write
+                // silently. Either way, the real signal is the child's
+                // exit status, which `wait_with_output` reports below.
+                // A legitimately-failed `aws ssm put-parameter` will
+                // still surface via the non-zero exit path + stderr.
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => {
+                    return Err(anyhow::Error::new(e).context(format!(
+                        "aws-ssm backend '{}': failed to write secret value to aws stdin",
+                        self.instance_name
+                    )));
+                }
+            }
             stdin.shutdown().await.ok();
             drop(stdin);
         }

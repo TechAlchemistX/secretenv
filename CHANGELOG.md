@@ -8,6 +8,25 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.6]
+
+**Headline:** internal test-infrastructure release — aws-secrets backend's mock-CLI tests migrated to `StrictMock`, closing out the v0.2.x strict-mode retrofit series. **The first prod-code bug surfaced by the strict retrofit lands alongside the migration**: `AwsSecretsBackend::get()` was calling `aws secretsmanager get-secret-value` BEFORE validating the fragment directive, meaning a URI like `aws-secrets-prod:///myapp/cfg#password` (legacy shorthand, rejected since v0.2.1) would make a wasted AWS API call before surfacing the local grammar error. The v0.2 permissive-mock tests silently masked the extra call. Fixed: fragment validation now happens up-front, no AWS call occurs for invalid-grammar URIs.
+
+### Fixed
+
+- **`secretenv-backend-aws-secrets`:** `get()` now validates the fragment directive (`#json-key=<field>`, shorthand rejection, unsupported-directive rejection) BEFORE invoking `aws secretsmanager get-secret-value`. Pre-fix, an invalid fragment (`#password`, `#version=5`, or `#json-key=X,version=5`) caused a round-trip to AWS — wasting an IAM permission check, API latency, and potentially leaking an access pattern — before surfacing the local error. Caught by v0.2.6 strict-mode mocks with empty-rule installations (`StrictMock::new("aws").install(...)`) that reject any AWS call with exit 97; the v0.2 permissive-mock form returned success on the call, silently masking the extra round-trip. No end-user-visible behavior change for valid URIs.
+
+### Changed
+
+- **Internal:** all 25 mock-using tests in `secretenv-backend-aws-secrets` converted from the v0.2 raw `install_mock_aws(body)` API to declarative `StrictMock::new("aws").on(argv, Response).install(...)`. Every `secretsmanager get-secret-value`, `secretsmanager put-secret-value`, `secretsmanager delete-secret`, `sts get-caller-identity`, and `aws --version` argv is now asserted exactly. PR #33 BUG-2 (leading-slash on `--secret-id`) is **implicitly locked** across every migrated test — the declared argv carries the POST-STRIP secret ID; any regression would fail with a `strict-mock-no-match` diagnostic.
+- **Internal:** argv-builder helpers `get_argv(secret_id)` / `put_argv(secret_id)` / `delete_argv(secret_id)` + `STS_ARGV_NO_PROFILE` const keep test bodies concise and make "what argv changed?" diffs narrow when a real shape change ships.
+- **Internal:** `set_passes_secret_value_via_stdin_not_argv` rewritten using `Response::success_with_stdin` — CV-1 discipline is now a typed harness assertion rather than a log-file grep (parallel to aws-ssm v0.2.3 + vault v0.2.5).
+- **Internal:** two new drift-catch regression-lock tests:
+  - `get_drift_catch_rejects_leading_slash_on_secret_id` — POSITIVE BUG-2 lock: declares argv with the pre-fix slash-prefixed form; post-fix code diverges, strict harness emits exit 97 surfaced to the caller.
+  - `set_drift_catch_rejects_secret_leaking_to_argv` — CV-1 parallel.
+- **Internal:** three `command_always_passes_region` / `command_omits_profile` / `command_includes_profile` v0.2 log-file argv-shape tests collapsed: `--region us-east-1` is now implicitly asserted in every migrated test through the `get_argv` / `put_argv` / `delete_argv` helpers; profile-absent and profile-present cases retained as dedicated tests.
+- **Internal:** v0.2.1 shorthand-reject and unsupported-directive-reject tests (`get_rejects_legacy_shorthand_fragment_with_migration_hint`, `get_rejects_unsupported_directive_with_enumerated_list`) now use empty-rule mocks — any AWS call exits 97 — making "this error originates in the fragment parser before any AWS call" a typed assertion. Both test bodies include an explicit `!msg.contains("strict-mock-no-match")` check to verify the error comes from the backend's grammar code, not the harness.
+
 ## [0.2.5]
 
 **Headline:** internal test-infrastructure release — vault backend's mock-CLI tests migrated to `StrictMock`, and PR #33 BUG-1 (the flag-order fix: address/namespace routed via `VAULT_ADDR` / `VAULT_NAMESPACE` env vars rather than argv flags) is now a typed regression lock on every vault argv. No user-facing CLI changes; no prod bugs surfaced.

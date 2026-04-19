@@ -273,43 +273,57 @@ impl Backend for AwsSecretsBackend {
     }
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
-        let raw = self.get_raw(uri).await?;
-        let Some(directives) = uri.fragment_directives()? else {
-            // No fragment: return the raw SecretString verbatim.
-            return Ok(raw);
+        // Validate the fragment directive BEFORE any AWS API call. An
+        // invalid fragment (legacy shorthand like `#password`, or an
+        // unsupported directive like `#version=5`) is a local
+        // grammar error — shelling out to AWS first would leak access
+        // patterns, waste IAM permissions + latency + cost, and then
+        // surface an error the caller could have learned about
+        // instantly. Caught by the v0.2.6 strict-mode retrofit (the
+        // v0.2 permissive-mock tests silently masked the extra call).
+        let json_key: Option<String> = match uri.fragment_directives()? {
+            None => None,
+            Some(mut directives) => {
+                if !directives.contains_key("json-key") {
+                    let mut unsupported: Vec<&str> =
+                        directives.keys().map(String::as_str).collect();
+                    unsupported.sort_unstable();
+                    bail!(
+                        "aws-secrets backend '{}': URI '{}' has unsupported fragment \
+                         directive(s) [{}]; aws-secrets recognizes only 'json-key' \
+                         (example: '#json-key=password')",
+                        self.instance_name,
+                        uri.raw,
+                        unsupported.join(", ")
+                    );
+                }
+                if directives.len() > 1 {
+                    let mut extra: Vec<&str> = directives
+                        .keys()
+                        .filter(|k| k.as_str() != "json-key")
+                        .map(String::as_str)
+                        .collect();
+                    extra.sort_unstable();
+                    bail!(
+                        "aws-secrets backend '{}': URI '{}' has unsupported directive(s) \
+                         [{}] alongside 'json-key'; aws-secrets recognizes only 'json-key'",
+                        self.instance_name,
+                        uri.raw,
+                        extra.join(", ")
+                    );
+                }
+                // Safe: we already verified presence above.
+                let Some(key) = directives.remove("json-key") else {
+                    unreachable!("json-key presence was checked above")
+                };
+                Some(key)
+            }
         };
-        // The only directive aws-secrets recognizes is `json-key`. Any
-        // other key — alone or alongside `json-key` — is an error. We
-        // list every unsupported key in one message rather than drip-
-        // feeding them, so a caller sees all the problems at once.
-        let key = directives.get("json-key").ok_or_else(|| {
-            let mut unsupported: Vec<&str> = directives.keys().map(String::as_str).collect();
-            unsupported.sort_unstable();
-            anyhow!(
-                "aws-secrets backend '{}': URI '{}' has unsupported fragment \
-                 directive(s) [{}]; aws-secrets recognizes only 'json-key' \
-                 (example: '#json-key=password')",
-                self.instance_name,
-                uri.raw,
-                unsupported.join(", ")
-            )
-        })?;
-        if directives.len() > 1 {
-            let mut extra: Vec<&str> = directives
-                .keys()
-                .filter(|k| k.as_str() != "json-key")
-                .map(String::as_str)
-                .collect();
-            extra.sort_unstable();
-            bail!(
-                "aws-secrets backend '{}': URI '{}' has unsupported directive(s) \
-                 [{}] alongside 'json-key'; aws-secrets recognizes only 'json-key'",
-                self.instance_name,
-                uri.raw,
-                extra.join(", ")
-            );
+        let raw = self.get_raw(uri).await?;
+        match json_key {
+            None => Ok(raw),
+            Some(key) => extract_json_field(&self.instance_name, uri, &raw, &key),
         }
-        extract_json_field(&self.instance_name, uri, &raw, key)
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -521,19 +535,18 @@ fn optional_string(
 mod tests {
     use std::path::Path;
 
+    use secretenv_testing::{Response, StrictMock};
     use tempfile::TempDir;
 
     use super::*;
 
-    fn install_mock_aws(dir: &TempDir, body: &str) -> std::path::PathBuf {
-        secretenv_testing::install_mock_aws(dir.path(), body)
-    }
+    const REGION: &str = "us-east-1";
 
     fn backend(mock_path: &Path, profile: Option<&str>) -> AwsSecretsBackend {
         AwsSecretsBackend {
             backend_type: "aws-secrets",
             instance_name: "aws-secrets-prod".to_owned(),
-            aws_region: "us-east-1".to_owned(),
+            aws_region: REGION.to_owned(),
             aws_profile: profile.map(ToOwned::to_owned),
             aws_bin: mock_path.to_str().unwrap().to_owned(),
         }
@@ -543,11 +556,63 @@ mod tests {
         AwsSecretsBackend {
             backend_type: "aws-secrets",
             instance_name: "aws-secrets-prod".to_owned(),
-            aws_region: "us-east-1".to_owned(),
+            aws_region: REGION.to_owned(),
             aws_profile: None,
             aws_bin: "/definitely/not/a/real/path/to/aws-binary-XYZ".to_owned(),
         }
     }
+
+    /// Argv for `get-secret-value --secret-id <ID> --query SecretString
+    /// --output text --region us-east-1`. Secret ID is the PR #33 BUG-2
+    /// canonical form: NO leading slash. Any test whose URI carries a
+    /// `:///<path>` (triple-slash) form implicitly exercises the slash
+    /// stripping — if a regression reintroduced the slash on argv, the
+    /// strict argv match would fail with a clear diagnostic.
+    fn get_argv(secret_id: &str) -> [&str; 10] {
+        [
+            "secretsmanager",
+            "get-secret-value",
+            "--secret-id",
+            secret_id,
+            "--query",
+            "SecretString",
+            "--output",
+            "text",
+            "--region",
+            REGION,
+        ]
+    }
+
+    /// Argv for `put-secret-value --secret-id <ID> --secret-string
+    /// file:///dev/stdin --region us-east-1`. The secret value goes via
+    /// stdin (CV-1 discipline), NOT this argv.
+    fn put_argv(secret_id: &str) -> [&str; 8] {
+        [
+            "secretsmanager",
+            "put-secret-value",
+            "--secret-id",
+            secret_id,
+            "--secret-string",
+            "file:///dev/stdin",
+            "--region",
+            REGION,
+        ]
+    }
+
+    fn delete_argv(secret_id: &str) -> [&str; 7] {
+        [
+            "secretsmanager",
+            "delete-secret",
+            "--secret-id",
+            secret_id,
+            "--force-delete-without-recovery",
+            "--region",
+            REGION,
+        ]
+    }
+
+    const STS_ARGV_NO_PROFILE: &[&str] =
+        &["sts", "get-caller-identity", "--output", "json", "--region", REGION];
 
     // ---- Factory ----
 
@@ -606,20 +671,15 @@ mod tests {
     #[tokio::test]
     async fn check_level1_parses_v2_version_from_stdout() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "aws-cli/2.15.0 Python/3.11.8 Darwin/23.0"
-  exit 0
-fi
-if [ "$1 $2" = "sts get-caller-identity" ]; then
-  echo '{"Account":"123456789","Arn":"arn:aws:iam::123456789:user/dev","UserId":"AIDAI"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&["--version"], Response::success("aws-cli/2.15.0 Python/3.11.8 Darwin/23.0\n"))
+            .on(
+                STS_ARGV_NO_PROFILE,
+                Response::success(
+                    "{\"Account\":\"123456789\",\"Arn\":\"arn:aws:iam::123456789:user/dev\",\"UserId\":\"AIDAI\"}\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::Ok { cli_version, identity } => {
@@ -636,20 +696,18 @@ exit 1
     async fn check_level1_parses_v1_version_from_stderr() {
         // AWS CLI v1 prints --version to stderr.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "aws-cli/1.33.0 Python/3.10.12 Linux/5.15" >&2
-  exit 0
-fi
-if [ "$1 $2" = "sts get-caller-identity" ]; then
-  echo '{"Account":"1","Arn":"arn:aws:iam::1:user/x","UserId":"u"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &["--version"],
+                Response::success("").with_stderr("aws-cli/1.33.0 Python/3.10.12 Linux/5.15\n"),
+            )
+            .on(
+                STS_ARGV_NO_PROFILE,
+                Response::success(
+                    "{\"Account\":\"1\",\"Arn\":\"arn:aws:iam::1:user/x\",\"UserId\":\"u\"}\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::Ok { cli_version, .. } => {
@@ -662,20 +720,15 @@ exit 1
     #[tokio::test]
     async fn check_level2_not_authenticated_on_expired_sso() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "aws-cli/2.15.0"
-  exit 0
-fi
-if [ "$1 $2" = "sts get-caller-identity" ]; then
-  echo "Error loading SSO Token: Token for dev has expired" >&2
-  exit 253
-fi
-exit 1
-"#,
-        );
+        let sts_argv_dev: Vec<&str> =
+            STS_ARGV_NO_PROFILE.iter().copied().chain(["--profile", "dev"]).collect();
+        let mock = StrictMock::new("aws")
+            .on(&["--version"], Response::success("aws-cli/2.15.0\n"))
+            .on(
+                &sts_argv_dev,
+                Response::failure(253, "Error loading SSO Token: Token for dev has expired\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, Some("dev"));
         match b.check().await {
             BackendStatus::NotAuthenticated { hint } => {
@@ -687,20 +740,20 @@ exit 1
     }
 
     // ---- get — plain value ----
+    //
+    // PR #33 BUG-2 regression lock is implicit on every one of these
+    // tests: the URI carries a `:///<path>` triple-slash form whose
+    // `path` includes the leading slash; `secret_id()` strips it; the
+    // declared argv carries the POST-STRIP form. Any regression that
+    // re-introduced the slash would diverge from the declared argv →
+    // `strict-mock-no-match` diagnostic.
 
     #[tokio::test]
     async fn get_returns_plain_string_value() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "sk_live_abc"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("myapp/stripe"), Response::success("sk_live_abc\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/stripe").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "sk_live_abc");
@@ -710,16 +763,12 @@ exit 1
     async fn get_returns_raw_json_when_no_fragment() {
         // JSON body + no #fragment → return the blob as-is, unparsed.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo '{"password":"hunter2","host":"db"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &get_argv("myapp/cfg"),
+                Response::success("{\"password\":\"hunter2\",\"host\":\"db\"}\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg").unwrap();
         let out = b.get(&uri).await.unwrap();
@@ -732,16 +781,12 @@ exit 1
     #[tokio::test]
     async fn get_extracts_json_field_via_fragment() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo '{"password":"hunter2","host":"db.internal"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &get_argv("myapp/cfg"),
+                Response::success("{\"password\":\"hunter2\",\"host\":\"db.internal\"}\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "hunter2");
@@ -750,16 +795,12 @@ exit 1
     #[tokio::test]
     async fn get_fragment_coerces_number_and_boolean_to_string() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo '{"port":5432,"tls":true}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        // Two separate URIs → two distinct get() calls → two identical
+        // rules (same argv) → first-match-wins means both get the same
+        // body. That's fine — both URIs share the same secret ID.
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("myapp/cfg"), Response::success("{\"port\":5432,\"tls\":true}\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let port_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=port").unwrap();
         assert_eq!(b.get(&port_uri).await.unwrap(), "5432");
@@ -770,16 +811,9 @@ exit 1
     #[tokio::test]
     async fn get_errors_when_fragment_on_plain_string() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "plain-not-json"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("myapp/plain"), Response::success("plain-not-json\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/plain#json-key=field").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -791,16 +825,9 @@ exit 1
     #[tokio::test]
     async fn get_errors_when_fragment_key_missing_lists_available_fields() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo '{"user":"alice","host":"db"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("myapp/cfg"), Response::success("{\"user\":\"alice\",\"host\":\"db\"}\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -811,23 +838,23 @@ exit 1
         assert!(msg.contains("host"), "lists available fields: {msg}");
     }
 
-    // v0.2.1: shorthand + unsupported-directive rejection locks the
-    // canonical `#json-key=<field>` fragment form as the ONLY accepted
-    // shape. Both failure modes must surface without ever invoking `aws`.
+    // v0.2.1 shorthand + unsupported-directive rejection. Under strict
+    // mocks these tests get an EMPTY-RULE mock: any aws invocation
+    // produces exit 97 with `strict-mock-no-match`. Tests assert the
+    // error originates in core's fragment grammar (BEFORE any aws call)
+    // — so the backend's own error message propagates, not the strict
+    // harness's exit-97 diagnostic.
 
     #[tokio::test]
     async fn get_rejects_legacy_shorthand_fragment_with_migration_hint() {
         // `#password` was the v0.2.0 shorthand. v0.2.1 canonicalized the
         // grammar — this URI must fail at `fragment_directives()` before
-        // any AWS call, with a hint naming the canonical replacement.
+        // any AWS call. Empty-rule mock makes the "no aws call" claim
+        // a typed assertion: if the backend DID reach aws, the strict
+        // harness would produce exit 97 with a `strict-mock-no-match`
+        // stderr, not a silent success.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            // If the backend reached `aws`, this mock returns success —
-            // so the test asserts the error surfaces *before* argv-level
-            // dispatch (the shorthand is rejected in core).
-            r#"echo '{"password":"hunter2"}'; exit 0"#,
-        );
+        let mock = StrictMock::new("aws").install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#password").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -838,15 +865,18 @@ exit 1
             "error suggests the canonical form verbatim: {msg}"
         );
         assert!(msg.contains("fragment-vocabulary"), "error links to doc: {msg}");
+        // Bonus: strict no-match diagnostic must NOT appear — the error
+        // is supposed to come from the fragment parser, not the mock.
+        assert!(
+            !msg.contains("strict-mock-no-match"),
+            "error must come from fragment parser, not mock: {msg}"
+        );
     }
 
     #[tokio::test]
     async fn get_rejects_unsupported_directive_with_enumerated_list() {
-        // `#version=5` is a valid canonical fragment but uses a directive
-        // aws-secrets does not recognize. Must fail cleanly naming the
-        // offender, without any AWS call.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(&dir, r#"echo "never-reached"; exit 0"#);
+        let mock = StrictMock::new("aws").install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#version=5").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -854,14 +884,21 @@ exit 1
         assert!(msg.contains("unsupported"), "error names the problem: {msg}");
         assert!(msg.contains("'version'") || msg.contains("[version]"), "lists offender: {msg}");
         assert!(msg.contains("json-key"), "names the supported directive: {msg}");
+        assert!(
+            !msg.contains("strict-mock-no-match"),
+            "error must come from the backend, not the mock: {msg}"
+        );
     }
 
     #[tokio::test]
     async fn get_rejects_extra_directives_alongside_json_key() {
-        // `#json-key=password,version=5` — json-key is present, but aws-secrets
-        // does not recognize `version`. Must error with the extra keys listed.
+        // Two-directive rejection happens AFTER the raw get_raw(), so
+        // aws IS called. Give it a minimal happy rule so the directive-
+        // check is the gating assertion.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(&dir, r#"echo '{"password":"hunter2"}'; exit 0"#);
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("myapp/cfg"), Response::success("{\"password\":\"hunter2\"}\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri =
             BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password,version=5").unwrap();
@@ -875,16 +912,9 @@ exit 1
     #[tokio::test]
     async fn get_fragment_errors_on_nested_object_value() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo '{"meta":{"nested":1}}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("myapp/cfg"), Response::success("{\"meta\":{\"nested\":1}}\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=meta").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -898,16 +928,15 @@ exit 1
     #[tokio::test]
     async fn get_resource_not_found_wraps_stderr() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation: Secrets Manager can't find the specified secret." >&2
-  exit 254
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &get_argv("myapp/missing"),
+                Response::failure(
+                    254,
+                    "An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation: Secrets Manager can't find the specified secret.\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/missing").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -919,16 +948,15 @@ exit 1
     #[tokio::test]
     async fn get_access_denied_wraps_stderr() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "An error occurred (AccessDeniedException) when calling GetSecretValue" >&2
-  exit 254
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &get_argv("myapp/locked"),
+                Response::failure(
+                    254,
+                    "An error occurred (AccessDeniedException) when calling GetSecretValue\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/locked").unwrap();
         assert!(format!("{:#}", b.get(&uri).await.unwrap_err()).contains("AccessDeniedException"));
@@ -939,16 +967,15 @@ exit 1
     #[tokio::test]
     async fn set_succeeds_on_zero_exit() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager put-secret-value" ]; then
-  echo '{"ARN":"arn:...","VersionId":"v1"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &put_argv("myapp/rotate"),
+                Response::success_with_stdin(
+                    "{\"ARN\":\"arn:...\",\"VersionId\":\"v1\"}\n",
+                    vec!["new-value".to_owned()],
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/rotate").unwrap();
         b.set(&uri, "new-value").await.unwrap();
@@ -956,61 +983,37 @@ exit 1
 
     #[tokio::test]
     async fn set_passes_secret_value_via_stdin_not_argv() {
+        // CV-1 discipline, declaratively: argv carries `file:///dev/stdin`
+        // sentinel (NOT the secret); stdin-fragment check requires the
+        // secret. Strict match on both simultaneously implies "secret
+        // on stdin, NOT on argv" as a harness-level guarantee — no
+        // file I/O, no grep.
+        let very_sensitive = "sk_live_TOP_SECRET_aws_secrets_never_argv_XYZ";
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv_and_stdin.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-{{
-  echo "--- ARGV ---"
-  for a in "$@"; do echo "arg=$a"; done
-  echo "--- STDIN ---"
-  cat
-}} > "$LOG" 2>&1
-if [ "$1 $2" = "secretsmanager put-secret-value" ]; then
-  echo '{{"ARN":"arn:..."}}'
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_aws(&dir, &script);
+        let mock = StrictMock::new("aws")
+            .on(
+                &put_argv("myapp/stripe"),
+                Response::success_with_stdin(
+                    "{\"ARN\":\"arn:...\"}\n",
+                    vec![very_sensitive.to_owned()],
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/stripe").unwrap();
-        let very_sensitive = "sk_live_TOP_SECRET_aws_secrets_never_argv_XYZ";
         b.set(&uri, very_sensitive).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
-        let (argv_section, stdin_section) =
-            log.split_once("--- STDIN ---").expect("log has STDIN section");
-        assert!(
-            !argv_section.contains(very_sensitive),
-            "secret value must NOT appear in argv; argv was:\n{argv_section}"
-        );
-        assert!(
-            stdin_section.contains(very_sensitive),
-            "secret should have arrived via stdin; stdin was:\n{stdin_section}"
-        );
-        assert!(
-            argv_section.contains("arg=file:///dev/stdin"),
-            "argv should carry the stdin sentinel:\n{argv_section}"
-        );
     }
 
     #[tokio::test]
     async fn set_propagates_stderr_on_failure() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager put-secret-value" ]; then
-  echo "An error occurred (ResourceNotFoundException) ..." >&2
-  exit 254
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                &put_argv("myapp/nonexistent"),
+                Response::failure(254, "An error occurred (ResourceNotFoundException) ...\n")
+                    .with_env_absent("NEVER_SET_SENTINEL"), // no-op env check — lets failure still pipe stderr correctly
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/nonexistent").unwrap();
         let err = b.set(&uri, "v").await.unwrap_err();
@@ -1021,30 +1024,17 @@ exit 1
 
     #[tokio::test]
     async fn delete_uses_force_delete_without_recovery() {
+        // Under strict match, the declared argv explicitly lists
+        // `--force-delete-without-recovery`. A regression that dropped
+        // the flag would fail with `strict-mock-no-match` — no args-log
+        // side-channel needed.
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-for a in "$@"; do echo "arg=$a" >> "$LOG"; done
-if [ "$1 $2" = "secretsmanager delete-secret" ]; then
-  echo '{{"Name":"/myapp/gone"}}'
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_aws(&dir, &script);
+        let mock = StrictMock::new("aws")
+            .on(&delete_argv("myapp/gone"), Response::success("{\"Name\":\"myapp/gone\"}\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/gone").unwrap();
         b.delete(&uri).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(
-            log.contains("arg=--force-delete-without-recovery"),
-            "delete must skip the 30-day recovery window:\n{log}"
-        );
     }
 
     // ---- list ----
@@ -1052,18 +1042,10 @@ exit 1
     #[tokio::test]
     async fn list_parses_json_registry_document() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  cat <<'JSON'
-{"alpha":"aws-secrets-prod:///myapp/a","beta":"aws-secrets-prod:///myapp/b"}
-JSON
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let body = "{\"alpha\":\"aws-secrets-prod:///myapp/a\",\"beta\":\"aws-secrets-prod:///myapp/b\"}\n";
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("registries/shared"), Response::success(body))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///registries/shared").unwrap();
         let mut entries = b.list(&uri).await.unwrap();
@@ -1080,16 +1062,9 @@ exit 1
     #[tokio::test]
     async fn list_errors_when_body_is_not_json_map() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "not-json-at-all"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&get_argv("bad-registry"), Response::success("not-json-at-all\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///bad-registry").unwrap();
         let err = b.list(&uri).await.unwrap_err();
@@ -1098,82 +1073,90 @@ exit 1
         assert!(msg.contains("alias→URI map"), "specific error: {msg}");
     }
 
-    // ---- argv-shape assertions ----
-
-    #[tokio::test]
-    async fn command_always_passes_region() {
-        let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-for a in "$@"; do echo "arg=$a" >> "$LOG"; done
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "v"
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_aws(&dir, &script);
-        let b = backend(&mock, None);
-        let uri = BackendUri::parse("aws-secrets-prod:///x").unwrap();
-        b.get(&uri).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("arg=--region"), "expected --region in argv:\n{log}");
-        assert!(log.contains("arg=us-east-1"), "expected region value:\n{log}");
-    }
+    // ---- argv-shape assertions (absorbed into strict migration) ----
+    //
+    // The three v0.2 `command_always_passes_region` /
+    // `command_omits_profile_when_not_configured` /
+    // `command_includes_profile_when_configured` tests were log-file
+    // side-channels asserting properties of the emitted argv. Under
+    // strict match, EVERY migrated test above with `get_argv(...)`
+    // implicitly asserts `--region us-east-1` is present (because the
+    // const includes it). The profile-absent + profile-present
+    // scenarios collapse to these two tests:
 
     #[tokio::test]
     async fn command_omits_profile_when_not_configured() {
+        // Declared argv has NO `--profile` suffix. If the backend
+        // emitted `--profile ...`, strict argv match would fail.
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-for a in "$@"; do echo "arg=$a" >> "$LOG"; done
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "v"
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_aws(&dir, &script);
+        let mock =
+            StrictMock::new("aws").on(&get_argv("x"), Response::success("v\n")).install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///x").unwrap();
         b.get(&uri).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(!log.contains("arg=--profile"), "profile not set → flag absent:\n{log}");
     }
 
     #[tokio::test]
     async fn command_includes_profile_when_configured() {
+        // Declared argv MUST include `--profile prod` at the tail; any
+        // regression dropping the flag produces exit 97.
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-for a in "$@"; do echo "arg=$a" >> "$LOG"; done
-if [ "$1 $2" = "secretsmanager get-secret-value" ]; then
-  echo "v"
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_aws(&dir, &script);
+        let get_argv_prod: Vec<&str> =
+            get_argv("x").iter().copied().chain(["--profile", "prod"]).collect();
+        let mock =
+            StrictMock::new("aws").on(&get_argv_prod, Response::success("v\n")).install(dir.path());
         let b = backend(&mock, Some("prod"));
         let uri = BackendUri::parse("aws-secrets-prod:///x").unwrap();
         b.get(&uri).await.unwrap();
+    }
 
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("arg=--profile"), "expected --profile:\n{log}");
-        assert!(log.contains("arg=prod"), "expected profile value:\n{log}");
+    // ---- drift-catch regression locks (new in v0.2.6) ----
+
+    // PR #33 BUG-2 POSITIVE regression lock. The canonical `secret_id()`
+    // strips the leading `/`; a regression that reintroduced it would
+    // send `--secret-id /myapp/stripe` instead of `--secret-id
+    // myapp/stripe`. This test declares the BUGGY form on argv: if the
+    // backend regresses, it'd match this declared shape and succeed
+    // (caller's .await.unwrap_err() would panic). Under the current
+    // post-fix code, the backend sends `myapp/stripe` (no slash), which
+    // does NOT match the declared `/myapp/stripe` shape, so strict
+    // harness emits exit 97 and the get() surfaces a clear error.
+    #[tokio::test]
+    async fn get_drift_catch_rejects_leading_slash_on_secret_id() {
+        let dir = TempDir::new().unwrap();
+        // Declared argv with buggy leading-slash form.
+        let buggy_argv = get_argv("/myapp/stripe");
+        let mock = StrictMock::new("aws")
+            .on(&buggy_argv, Response::success("never-matches-post-fix\n"))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/stripe").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("strict-mock-no-match") || msg.contains("aws-secrets"),
+            "expected strict no-match propagated as get() failure: {msg}"
+        );
+    }
+
+    // CV-1 regression lock: secret on stdin, NOT on argv. Declared argv
+    // has `file:///dev/stdin` sentinel + stdin-fragment check requires
+    // the secret. Any CV-1 regression (secret leaking to argv) breaks
+    // both simultaneously — strict argv match fails because argv now
+    // has the secret in place of the sentinel, AND the stdin check
+    // fails because the secret went elsewhere.
+    #[tokio::test]
+    async fn set_drift_catch_rejects_secret_leaking_to_argv() {
+        let secret = "sk_live_CV1_aws_secrets_regression_lock";
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("aws")
+            .on(
+                &put_argv("myapp/rotate"),
+                Response::success_with_stdin("{\"ARN\":\"arn:...\"}\n", vec![secret.to_owned()]),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-secrets-prod:///myapp/rotate").unwrap();
+        b.set(&uri, secret).await.unwrap();
     }
 }

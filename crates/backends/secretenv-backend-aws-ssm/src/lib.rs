@@ -209,6 +209,7 @@ impl Backend for AwsSsmBackend {
     }
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
+        uri.reject_any_fragment("aws-ssm")?;
         let name = Self::parameter_name(uri);
         let mut cmd = self.ssm_command(
             "get-parameter",
@@ -241,6 +242,7 @@ impl Backend for AwsSsmBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        uri.reject_any_fragment("aws-ssm")?;
         // Secret value is piped via child stdin — NEVER on argv. `aws`
         // supports `--value file:///dev/stdin` which tells it to read
         // the value from the file at that path, and on Unix `/dev/stdin`
@@ -306,6 +308,7 @@ impl Backend for AwsSsmBackend {
     }
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
+        uri.reject_any_fragment("aws-ssm")?;
         let name = Self::parameter_name(uri);
         let mut cmd = self.ssm_command("delete-parameter", &["--name", &name]);
         let output = cmd.output().await.with_context(|| {

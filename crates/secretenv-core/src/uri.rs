@@ -140,6 +140,39 @@ impl BackendUri {
         };
         parse_fragment_directives(&self.raw, raw).map(Some)
     }
+
+    /// Reject any `#fragment` on this URI regardless of grammar. Backends
+    /// that do NOT consume fragment directives call this up-front in
+    /// `get` / `set` / `delete` / `list` to surface a clear error rather
+    /// than silently dropping `#json-key=foo` or similar. Shorthand
+    /// fragments (`#password`) are caught by the shared grammar path
+    /// even before this method runs, so the message here names the
+    /// canonical form (`#key=value`) but directs the user to consult
+    /// the backend's spec since this backend accepts no directives.
+    ///
+    /// # Errors
+    ///
+    /// - [`FragmentError::ShorthandRejected`] if the fragment looks like
+    ///   legacy shorthand (same as `fragment_directives`).
+    /// - [`FragmentError::UnsupportedForBackend`] if the fragment is
+    ///   canonical-shaped but this backend accepts no directives.
+    pub fn reject_any_fragment(&self, backend_label: &str) -> Result<(), FragmentError> {
+        let Some(raw) = self.fragment.as_deref() else {
+            return Ok(());
+        };
+        // Validate the grammar first — if the fragment is malformed or
+        // shorthand, the existing error shape is more informative than
+        // a generic "unsupported" message.
+        let parsed = parse_fragment_directives(&self.raw, raw)?;
+        // Grammar is valid → but this backend accepts zero directives.
+        let mut keys: Vec<&str> = parsed.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        Err(FragmentError::UnsupportedForBackend {
+            backend_label: backend_label.to_owned(),
+            uri: self.raw.clone(),
+            offered_keys: keys.into_iter().map(str::to_owned).collect(),
+        })
+    }
 }
 
 /// A scheme must be non-empty, contain only ASCII letters, digits, `_`,
@@ -355,6 +388,26 @@ pub enum FragmentError {
         raw: String,
         /// The key that appeared more than once.
         key: String,
+    },
+    /// The URI carries a canonical-shaped fragment directive, but the
+    /// backend the URI routes to does not accept any fragment
+    /// directives. Raised by [`BackendUri::reject_any_fragment`] when
+    /// called from backends like `aws-ssm`, `vault`, and `1password`
+    /// which consume the path only.
+    #[error(
+        "{backend_label} backend: URI '{uri}' carries fragment directive(s) \
+         [{}] but this backend accepts no fragment directives. Rewrite the URI \
+         without the fragment, or use a backend that supports these directives.",
+        offered_keys.join(", ")
+    )]
+    UnsupportedForBackend {
+        /// Label of the backend that rejected the fragment, e.g. `"aws-ssm"`.
+        backend_label: String,
+        /// The full URI the fragment appeared in.
+        uri: String,
+        /// The sorted list of directive keys offered (non-empty when the
+        /// grammar is otherwise well-formed).
+        offered_keys: Vec<String>,
     },
 }
 

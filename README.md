@@ -6,7 +6,7 @@
 
 ‎ 
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
 [![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
 [![Backends](https://img.shields.io/badge/backends-5-green)](#supported-backends)
@@ -611,7 +611,15 @@ Issues tagged [`good first issue`](https://github.com/TechAlchemistX/secretenv/i
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**GNU Affero General Public License v3.0 (AGPL-3.0-only)** — see [LICENSE](LICENSE).
+
+SecretEnv is free to use, modify, and redistribute under AGPLv3. Crucially, **§13 of the AGPL requires that any network-deployed modified version make its corresponding source code available to its users.** If you fork SecretEnv and operate the fork as a service, you must offer its source to your users.
+
+MIT was the license for v0.1 and v0.2.0 (the only version published at the time of the change). **v0.3.0 onward is AGPL-3.0-only.** The prior MIT-licensed releases remain available under their original terms.
+
+### Contributing
+
+Contributions are welcome under the project's [Contributor License Agreement](CLA.md). The CLA lets the project relicense contributions (for example, to offer commercial licenses alongside AGPL) while keeping your own rights intact. See [CONTRIBUTING.md](CONTRIBUTING.md) for the signing mechanics. **No CLA = no merge.** This is enforced at PR review time.
 
 ---
 

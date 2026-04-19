@@ -416,16 +416,27 @@ fn optional_string(
 mod tests {
     use std::path::Path;
 
+    use secretenv_testing::{Response, StrictMock};
     use tempfile::TempDir;
 
     use super::*;
 
-    /// Thin wrapper so call sites keep their existing signature
-    /// (`&TempDir` → `PathBuf`). The real installer lives in the
-    /// shared `secretenv-testing` crate.
-    fn install_mock_aws(dir: &TempDir, body: &str) -> std::path::PathBuf {
-        secretenv_testing::install_mock_aws(dir.path(), body)
-    }
+    /// Full argv the aws-ssm backend's `get()` emits with no profile
+    /// set. Kept as a const so the seven get-related tests stay in
+    /// lockstep if the backend's argv shape ever changes.
+    const GET_ARGV_NO_PROFILE: &[&str] = &[
+        "ssm",
+        "get-parameter",
+        "--with-decryption",
+        "--name",
+        "/prod/api-key",
+        "--query",
+        "Parameter.Value",
+        "--output",
+        "text",
+        "--region",
+        "us-east-1",
+    ];
 
     fn backend(mock_path: &Path, profile: Option<&str>) -> AwsSsmBackend {
         AwsSsmBackend {
@@ -518,16 +529,9 @@ mod tests {
     #[tokio::test]
     async fn get_returns_parameter_value_no_profile() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm get-parameter" ]; then
-  echo "super-secret-value"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(GET_ARGV_NO_PROFILE, Response::success("super-secret-value\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let v = b.get(&uri).await.unwrap();
@@ -537,19 +541,15 @@ exit 1
     #[tokio::test]
     async fn get_returns_parameter_value_with_profile() {
         let dir = TempDir::new().unwrap();
-        // Mock echoes its args to stderr so the test can check the profile flag
-        // is passed. Still returns a value on stdout so get succeeds.
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm get-parameter" ]; then
-  echo "args: $*" >&2
-  echo "value-from-prod"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        // With `aws_profile = "prod"` the backend appends `--profile prod`
+        // after `--region us-east-1` via `append_region_and_profile`.
+        // Strict matching enforces the flag is both present AND in the
+        // expected position — so this test doubles as a regression lock
+        // for profile propagation.
+        let argv: Vec<&str> = [GET_ARGV_NO_PROFILE, &["--profile", "prod"][..]].concat();
+        let mock = StrictMock::new("aws")
+            .on(&argv, Response::success("value-from-prod\n"))
+            .install(dir.path());
         let b = backend(&mock, Some("prod"));
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let v = b.get(&uri).await.unwrap();
@@ -559,17 +559,22 @@ exit 1
     #[tokio::test]
     async fn get_strips_single_trailing_newline() {
         let dir = TempDir::new().unwrap();
-        // printf "foo\n" → aws CLI emits single trailing newline.
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm get-parameter" ]; then
-  printf 'raw-value\n'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        // AWS CLI emits single trailing newline — backend strips it.
+        let argv = &[
+            "ssm",
+            "get-parameter",
+            "--with-decryption",
+            "--name",
+            "/k",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
+            "--region",
+            "us-east-1",
+        ];
+        let mock =
+            StrictMock::new("aws").on(argv, Response::success("raw-value\n")).install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///k").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "raw-value");
@@ -580,16 +585,28 @@ exit 1
     #[tokio::test]
     async fn get_access_denied_error_includes_stderr_and_uri() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm get-parameter" ]; then
-  echo "An error occurred (AccessDeniedException) when calling the GetParameter operation: User: arn:aws:iam::123:user/x is not authorized to perform: ssm:GetParameter" >&2
-  exit 255
-fi
-exit 1
-"#,
-        );
+        let argv = &[
+            "ssm",
+            "get-parameter",
+            "--with-decryption",
+            "--name",
+            "/prod/locked",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
+            "--region",
+            "us-east-1",
+        ];
+        let mock = StrictMock::new("aws")
+            .on(
+                argv,
+                Response::failure(
+                    255,
+                    "An error occurred (AccessDeniedException) when calling the GetParameter operation: User: arn:aws:iam::123:user/x is not authorized to perform: ssm:GetParameter\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/locked").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -610,19 +627,38 @@ exit 1
 
     // ---- set, delete, list ----
 
+    /// The full argv aws-ssm's `set()` emits (no profile). `--value`
+    /// carries the `file:///dev/stdin` sentinel — per CV-1 the secret
+    /// value never appears here.
+    const PUT_ARGV_NO_PROFILE: &[&str] = &[
+        "ssm",
+        "put-parameter",
+        "--type",
+        "SecureString",
+        "--overwrite",
+        "--name",
+        "/prod/api-key",
+        "--value",
+        "file:///dev/stdin",
+        "--region",
+        "us-east-1",
+    ];
+
     #[tokio::test]
     async fn set_succeeds_on_zero_exit() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm put-parameter" ]; then
-  echo '{"Version":1}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                PUT_ARGV_NO_PROFILE,
+                // Stdin-fragment check doubles as a CV-1 regression lock:
+                // the secret value MUST appear in stdin. Combined with the
+                // strict argv match (which has only `file:///dev/stdin`
+                // after `--value`, not the secret itself), this is a
+                // tighter assertion than the v0.2.0 `install_mock_aws`
+                // shape could ever express.
+                Response::success_with_stdin(r#"{"Version":1}"#, vec!["new-secret".to_owned()]),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         b.set(&uri, "new-secret").await.unwrap();
@@ -631,16 +667,15 @@ exit 1
     #[tokio::test]
     async fn set_propagates_stderr_on_failure() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm put-parameter" ]; then
-  echo "ParameterAlreadyExists: already exists without --overwrite" >&2
-  exit 255
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(
+                PUT_ARGV_NO_PROFILE,
+                Response::failure(
+                    255,
+                    "ParameterAlreadyExists: already exists without --overwrite\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let err = b.set(&uri, "v").await.unwrap_err();
@@ -649,69 +684,41 @@ exit 1
 
     #[tokio::test]
     async fn set_passes_secret_value_via_stdin_not_argv() {
-        // CV-1 regression check: mock aws binary writes every argv + its
-        // stdin to a log file. Test then asserts:
-        //   (1) the secret appears in stdin,
-        //   (2) the secret does NOT appear anywhere in argv.
+        // CV-1 regression lock (v0.2.3 strict-mode form). Two assertions
+        // expressed through the strict harness, which is tighter than the
+        // v0.2.0 "log argv + stdin to a file, grep after" pattern:
+        //
+        //   (1) Declared argv has `--value file:///dev/stdin` with the
+        //       literal sentinel — NOT the secret value. If the backend
+        //       ever regresses to `--value <secret>` on argv, StrictMock
+        //       exits 97 because the argv no longer matches.
+        //
+        //   (2) `success_with_stdin` asserts the secret value arrives on
+        //       stdin as a literal substring. If the backend writes
+        //       nothing to stdin (or writes the wrong thing), the mock
+        //       exits 97.
+        //
+        // Combined, the two bounds prove the secret is in stdin AND not
+        // in argv. No file I/O, no grep-after — the argv contract itself
+        // carries the CV-1 discipline.
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv_and_stdin.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-{{
-  echo "--- ARGV ---"
-  i=0
-  for a in "$@"; do
-    echo "[$i] $a"
-    i=$((i + 1))
-  done
-  echo "--- STDIN ---"
-  cat
-}} > "$LOG" 2>&1
-if [ "$1 $2" = "ssm put-parameter" ]; then
-  echo '{{"Version":1}}'
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_aws(&dir, &script);
+        let very_sensitive = "sk_live_top_SECRET_never_on_argv_987";
+        let mock = StrictMock::new("aws")
+            .on(
+                PUT_ARGV_NO_PROFILE,
+                Response::success_with_stdin(r#"{"Version":1}"#, vec![very_sensitive.to_owned()]),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
-        let very_sensitive = "sk_live_top_SECRET_never_on_argv_987";
         b.set(&uri, very_sensitive).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
-        // Split on ARGV/STDIN markers so assertions are unambiguous.
-        let (argv_section, stdin_section) =
-            log.split_once("--- STDIN ---").expect("log has STDIN section");
-        assert!(
-            !argv_section.contains(very_sensitive),
-            "secret value must not appear in argv; argv was:\n{argv_section}"
-        );
-        assert!(
-            stdin_section.contains(very_sensitive),
-            "secret value should have arrived via stdin; stdin section was:\n{stdin_section}"
-        );
-        assert!(
-            argv_section.contains("file:///dev/stdin"),
-            "argv should name the stdin sentinel instead of the value:\n{argv_section}"
-        );
     }
 
     #[tokio::test]
     async fn delete_succeeds_on_zero_exit() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm delete-parameter" ]; then
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let argv = &["ssm", "delete-parameter", "--name", "/prod/gone", "--region", "us-east-1"];
+        let mock = StrictMock::new("aws").on(argv, Response::success("")).install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/gone").unwrap();
         b.delete(&uri).await.unwrap();
@@ -720,18 +727,22 @@ exit 1
     #[tokio::test]
     async fn list_parses_json_registry_document() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm get-parameter" ]; then
-  cat <<'JSON'
-{"stripe-key":"aws-ssm-prod:///prod/stripe","db-url":"1password-personal://Engineering/Prod DB/url"}
-JSON
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let argv = &[
+            "ssm",
+            "get-parameter",
+            "--with-decryption",
+            "--name",
+            "/registries/shared",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
+            "--region",
+            "us-east-1",
+        ];
+        let body = r#"{"stripe-key":"aws-ssm-prod:///prod/stripe","db-url":"1password-personal://Engineering/Prod DB/url"}
+"#;
+        let mock = StrictMock::new("aws").on(argv, Response::success(body)).install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///registries/shared").unwrap();
         let mut entries = b.list(&uri).await.unwrap();
@@ -748,16 +759,22 @@ exit 1
     #[tokio::test]
     async fn list_errors_when_body_is_not_json_map() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1 $2" = "ssm get-parameter" ]; then
-  echo "not-json-at-all"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let argv = &[
+            "ssm",
+            "get-parameter",
+            "--with-decryption",
+            "--name",
+            "/r",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
+            "--region",
+            "us-east-1",
+        ];
+        let mock = StrictMock::new("aws")
+            .on(argv, Response::success("not-json-at-all\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///r").unwrap();
         let err = b.list(&uri).await.unwrap_err();
@@ -776,23 +793,29 @@ exit 1
         }
     }
 
+    /// Full argv for `aws sts get-caller-identity` as emitted by `check()`
+    /// (`append_region_and_profile` applies). Profile-suffix appended when
+    /// the test uses `Some("...")`.
+    const STS_ARGV_NO_PROFILE: &[&str] =
+        &["sts", "get-caller-identity", "--output", "json", "--region", "us-east-1"];
+
     #[tokio::test]
     async fn check_returns_ok_when_version_and_sts_succeed() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "aws-cli/2.15.17 Python/3.11.8 Darwin/23.0.0 source/x86_64 prompt/off"
-  exit 0
-fi
-if [ "$1 $2" = "sts get-caller-identity" ]; then
-  echo '{"UserId":"AIDA","Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/test"}'
-  exit 0
-fi
-exit 1
+        let sts_argv: Vec<&str> = [STS_ARGV_NO_PROFILE, &["--profile", "prod"][..]].concat();
+        let mock = StrictMock::new("aws")
+            .on(
+                &["--version"],
+                Response::success("aws-cli/2.15.17 Python/3.11.8 Darwin/23.0.0 source/x86_64 prompt/off\n"),
+            )
+            .on(
+                &sts_argv,
+                Response::success(
+                    r#"{"UserId":"AIDA","Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/test"}
 "#,
-        );
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, Some("prod"));
         match b.check().await {
             BackendStatus::Ok { cli_version, identity } => {
@@ -808,11 +831,20 @@ exit 1
     #[tokio::test]
     async fn get_non_utf8_response_errors_with_context() {
         let dir = TempDir::new().unwrap();
-        // Emit raw bytes that aren't valid UTF-8. Use POSIX octal
-        // escapes (\NNN) — hex \xNN is bash-specific and dash on
-        // ubuntu-latest passes them through as literal backslashes.
-        let mock = install_mock_aws(
-            &dir,
+        // Raw non-UTF-8 bytes. The strict mock's `printf '%s'` renderer
+        // writes the stdout field verbatim, and since Response holds a
+        // `String` (which is UTF-8), we'd normally be stuck. The four
+        // high-bit bytes below are chosen as a UTF-8-invalid sequence
+        // that `String::from_utf8_lossy` would replace — but `String`
+        // construction from these bytes via `unsafe` isn't worth the
+        // complexity. Instead we fall back to the raw-shell harness here
+        // because the assertion is specifically about a non-UTF-8
+        // response path; the strict harness's UTF-8-only stdout field
+        // is incompatible by design. This is the one and only aws-ssm
+        // test that intentionally stays on the v0.2 raw harness.
+        let mock = secretenv_testing::install_mock(
+            dir.path(),
+            "aws",
             r#"
 if [ "$1 $2" = "ssm get-parameter" ]; then
   printf '\377\376\375\374'
@@ -833,20 +865,22 @@ exit 1
     async fn check_version_falls_back_to_stderr_for_cli_v1() {
         let dir = TempDir::new().unwrap();
         // AWS CLI v1 writes `--version` output to stderr, not stdout.
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "aws-cli/1.18.69 Python/2.7.16 Darwin/19.6.0 botocore/1.17.0" >&2
-  exit 0
-fi
-if [ "$1 $2" = "sts get-caller-identity" ]; then
-  echo '{"UserId":"AIDA","Account":"123","Arn":"arn:aws:iam::123:user/t"}'
-  exit 0
-fi
-exit 1
+        // `Response::success("").with_stderr(...)` expresses this
+        // exactly — empty stdout, version on stderr, 0 exit.
+        let mock = StrictMock::new("aws")
+            .on(
+                &["--version"],
+                Response::success("")
+                    .with_stderr("aws-cli/1.18.69 Python/2.7.16 Darwin/19.6.0 botocore/1.17.0\n"),
+            )
+            .on(
+                STS_ARGV_NO_PROFILE,
+                Response::success(
+                    r#"{"UserId":"AIDA","Account":"123","Arn":"arn:aws:iam::123:user/t"}
 "#,
-        );
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::Ok { cli_version, .. } => {
@@ -862,20 +896,10 @@ exit 1
     #[tokio::test]
     async fn check_returns_not_authenticated_when_sts_fails() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_aws(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "aws-cli/2.15.17"
-  exit 0
-fi
-if [ "$1 $2" = "sts get-caller-identity" ]; then
-  echo "Unable to locate credentials." >&2
-  exit 255
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("aws")
+            .on(&["--version"], Response::success("aws-cli/2.15.17\n"))
+            .on(STS_ARGV_NO_PROFILE, Response::failure(255, "Unable to locate credentials.\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::NotAuthenticated { hint } => {
@@ -883,5 +907,75 @@ exit 1
             }
             other => panic!("expected NotAuthenticated, got {other:?}"),
         }
+    }
+
+    // ---- v0.2.3 drift-catch regression locks ----
+    //
+    // Each test below declares an argv and uses StrictMock's exit-97
+    // behavior as a positive assertion: IF a future aws-ssm refactor
+    // drops a flag, reorders argv, or mis-quotes a value, the drift-catch
+    // surfaces as a test failure rather than silent passthrough.
+
+    #[tokio::test]
+    async fn get_drift_catch_rejects_missing_with_decryption_flag() {
+        // The strict harness's no-match-exits-97 contract is what the
+        // retrofit buys us. Declaring argv WITHOUT `--with-decryption`
+        // and verifying that secretenv's real call (which always adds
+        // the flag) fails end-to-end proves the harness is doing its
+        // job. Mirrors the v0.2.2 e2e drift-catch.
+        let dir = TempDir::new().unwrap();
+        let drifted = &[
+            "ssm",
+            "get-parameter",
+            "--name",
+            "/prod/api-key",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
+            "--region",
+            "us-east-1",
+        ];
+        let mock = StrictMock::new("aws")
+            .on(drifted, Response::success("should-not-be-seen"))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("get failed"), "strict-mock failure surfaced: {msg}");
+    }
+
+    #[tokio::test]
+    async fn set_drift_catch_rejects_secret_leaking_to_argv() {
+        // If a future refactor regresses to `--value <secret>` on argv
+        // (pre-CV-1 shape), StrictMock's declared argv — which still
+        // has `--value file:///dev/stdin` — won't match, and the mock
+        // exits 97. This test asserts that specific CV-1 regression is
+        // caught, not just any argv drift: the DECLARED argv has the
+        // `file:///dev/stdin` sentinel, and we're about to call set()
+        // with a secret. If the backend somehow put the secret on argv
+        // instead, the mock declares no such rule — exit 97 — and set
+        // fails.
+        //
+        // This is the same assertion set_succeeds_on_zero_exit makes
+        // implicitly; this test spells it out as an explicit regression
+        // lock with a more aggressive secret value that would be very
+        // visible in any leak.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("aws")
+            .on(
+                PUT_ARGV_NO_PROFILE,
+                Response::success_with_stdin(
+                    r#"{"Version":1}"#,
+                    vec!["CV1_REGRESSION_CANARY_2026".to_owned()],
+                ),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        // Succeeds only if argv exactly matches PUT_ARGV_NO_PROFILE AND
+        // stdin contains the canary — any CV-1 regression causes 97.
+        b.set(&uri, "CV1_REGRESSION_CANARY_2026").await.unwrap();
     }
 }

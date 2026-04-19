@@ -8,6 +8,21 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.3]
+
+**Headline:** internal test-infrastructure release — aws-ssm backend's mock-CLI tests migrated to `StrictMock`. No user-facing CLI changes; no prod bugs surfaced.
+
+### Changed
+
+- **Internal:** all 14 mock-using tests in `secretenv-backend-aws-ssm` converted from the v0.2 raw `install_mock_aws(body)` API to declarative `StrictMock::new("aws").on(argv, Response).install(...)`. Every flag, positional, and value in every `aws` argv is now asserted exactly; a future refactor that drops `--with-decryption`, reorders `--region`/`--profile`, or reintroduces the CV-1 argv-leak regression will fail at test time rather than silently passing.
+- **Internal:** `set_passes_secret_value_via_stdin_not_argv` rewritten using `Response::success_with_stdin`. CV-1 discipline is now a typed harness assertion rather than a log-file grep.
+- **Internal:** two new drift-catch regression-lock tests (`get_drift_catch_rejects_missing_with_decryption_flag`, `set_drift_catch_rejects_secret_leaking_to_argv`) that prove the strict harness surfaces drift loudly when it occurs.
+- **Internal (one exception):** `get_non_utf8_response_errors_with_context` stays on the v0.2 raw `install_mock` harness because its assertion relies on a non-UTF-8 response, which the strict harness's `Response.stdout: String` cannot express. Documented inline.
+
+### Added
+
+- **`secretenv-testing`:** `Response::with_stderr(stderr)` chainable method for expressing "response emits on stderr, not stdout." Additive; `#[non_exhaustive]` policy honored.
+
 ## [0.2.2]
 
 **Headline:** internal test-infrastructure release — strict-mode mock harness for backend crates. No user-facing CLI changes.
@@ -331,7 +346,8 @@ First public release of SecretEnv.
 - Errors include alias + URI + instance name + trimmed backend stderr,
   never the secret value.
 
-[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.3
 [0.2.2]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.2
 [0.2.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.1
 [0.2.0]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.0

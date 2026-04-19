@@ -248,6 +248,7 @@ impl Backend for VaultBackend {
     }
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
+        uri.reject_any_fragment("vault")?;
         let path = Self::vault_path(uri);
         let mut cmd = self.vault_command("kv", &["get", "-field=value", &path]);
         let output = cmd.output().await.with_context(|| {
@@ -272,6 +273,7 @@ impl Backend for VaultBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        uri.reject_any_fragment("vault")?;
         // Secret value is piped via child stdin — NEVER on argv. The
         // `value=-` KV-pair tells `vault kv put` to read the value
         // from stdin. Same CV-1 discipline Phase 0.5 applied to
@@ -318,6 +320,7 @@ impl Backend for VaultBackend {
     }
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
+        uri.reject_any_fragment("vault")?;
         let path = Self::vault_path(uri);
         let mut cmd = self.vault_command("kv", &["delete", &path]);
         let output = cmd.output().await.with_context(|| {
@@ -333,6 +336,7 @@ impl Backend for VaultBackend {
     }
 
     async fn list(&self, uri: &BackendUri) -> Result<Vec<(String, String)>> {
+        uri.reject_any_fragment("vault")?;
         let path = Self::vault_path(uri);
         let mut cmd = self.vault_command("kv", &["get", "-format=json", &path]);
         let output = cmd.output().await.with_context(|| {

@@ -8,6 +8,28 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.7]
+
+**Headline:** security hardening follow-up to the v0.2.x retrofit series — three reviewer agents (code / security / rust) audited the full v0.2.x scope; this patch lands the defense-in-depth fixes surfaced by the security review. No user-facing behavior change for valid URIs.
+
+### Security
+
+- **`secretenv-testing::StrictMock`:** env-var keys passed to `Response::with_env_var` / `with_env_absent` are now validated at call time against `^[A-Za-z_][A-Za-z0-9_]*$`. A malformed key (e.g. `"KEY}; rm -rf /; :{"`) panics immediately rather than injecting arbitrary shell into the generated mock script. Closes a test-author-side defense-in-depth gap flagged by the security review.
+- **`secretenv-testing::StrictMock`:** stdin-fragment mismatch diagnostic now emits only a REDACTED fingerprint of the missing fragment (`<len>-byte:<first-4-chars>…` for long values, `<len>-byte:<redacted>` for short). Previously, CV-1 stdin-discipline tests used canary secret values as the `stdin_must_contain` fragment; a regression that routed the secret to argv would have echoed the full secret to stderr and into CI logs. Now only the fingerprint appears.
+- **`secretenv-testing::strict::escape_for_double_quoted`:** now panics on embedded `\n` / `\r` instead of silently swapping them for space. Caller contract was already "no newlines"; enforcement was lax. Fail-fast catches bugs where a diagnostic string was assumed safe but wasn't.
+- **`secretenv-core::uri`:** new `BackendUri::reject_any_fragment(backend_label)` method + `FragmentError::UnsupportedForBackend` variant. Called from the top of `get` / `set` / `delete` / `list` in **aws-ssm**, **vault**, and **1password** — backends which do not accept fragment directives. Previously, a URI like `vault-prod:///secret/x#json-key=password` was silently accepted and the fragment dropped; now surfaces a clear "this backend accepts no fragment directives" error. Applied transitively to `list` paths that delegate to `get` (aws-ssm, 1password).
+- **`secretenv-backend-1password::get`:** added a `debug_assert!` post-condition on `parse_path` output (no `/` in any of `(vault, item, field)`) to guard against future parse_path regressions that could leak the path structure into the `op://<v>/<i>/<f>` argv token.
+- **Integration smoke harness:** the shared `secretenv-validation/api-key` fixture restore is now wired via `trap restore_fixture_on_exit EXIT` at the top of `/tmp/secretenv-test/scripts/run-tests.sh`. A mid-run failure, SIGINT, or interpreter error cannot leave the fixture polluted — the NEXT run's tests 30 / 39 will see the canonical `sk_test_secrets_22222` value regardless of how the prior run terminated. The v0.2.6 test 118 ("fixture restored") is retained for observability parity but is now a consequence of the trap handler, not the primary mechanism.
+
+### Internal
+
+- 6 new unit tests in `secretenv-testing::strict::tests` covering the above: `stdin_fragment_redaction_fingerprint_hides_value_never_leaks_full`, four panic-tests for env-var key validation, `escape_for_double_quoted_panics_on_newline`. The existing `stdin_check_rejects_when_fragment_missing` test updated to assert the redacted-fingerprint contract AND that the full secret does NOT appear in stderr.
+- Workspace test count **353 → 359**.
+
+### Origin
+
+Findings surfaced by three parallel reviewer agents (code-reviewer, security-engineer, rust-engineer) auditing the full v0.2.x scope (fragment grammar, StrictMock harness, 5 backends, v0.2.6 fragment-before-network fix). The reviewers' v0.3-spec findings (GCP `print-access-token --project` flag, Azure argv size miscounts, Azure vault-URL regex path traversal) are applied to `kb/wiki/backends/{gcp,azure}.md` alongside this patch. The `AwsCli` / `tokio::join!` / `Response`-`Rule` unification / `IndexMap` refactors flagged by the rust-engineer land as v0.3 Phase 0.
+
 ## [0.2.6]
 
 **Headline:** internal test-infrastructure release — aws-secrets backend's mock-CLI tests migrated to `StrictMock`, closing out the v0.2.x strict-mode retrofit series. **The first prod-code bug surfaced by the strict retrofit lands alongside the migration**: `AwsSecretsBackend::get()` was calling `aws secretsmanager get-secret-value` BEFORE validating the fragment directive, meaning a URI like `aws-secrets-prod:///myapp/cfg#password` (legacy shorthand, rejected since v0.2.1) would make a wasted AWS API call before surfacing the local grammar error. The v0.2 permissive-mock tests silently masked the extra call. Fixed: fragment validation now happens up-front, no AWS call occurs for invalid-grammar URIs.

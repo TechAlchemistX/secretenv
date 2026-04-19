@@ -195,7 +195,12 @@ impl Backend for OnePasswordBackend {
     }
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
+        uri.reject_any_fragment("1password")?;
         let (vault, item, field) = Self::parse_path(uri)?;
+        // Defensive post-condition: parse_path only returns 3 segments
+        // each free of `/` — `op://<vault>/<item>/<field>` construction
+        // is safe. Assert to guard against a future parse_path refactor.
+        debug_assert!(!vault.contains('/') && !item.contains('/') && !field.contains('/'));
         let op_uri = format!("op://{vault}/{item}/{field}");
         let mut cmd = Command::new(&self.op_bin);
         cmd.args(["read", &op_uri]);
@@ -219,6 +224,7 @@ impl Backend for OnePasswordBackend {
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
+        uri.reject_any_fragment("1password")?;
         // KNOWN LIMITATION (review finding CV-1, partial): the 1Password
         // CLI (`op item edit`) reads field assignments as `field=value`
         // argv tokens. Unlike AWS SSM, `op` does not offer a portable
@@ -258,6 +264,7 @@ impl Backend for OnePasswordBackend {
     }
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
+        uri.reject_any_fragment("1password")?;
         let (vault, item, field) = Self::parse_path(uri)?;
         // 1Password's CLI has no "clear one field" — we set it to empty.
         // Full item deletion is out of scope for v0.1.

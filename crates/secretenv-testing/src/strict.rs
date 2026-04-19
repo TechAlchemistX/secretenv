@@ -196,9 +196,18 @@ impl Response {
     /// argv — see the vault backend's `VAULT_ADDR` / `VAULT_NAMESPACE`
     /// paths (PR #33 BUG-1 fix).
     ///
-    /// `key` must be a valid POSIX shell identifier (`[A-Z_][A-Z0-9_]*`
-    /// by convention); the generated script uses `${key+set}` / `"$key"`
-    /// parameter expansion and will fail to parse for invalid keys.
+    /// `key` must match `^[A-Za-z_][A-Za-z0-9_]*$` — a POSIX-portable
+    /// shell identifier. The generated script uses `${key+set}` and
+    /// `"$key"` parameter expansion; a key with spaces, quotes,
+    /// semicolons, or other shell metacharacters would break the
+    /// generated script or (worse) inject shell. Enforced at call time
+    /// via a panic so test authors learn immediately; there is no
+    /// legitimate backend use case for a non-identifier env var name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` is empty, starts with a digit, or contains any
+    /// character outside `[A-Za-z0-9_]`.
     ///
     /// ```no_run
     /// # use secretenv_testing::Response;
@@ -207,7 +216,9 @@ impl Response {
     /// ```
     #[must_use]
     pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env_must_contain.push((key.into(), value.into()));
+        let key = key.into();
+        assert_env_key_shape(&key);
+        self.env_must_contain.push((key, value.into()));
         self
     }
 
@@ -219,13 +230,20 @@ impl Response {
     /// vault backend omits `VAULT_NAMESPACE` when a namespace isn't
     /// configured, because open-source Vault rejects the flag outright.
     ///
+    /// # Panics
+    ///
+    /// Panics if `key` does not match `^[A-Za-z_][A-Za-z0-9_]*$`.
+    /// See [`Self::with_env_var`] for rationale.
+    ///
     /// ```no_run
     /// # use secretenv_testing::Response;
     /// let r = Response::success("v").with_env_absent("VAULT_NAMESPACE");
     /// ```
     #[must_use]
     pub fn with_env_absent(mut self, key: impl Into<String>) -> Self {
-        self.env_must_not_contain.push(key.into());
+        let key = key.into();
+        assert_env_key_shape(&key);
+        self.env_must_not_contain.push(key);
         self
     }
 }
@@ -333,7 +351,16 @@ impl StrictMock {
             let keyword = if first { "if" } else { "elif" };
             first = false;
             writeln!(out, "{keyword} [ \"$joined_argv\" = {} ]; then", sq_escape(&joined)).unwrap();
-            // stdin fragment checks
+            // stdin fragment checks.
+            //
+            // Diagnostic redaction: tests use `stdin_must_contain` to lock
+            // CV-1 discipline — the fragment IS typically the canary
+            // secret value. On a mismatch (CV-1 regression), echoing the
+            // full fragment to stderr would surface it in `cargo test`
+            // output and CI logs. We emit only a fingerprint — the
+            // fragment's length and first 4 chars followed by ellipsis —
+            // enough to identify which rule failed, not enough to recover
+            // the secret.
             for frag in &rule.stdin_must_contain {
                 writeln!(
                     out,
@@ -343,9 +370,9 @@ impl StrictMock {
                 .unwrap();
                 writeln!(
                     out,
-                    "    echo \"strict-mock stdin mismatch (bin={}): expected stdin to contain {}\" >&2",
+                    "    echo \"strict-mock stdin mismatch (bin={}): expected stdin to contain fragment {}\" >&2",
                     escape_for_double_quoted(&self.bin_name),
-                    escape_for_double_quoted(frag)
+                    escape_for_double_quoted(&redact_fragment(frag))
                 )
                 .unwrap();
                 out.push_str("    exit 97\n");
@@ -418,24 +445,70 @@ fn sq_escape(s: &str) -> String {
     out
 }
 
+/// Panics if `key` is not a valid POSIX shell identifier
+/// (`^[A-Za-z_][A-Za-z0-9_]*$`). Called from [`Response::with_env_var`]
+/// and [`Response::with_env_absent`] to catch malformed keys BEFORE
+/// they reach the shell-script generator (where they'd either break
+/// the script's parse or, worse, inject arbitrary shell via a crafted
+/// value like `"KEY}; rm -rf /; :{"`).
+fn assert_env_key_shape(key: &str) {
+    assert!(
+        !key.is_empty(),
+        "strict-mock env key must be non-empty (POSIX identifier ^[A-Za-z_][A-Za-z0-9_]*$)"
+    );
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else { unreachable!("non-empty checked above") };
+    assert!(
+        first == '_' || first.is_ascii_alphabetic(),
+        "strict-mock env key '{key}' must start with a letter or underscore (POSIX identifier)"
+    );
+    for ch in chars {
+        assert!(
+            ch == '_' || ch.is_ascii_alphanumeric(),
+            "strict-mock env key '{key}' contains invalid char '{ch}' (POSIX identifier)"
+        );
+    }
+}
+
+/// Produce a redacted "fingerprint" of a stdin-fragment for use in
+/// shell-script diagnostic output. Full fragment would leak the canary
+/// secret value to CI logs on a CV-1 regression. Format:
+/// `<len>-byte:<first-4-chars>…`. Short fragments (< 8 bytes) are
+/// reported only as `<len>-byte:<redacted>` so no char prefix is
+/// exposed.
+fn redact_fragment(frag: &str) -> String {
+    let len = frag.len();
+    if len < 8 {
+        format!("{len}-byte:<redacted>")
+    } else {
+        let prefix: String = frag.chars().take(4).collect();
+        format!("{len}-byte:{prefix}…")
+    }
+}
+
 /// Escape for embedding inside a double-quoted shell string. Only the
 /// characters that have special meaning inside `"..."` need escaping:
-/// `"`, `\`, `$`, and backtick. Newlines embedded here would break the
-/// generated script's structure — callers must not pass strings with
-/// embedded newlines to this function.
+/// `"`, `\`, `$`, and backtick. Callers MUST NOT pass strings with
+/// embedded newlines — a raw newline here would break the generated
+/// script's line structure. Panics on `\n` / `\r` to catch bugs early
+/// rather than emitting silently-corrupted output.
+///
+/// # Panics
+///
+/// Panics if `s` contains `\n` or `\r`. Used for diagnostic strings
+/// (bin name, argv joined, redacted fragment fingerprint) which must
+/// never contain newlines by construction.
 fn escape_for_double_quoted(s: &str) -> String {
+    assert!(
+        !s.contains('\n') && !s.contains('\r'),
+        "escape_for_double_quoted: embedded newline in diagnostic string: {s:?}"
+    );
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
             '"' | '\\' | '$' | '`' => {
                 out.push('\\');
                 out.push(ch);
-            }
-            '\n' | '\r' => {
-                // Swallow — embedding a raw newline would break the heredoc
-                // structure. The diagnostic lines this is used for should
-                // never contain newlines.
-                out.push(' ');
             }
             _ => out.push(ch),
         }
@@ -598,12 +671,16 @@ mod tests {
     #[test]
     fn stdin_check_rejects_when_fragment_missing() {
         // Secret value `"Value": "new-val"` required on stdin; caller
-        // forgets — mock exits 97 naming the missing fragment.
+        // forgets — mock exits 97 naming only a REDACTED fingerprint
+        // of the missing fragment (length + first 4 chars), never the
+        // full secret. If the redaction regressed, canary values would
+        // leak into CI logs on CV-1 test failures.
         let dir = TempDir::new().unwrap();
+        let secret_fragment = r#""Value": "new-val""#;
         let path = StrictMock::new("aws")
             .on(
                 &["ssm", "put-parameter", "--cli-input-json", "file:///dev/stdin"],
-                Response::success_with_stdin("", vec![r#""Value": "new-val""#.to_owned()]),
+                Response::success_with_stdin("", vec![secret_fragment.to_owned()]),
             )
             .install(dir.path());
         let stdin = r#"{"Name": "/foo"}"#;
@@ -613,8 +690,63 @@ mod tests {
             Some(stdin),
         );
         assert_eq!(code, 97);
-        assert!(stderr.contains("stdin mismatch"));
-        assert!(stderr.contains("new-val"));
+        assert!(stderr.contains("stdin mismatch"), "stderr: {stderr}");
+        // Fingerprint present: length prefix + first 4 chars + ellipsis.
+        let expected_len = secret_fragment.len();
+        assert!(
+            stderr.contains(&format!("{expected_len}-byte:")),
+            "stderr names fragment length: {stderr}"
+        );
+        // Canary: the full secret value MUST NOT appear in stderr.
+        assert!(
+            !stderr.contains("new-val"),
+            "secret value leaked to stderr — CV-1 diagnostic redaction regressed: {stderr}"
+        );
+    }
+
+    #[test]
+    fn stdin_fragment_redaction_fingerprint_hides_value_never_leaks_full() {
+        // Direct unit test on the redact_fragment helper — documents
+        // the contract independent of the shell roundtrip.
+        assert_eq!(redact_fragment("short"), "5-byte:<redacted>");
+        assert_eq!(redact_fragment("a-bit-longer-value"), "18-byte:a-bi…");
+        // Full secret never present.
+        let sensitive = "sk_live_TOPSECRET_canary_12345";
+        let fp = redact_fragment(sensitive);
+        assert!(!fp.contains("TOPSECRET"), "fingerprint must not leak secret: {fp}");
+        assert!(!fp.contains("canary"), "fingerprint must not leak secret: {fp}");
+    }
+
+    #[test]
+    #[should_panic(expected = "POSIX identifier")]
+    fn with_env_var_panics_on_empty_key() {
+        let _ = Response::success("v").with_env_var("", "val");
+    }
+
+    #[test]
+    #[should_panic(expected = "POSIX identifier")]
+    fn with_env_var_panics_on_leading_digit_key() {
+        let _ = Response::success("v").with_env_var("3FOO", "val");
+    }
+
+    #[test]
+    #[should_panic(expected = "POSIX identifier")]
+    fn with_env_var_panics_on_shell_injection_in_key() {
+        // A key containing `}; rm -rf / ;` would inject shell into the
+        // generated mock if not caught at construction time.
+        let _ = Response::success("v").with_env_var("KEY}; rm -rf /; :{", "val");
+    }
+
+    #[test]
+    #[should_panic(expected = "POSIX identifier")]
+    fn with_env_absent_panics_on_invalid_key() {
+        let _ = Response::success("v").with_env_absent("has-dash");
+    }
+
+    #[test]
+    #[should_panic(expected = "embedded newline")]
+    fn escape_for_double_quoted_panics_on_newline() {
+        let _ = escape_for_double_quoted("line1\nline2");
     }
 
     #[test]

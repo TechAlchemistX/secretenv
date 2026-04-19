@@ -8,6 +8,10 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-19
+
+**Headline:** two new cloud backends (GCP Secret Manager + Azure Key Vault), the canonical `#key=value` fragment grammar locked in (v0.2.1 work), strict-mode mock test harness retrofitted across every backend (v0.2.2 → v0.2.7 + Phase 0), shared factory helpers, parallel `check()` probes via `tokio::join!`, and a **relicensing from MIT → AGPL-3.0-only + Contributor License Agreement**. The entire v0.2.1 → v0.2.7 internal-dev arc ships as one cohesive `v0.3.0` release (the last public version was v0.2.0 on 2026-04-18; v0.2.x patches were dev-merged without separate publishes per the aggregate-release posture locked during the cycle). 7 backends live: local, aws-ssm, aws-secrets, 1password, vault, **gcp**, **azure**.
+
 ### Fixed
 
 - **Azure vault URL regex accepted 1-char names but rejected 2-char names.** The original pattern `^https://[a-zA-Z0-9]([a-zA-Z0-9-]{1,22}[a-zA-Z0-9])?\.vault\...` made the middle+last group optional, allowing a 1-char vault name while disallowing 2-char. Azure's own rule is 3-24. Flipped to `^https://[a-zA-Z0-9][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]\.vault\...` (required middle+last, min 3 chars, max 24). Three new factory tests lock the boundary: `factory_rejects_one_char_vault_name`, `factory_rejects_two_char_vault_name`, `factory_accepts_three_char_vault_name`. Caught by the v0.3 closing code-review audit.

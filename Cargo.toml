@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.3.0-alpha.0"
+version      = "0.3.0"
 edition      = "2021"
 license      = "AGPL-3.0-only"
 repository   = "https://github.com/TechAlchemistX/secretenv"
@@ -32,14 +32,14 @@ readme       = "README.md"
 # (`secretenv-core`, `secretenv-backend-*`). The CLI is the exception: it
 # lives at `crates/secretenv-cli/` but publishes as `secretenv` so
 # `cargo install secretenv` and the binary name line up.
-secretenv-core               = { path = "crates/secretenv-core",                           version = "0.3.0-alpha.0" }
-secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.3.0-alpha.0" }
-secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.3.0-alpha.0" }
-secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.3.0-alpha.0" }
-secretenv-backend-vault      = { path = "crates/backends/secretenv-backend-vault",         version = "0.3.0-alpha.0" }
-secretenv-backend-aws-secrets = { path = "crates/backends/secretenv-backend-aws-secrets",  version = "0.3.0-alpha.0" }
-secretenv-backend-gcp        = { path = "crates/backends/secretenv-backend-gcp",           version = "0.3.0-alpha.0" }
-secretenv-backend-azure      = { path = "crates/backends/secretenv-backend-azure",         version = "0.3.0-alpha.0" }
+secretenv-core               = { path = "crates/secretenv-core",                           version = "0.3.0" }
+secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.3.0" }
+secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.3.0" }
+secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.3.0" }
+secretenv-backend-vault      = { path = "crates/backends/secretenv-backend-vault",         version = "0.3.0" }
+secretenv-backend-aws-secrets = { path = "crates/backends/secretenv-backend-aws-secrets",  version = "0.3.0" }
+secretenv-backend-gcp        = { path = "crates/backends/secretenv-backend-gcp",           version = "0.3.0" }
+secretenv-backend-azure      = { path = "crates/backends/secretenv-backend-azure",         version = "0.3.0" }
 # Unpublished test harness — path-only, no version. Revisit publishing once
 # the API has proven itself across Vault + AWS Secrets backends (v0.3+).
 secretenv-testing            = { path = "crates/secretenv-testing" }

@@ -8,6 +8,23 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Azure vault URL regex accepted 1-char names but rejected 2-char names.** The original pattern `^https://[a-zA-Z0-9]([a-zA-Z0-9-]{1,22}[a-zA-Z0-9])?\.vault\...` made the middle+last group optional, allowing a 1-char vault name while disallowing 2-char. Azure's own rule is 3-24. Flipped to `^https://[a-zA-Z0-9][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]\.vault\...` (required middle+last, min 3 chars, max 24). Three new factory tests lock the boundary: `factory_rejects_one_char_vault_name`, `factory_rejects_two_char_vault_name`, `factory_accepts_three_char_vault_name`. Caught by the v0.3 closing code-review audit.
+
+### Added (closing-audit fixes, same unreleased window)
+
+- **`Response::with_stdin_fragment(impl Into<String>)`** chainable method on `secretenv-testing::Response`. Appends to `stdin_must_contain`, allowing fluent composition: `Response::success("ok\n").with_stdin_fragment("secret")`. The existing `success_with_stdin(stdout, Vec<String>)` constructor remains for back-compat.
+- **`check_extensive_counts_registry_entries`** unit test added to both `secretenv-backend-gcp` and `secretenv-backend-azure`. Locks the trait-default `Ok(self.list(test_uri).await?.len())` behavior for both v0.3 backends.
+- **`set_drift_catch_rejects_data_flag_on_argv`** unit test added to `secretenv-backend-gcp`. Positive CV-1 lock mirroring azure's `--value`-leak + `--encoding-utf-8` locks — declares the buggy argv form (`--data=<secret>`) so a regression emitting the secret on argv instead of via `--data-file=/dev/stdin` fails.
+- **Fragment-error messages now link to `docs/fragment-vocabulary.md`** in both gcp and azure's `resolve_version` (matches the aws-secrets shorthand error). Tests extended with `msg.contains("fragment-vocabulary")` assertions.
+
+### Changed (v0.3 closing audit polish)
+
+- **`BackendUri::fragment_directives` return type: `HashMap<String, String>` → `IndexMap<String, String>`.** Insertion order now deterministic = URI-written order, removes the need for `sort_unstable` in backend error-message construction. Backend code calls `.shift_remove("<key>")` instead of `.remove(...)` per `IndexMap`'s deprecation guidance. Pre-launch breaking change per the [[feedback_prelaunch_breaking_changes]] policy. Touched: `secretenv-core/src/uri.rs`, `secretenv-backend-{aws-secrets,gcp,azure}/src/lib.rs`.
+- **`strict::Rule` refactor:** `Rule` in `secretenv-testing::strict` used to flatten every `Response` field (`argv, stdin_must_contain, env_must_contain, env_must_not_contain, stdout, stderr, exit_code`). Now `Rule { argv, response: Response }` — thin `(argv, response)` pair. `StrictMock::on` copies one struct move instead of seven field moves. Internal refactor; `Rule` is private so no API break.
+- **Drift-catch assertion bodies tightened** from `msg.contains("strict-mock-no-match") || msg.contains("azure")` (always-true tautology — every azure error begins with `azure backend '…'`) to `msg.contains("strict-mock-no-match")` only. The `.unwrap_err()` at the outer layer remains the load-bearing lock; the content check now specifically confirms mock-level divergence rather than any azure-named error. Applied to gcp + azure drift-catch tests. Caught by the v0.3 closing security review.
+
 ### Changed
 
 - **LICENSE: MIT → AGPL-3.0-only** (pre-launch breaking change per the policy documented in the memory system). MIT was the license of v0.1 and v0.2.0 — the latter is the only version currently published to crates.io / Homebrew / GitHub Releases. v0.3.0 and all subsequent releases ship under GNU Affero General Public License v3.0 (AGPL-3.0-only). The published MIT releases (v0.1.x, v0.2.0) remain available under their original terms; AGPLv3 applies going forward. Rationale: v0.3.0 finalizes the big-3-cloud-providers story (AWS, GCP, Azure) and the install base at the time of this change is effectively zero. AGPLv3 closes the SaaS-wrapping loophole (§13 requires source availability to network users of modified versions) while preserving user freedom for direct installs.

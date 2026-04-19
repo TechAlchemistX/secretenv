@@ -116,7 +116,8 @@ impl GcpBackend {
             unsupported.sort_unstable();
             bail!(
                 "gcp backend '{}': URI '{}' has unsupported fragment directive(s) [{}]; \
-                 gcp recognizes only 'version' (example: '#version=5')",
+                 gcp recognizes only 'version' (example: '#version=5'). \
+                 See docs/fragment-vocabulary.md",
                 self.instance_name,
                 uri.raw,
                 unsupported.join(", ")
@@ -128,13 +129,14 @@ impl GcpBackend {
             extra.sort_unstable();
             bail!(
                 "gcp backend '{}': URI '{}' has unsupported directive(s) [{}] alongside \
-                 'version'; gcp recognizes only 'version'",
+                 'version'; gcp recognizes only 'version'. \
+                 See docs/fragment-vocabulary.md",
                 self.instance_name,
                 uri.raw,
                 extra.join(", ")
             );
         }
-        let Some(value) = directives.remove("version") else {
+        let Some(value) = directives.shift_remove("version") else {
             unreachable!("version presence was checked above")
         };
         if value == "latest" {
@@ -832,6 +834,7 @@ mod tests {
         assert!(msg.contains("unsupported"), "error names the problem: {msg}");
         assert!(msg.contains("json-key"), "lists offender: {msg}");
         assert!(msg.contains("version"), "names the supported directive: {msg}");
+        assert!(msg.contains("fragment-vocabulary"), "error links to canonical doc: {msg}");
         assert!(
             !msg.contains("strict-mock-no-match"),
             "error must come from backend, not mock: {msg}"
@@ -1062,10 +1065,61 @@ mod tests {
         let uri = BackendUri::parse("gcp-prod:///x").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
+        // `unwrap_err` is the load-bearing regression lock. The content
+        // check narrows to strict-mock-divergence specifically — a
+        // weakened `msg.contains("gcp")` fallback would pass on any
+        // unrelated gcp error and mask a different class of regression.
+        assert!(msg.contains("strict-mock-no-match"), "must be mock-level divergence, got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn set_drift_catch_rejects_data_flag_on_argv() {
+        // POSITIVE lock mirroring azure's `--value`-leak test. The
+        // CV-1 sentinel on this backend is `--data-file=/dev/stdin`;
+        // the BUGGY form would carry the secret directly on argv via
+        // `--data=<secret>` or `--data-file=<inline-value>`. Declared
+        // argv carries the buggy `--data=<secret>` form so the real
+        // post-fix backend (which emits `--data-file=/dev/stdin`)
+        // diverges, exit 97, surfacing as an error.
+        let secret = "sk_live_would_leak_via_data_flag_gcp";
+        let dir = TempDir::new().unwrap();
+        let buggy_argv: Vec<&str> = vec![
+            "secrets",
+            "versions",
+            "add",
+            "rotate_me",
+            "--data",
+            secret,
+            "--project",
+            PROJECT,
+            "--quiet",
+        ];
+        let mock = StrictMock::new("gcloud")
+            .on(&buggy_argv, Response::success("ok\n"))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("gcp-prod:///rotate_me").unwrap();
+        let err = b.set(&uri, secret).await.unwrap_err();
+        let msg = format!("{err:#}");
         assert!(
-            msg.contains("strict-mock-no-match") || msg.contains("gcp"),
-            "expected strict no-match propagated as get() failure: {msg}"
+            msg.contains("strict-mock-no-match"),
+            "must be mock-level divergence — regression emitting --data=<secret> would match: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn check_extensive_counts_registry_entries() {
+        // Locks the Backend-trait-default `check_extensive` behavior
+        // (list().len()) for gcp. A regression that overrode the
+        // method with a broken impl would be caught here.
+        let dir = TempDir::new().unwrap();
+        let body = "{\"alpha\":\"gcp-prod:///a\",\"beta\":\"gcp-prod:///b\",\"gamma\":\"gcp-prod:///c\"}\n";
+        let mock = StrictMock::new("gcloud")
+            .on(&get_argv("reg_doc", "latest"), Response::success(body))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("gcp-prod:///reg_doc").unwrap();
+        assert_eq!(b.check_extensive(&uri).await.unwrap(), 3);
     }
 
     #[tokio::test]

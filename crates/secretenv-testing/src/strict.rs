@@ -75,15 +75,16 @@ pub struct StrictMock {
 /// One invocation rule: the exact argv that triggers it + the response
 /// the mock emits on match. Constructed via [`StrictMock::on`]; not
 /// typically instantiated directly.
+///
+/// v0.3 Phase 2 closing audit: this struct used to flatten every
+/// `Response` field; now it's a thin `(argv, response)` pair so
+/// `StrictMock::on` copies one struct move instead of seven field
+/// moves, and `Response` is the single source of truth for rule
+/// body shape.
 #[derive(Clone)]
 struct Rule {
     argv: Vec<String>,
-    stdin_must_contain: Vec<String>,
-    env_must_contain: Vec<(String, String)>,
-    env_must_not_contain: Vec<String>,
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
+    response: Response,
 }
 
 /// The response a matched rule emits.
@@ -246,6 +247,28 @@ impl Response {
         self.env_must_not_contain.push(key);
         self
     }
+
+    /// Chainable equivalent of appending to [`stdin_must_contain`].
+    /// Call multiple times to require multiple fragments; the check
+    /// is AND-across-fragments (all must appear in stdin).
+    ///
+    /// The existing [`Self::success_with_stdin`] constructor takes a
+    /// `Vec<String>` at creation time; this method is purely additive
+    /// and lets tests compose the same rule fluently:
+    ///
+    /// ```no_run
+    /// # use secretenv_testing::Response;
+    /// // Equivalent to:
+    /// //   Response::success_with_stdin("ok\n", vec!["secret".into()])
+    /// let r = Response::success("ok\n").with_stdin_fragment("secret");
+    /// ```
+    ///
+    /// [`stdin_must_contain`]: Self::stdin_must_contain
+    #[must_use]
+    pub fn with_stdin_fragment(mut self, fragment: impl Into<String>) -> Self {
+        self.stdin_must_contain.push(fragment.into());
+        self
+    }
 }
 
 impl StrictMock {
@@ -262,15 +285,7 @@ impl StrictMock {
     /// contain spaces (breaks the join semantics); for CLI argv this is
     /// effectively never an issue.
     pub fn on(mut self, argv: &[&str], response: Response) -> Self {
-        self.rules.push(Rule {
-            argv: argv.iter().map(|s| (*s).to_owned()).collect(),
-            stdin_must_contain: response.stdin_must_contain,
-            env_must_contain: response.env_must_contain,
-            env_must_not_contain: response.env_must_not_contain,
-            stdout: response.stdout,
-            stderr: response.stderr,
-            exit_code: response.exit_code,
-        });
+        self.rules.push(Rule { argv: argv.iter().map(|s| (*s).to_owned()).collect(), response });
         self
     }
 
@@ -300,7 +315,7 @@ impl StrictMock {
         writeln!(out, "# bin: {}", self.bin_name).unwrap();
         writeln!(out, "# rules: {}\n", self.rules.len()).unwrap();
         out.push_str("joined_argv=\"$*\"\n");
-        let needs_stdin = self.rules.iter().any(|r| !r.stdin_must_contain.is_empty());
+        let needs_stdin = self.rules.iter().any(|r| !r.response.stdin_must_contain.is_empty());
         if needs_stdin {
             // Buffer stdin once up-front; matching rules below re-check
             // it via POSIX grep -F -q. Using `cat` means a rule that
@@ -361,7 +376,7 @@ impl StrictMock {
             // fragment's length and first 4 chars followed by ellipsis —
             // enough to identify which rule failed, not enough to recover
             // the secret.
-            for frag in &rule.stdin_must_contain {
+            for frag in &rule.response.stdin_must_contain {
                 writeln!(
                     out,
                     "  printf '%s' \"$stdin_body\" | grep -F -q -- {} || {{",
@@ -381,7 +396,7 @@ impl StrictMock {
             // env must-contain checks — use POSIX parameter expansion
             // (`${KEY+set}`, `"$KEY"`) so values with spaces, quotes,
             // and regex metacharacters don't need grep-level escaping.
-            for (key, value) in &rule.env_must_contain {
+            for (key, value) in &rule.response.env_must_contain {
                 writeln!(
                     out,
                     "  if [ \"${{{key}+set}}\" != \"set\" ] || [ \"${key}\" != {} ]; then",
@@ -399,7 +414,7 @@ impl StrictMock {
                 out.push_str("  fi\n");
             }
             // env must-not-contain checks.
-            for key in &rule.env_must_not_contain {
+            for key in &rule.response.env_must_not_contain {
                 writeln!(out, "  if [ \"${{{key}+set}}\" = \"set\" ]; then").unwrap();
                 writeln!(
                     out,
@@ -411,13 +426,13 @@ impl StrictMock {
                 out.push_str("  fi\n");
             }
             // stdout + stderr emission
-            if !rule.stdout.is_empty() {
-                writeln!(out, "  printf '%s' {}", sq_escape(&rule.stdout)).unwrap();
+            if !rule.response.stdout.is_empty() {
+                writeln!(out, "  printf '%s' {}", sq_escape(&rule.response.stdout)).unwrap();
             }
-            if !rule.stderr.is_empty() {
-                writeln!(out, "  printf '%s' {} >&2", sq_escape(&rule.stderr)).unwrap();
+            if !rule.response.stderr.is_empty() {
+                writeln!(out, "  printf '%s' {} >&2", sq_escape(&rule.response.stderr)).unwrap();
             }
-            writeln!(out, "  exit {}", rule.exit_code).unwrap();
+            writeln!(out, "  exit {}", rule.response.exit_code).unwrap();
         }
 
         out.push_str("else\n");

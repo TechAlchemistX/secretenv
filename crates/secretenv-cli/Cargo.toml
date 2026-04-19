@@ -23,6 +23,7 @@ secretenv-backend-aws-ssm.workspace  = true
 secretenv-backend-1password.workspace = true
 secretenv-backend-vault.workspace     = true
 secretenv-backend-aws-secrets.workspace = true
+secretenv-backend-gcp.workspace       = true
 anyhow.workspace              = true
 clap.workspace                = true
 clap_complete.workspace       = true

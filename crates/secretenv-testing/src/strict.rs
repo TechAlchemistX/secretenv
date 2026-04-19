@@ -79,6 +79,8 @@ pub struct StrictMock {
 struct Rule {
     argv: Vec<String>,
     stdin_must_contain: Vec<String>,
+    env_must_contain: Vec<(String, String)>,
+    env_must_not_contain: Vec<String>,
     stdout: String,
     stderr: String,
     exit_code: i32,
@@ -106,6 +108,23 @@ pub struct Response {
     ///
     /// [cv1]: https://github.com/TechAlchemistX/secretenv/blob/main/kb/wiki/build-plan-v0.2.md
     pub stdin_must_contain: Vec<String>,
+    /// If non-empty, each `(key, value)` pair must be present in the
+    /// mock process's environment as `key=value` exactly (value compared
+    /// byte-for-byte). A missing or differently-valued key exits 97.
+    /// Used by backends whose CLI behavior is env-driven — e.g. the
+    /// v0.2 vault backend routes `VAULT_ADDR` / `VAULT_NAMESPACE` via
+    /// env rather than argv flags (PR #33 BUG-1 fix).
+    ///
+    /// Populate via [`Response::with_env_var`].
+    pub env_must_contain: Vec<(String, String)>,
+    /// If non-empty, each listed env-var key must be UNSET in the mock
+    /// process's environment. A set key (even with empty value) exits
+    /// 97. Used by backends that conditionally pass env vars — e.g. the
+    /// vault backend must NOT set `VAULT_NAMESPACE` when a namespace
+    /// isn't configured (open-source Vault rejects the flag).
+    ///
+    /// Populate via [`Response::with_env_absent`].
+    pub env_must_not_contain: Vec<String>,
 }
 
 impl Response {
@@ -116,6 +135,8 @@ impl Response {
             stderr: String::new(),
             exit_code: 0,
             stdin_must_contain: Vec::new(),
+            env_must_contain: Vec::new(),
+            env_must_not_contain: Vec::new(),
         }
     }
 
@@ -132,6 +153,8 @@ impl Response {
             stderr: stderr.into(),
             exit_code,
             stdin_must_contain: Vec::new(),
+            env_must_contain: Vec::new(),
+            env_must_not_contain: Vec::new(),
         }
     }
 
@@ -139,7 +162,14 @@ impl Response {
     /// fragment as a literal substring. Used to test CV-1 discipline —
     /// secret values must reach the child process via stdin, never argv.
     pub fn success_with_stdin(stdout: impl Into<String>, stdin_must_contain: Vec<String>) -> Self {
-        Self { stdout: stdout.into(), stderr: String::new(), exit_code: 0, stdin_must_contain }
+        Self {
+            stdout: stdout.into(),
+            stderr: String::new(),
+            exit_code: 0,
+            stdin_must_contain,
+            env_must_contain: Vec::new(),
+            env_must_not_contain: Vec::new(),
+        }
     }
 
     /// Chainable: attach a stderr body to any response. Useful for CLIs
@@ -154,6 +184,48 @@ impl Response {
     #[must_use]
     pub fn with_stderr(mut self, stderr: impl Into<String>) -> Self {
         self.stderr = stderr.into();
+        self
+    }
+
+    /// Chainable: require this rule's mock subprocess to have `key=value`
+    /// in its environment. Checked byte-for-byte against the value that
+    /// shell sees via `$KEY`. Missing or mismatched → exit 97 with a
+    /// diagnostic naming the key and expected value.
+    ///
+    /// Used for backends that route configuration via env rather than
+    /// argv — see the vault backend's `VAULT_ADDR` / `VAULT_NAMESPACE`
+    /// paths (PR #33 BUG-1 fix).
+    ///
+    /// `key` must be a valid POSIX shell identifier (`[A-Z_][A-Z0-9_]*`
+    /// by convention); the generated script uses `${key+set}` / `"$key"`
+    /// parameter expansion and will fail to parse for invalid keys.
+    ///
+    /// ```no_run
+    /// # use secretenv_testing::Response;
+    /// let r = Response::success("v")
+    ///     .with_env_var("VAULT_ADDR", "https://vault.example.com");
+    /// ```
+    #[must_use]
+    pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_must_contain.push((key.into(), value.into()));
+        self
+    }
+
+    /// Chainable: require this rule's mock subprocess to have `key` UNSET
+    /// in its environment. A set key — even with an empty value — exits
+    /// 97 with a diagnostic.
+    ///
+    /// Used by backends that conditionally pass env vars — e.g. the
+    /// vault backend omits `VAULT_NAMESPACE` when a namespace isn't
+    /// configured, because open-source Vault rejects the flag outright.
+    ///
+    /// ```no_run
+    /// # use secretenv_testing::Response;
+    /// let r = Response::success("v").with_env_absent("VAULT_NAMESPACE");
+    /// ```
+    #[must_use]
+    pub fn with_env_absent(mut self, key: impl Into<String>) -> Self {
+        self.env_must_not_contain.push(key.into());
         self
     }
 }
@@ -175,6 +247,8 @@ impl StrictMock {
         self.rules.push(Rule {
             argv: argv.iter().map(|s| (*s).to_owned()).collect(),
             stdin_must_contain: response.stdin_must_contain,
+            env_must_contain: response.env_must_contain,
+            env_must_not_contain: response.env_must_not_contain,
             stdout: response.stdout,
             stderr: response.stderr,
             exit_code: response.exit_code,
@@ -277,6 +351,38 @@ impl StrictMock {
                 out.push_str("    exit 97\n");
                 out.push_str("  }\n");
             }
+            // env must-contain checks — use POSIX parameter expansion
+            // (`${KEY+set}`, `"$KEY"`) so values with spaces, quotes,
+            // and regex metacharacters don't need grep-level escaping.
+            for (key, value) in &rule.env_must_contain {
+                writeln!(
+                    out,
+                    "  if [ \"${{{key}+set}}\" != \"set\" ] || [ \"${key}\" != {} ]; then",
+                    sq_escape(value)
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    echo \"strict-mock env mismatch (bin={}): expected {key}={}\" >&2",
+                    escape_for_double_quoted(&self.bin_name),
+                    escape_for_double_quoted(value)
+                )
+                .unwrap();
+                out.push_str("    exit 97\n");
+                out.push_str("  fi\n");
+            }
+            // env must-not-contain checks.
+            for key in &rule.env_must_not_contain {
+                writeln!(out, "  if [ \"${{{key}+set}}\" = \"set\" ]; then").unwrap();
+                writeln!(
+                    out,
+                    "    echo \"strict-mock env mismatch (bin={}): {key} must not be set\" >&2",
+                    escape_for_double_quoted(&self.bin_name)
+                )
+                .unwrap();
+                out.push_str("    exit 97\n");
+                out.push_str("  fi\n");
+            }
             // stdout + stderr emission
             if !rule.stdout.is_empty() {
                 writeln!(out, "  printf '%s' {}", sq_escape(&rule.stdout)).unwrap();
@@ -349,8 +455,23 @@ mod tests {
     /// Run the installed mock with the given argv and optional stdin,
     /// returning `(exit_code, stdout, stderr)`.
     fn run(path: &Path, argv: &[&str], stdin: Option<&str>) -> (i32, String, String) {
+        run_with_env(path, argv, &[], stdin)
+    }
+
+    /// Run the installed mock with argv, explicit env-var overrides, and
+    /// optional stdin. `env_clear()` is NOT called — the parent process's
+    /// env propagates through except for the provided overrides.
+    fn run_with_env(
+        path: &Path,
+        argv: &[&str],
+        env: &[(&str, &str)],
+        stdin: Option<&str>,
+    ) -> (i32, String, String) {
         let mut cmd = Command::new(path);
         cmd.args(argv);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         if stdin.is_some() {
@@ -494,6 +615,128 @@ mod tests {
         assert_eq!(code, 97);
         assert!(stderr.contains("stdin mismatch"));
         assert!(stderr.contains("new-val"));
+    }
+
+    #[test]
+    fn env_must_contain_accepts_when_key_equals_value() {
+        let dir = TempDir::new().unwrap();
+        let path = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/x"],
+                Response::success("v\n").with_env_var("VAULT_ADDR", "https://vault.example.com"),
+            )
+            .install(dir.path());
+        let (code, stdout, stderr) = run_with_env(
+            &path,
+            &["kv", "get", "-field=value", "secret/x"],
+            &[("VAULT_ADDR", "https://vault.example.com")],
+            None,
+        );
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert_eq!(stdout, "v\n");
+    }
+
+    #[test]
+    fn env_must_contain_rejects_when_value_mismatches() {
+        let dir = TempDir::new().unwrap();
+        let path = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/x"],
+                Response::success("v").with_env_var("VAULT_ADDR", "https://vault.example.com"),
+            )
+            .install(dir.path());
+        let (code, _, stderr) = run_with_env(
+            &path,
+            &["kv", "get", "-field=value", "secret/x"],
+            &[("VAULT_ADDR", "https://bogus.example.com")],
+            None,
+        );
+        assert_eq!(code, 97);
+        assert!(stderr.contains("env mismatch"), "stderr: {stderr}");
+        assert!(stderr.contains("VAULT_ADDR"), "stderr names key: {stderr}");
+        assert!(stderr.contains("vault.example.com"), "stderr names expected value: {stderr}");
+    }
+
+    #[test]
+    fn env_must_contain_rejects_when_key_absent() {
+        let dir = TempDir::new().unwrap();
+        let path = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/x"],
+                Response::success("v").with_env_var("VAULT_ADDR", "https://vault.example.com"),
+            )
+            .install(dir.path());
+        // Explicitly omit VAULT_ADDR from the child env.
+        let (code, _, stderr) =
+            run_with_env(&path, &["kv", "get", "-field=value", "secret/x"], &[], None);
+        // Note: if the parent process already has VAULT_ADDR set, this
+        // test's value may inadvertently match. Tests in this crate
+        // don't set VAULT_ADDR, but a developer running with vault
+        // environment pre-loaded could see a false PASS. The build-log
+        // flags this as a known harness quirk.
+        if std::env::var_os("VAULT_ADDR").is_none() {
+            assert_eq!(code, 97);
+            assert!(stderr.contains("env mismatch"), "stderr: {stderr}");
+        }
+    }
+
+    #[test]
+    fn env_must_not_contain_rejects_when_key_set() {
+        let dir = TempDir::new().unwrap();
+        let path = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/x"],
+                Response::success("v").with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        let (code, _, stderr) = run_with_env(
+            &path,
+            &["kv", "get", "-field=value", "secret/x"],
+            &[("VAULT_NAMESPACE", "engineering")],
+            None,
+        );
+        assert_eq!(code, 97);
+        assert!(stderr.contains("env mismatch"), "stderr: {stderr}");
+        assert!(stderr.contains("VAULT_NAMESPACE"), "stderr names key: {stderr}");
+        assert!(stderr.contains("must not be set"), "stderr describes violation: {stderr}");
+    }
+
+    #[test]
+    fn env_must_not_contain_accepts_when_key_absent() {
+        let dir = TempDir::new().unwrap();
+        let path = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/x"],
+                Response::success("ok").with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        // Only VAULT_ADDR propagates (for realism); VAULT_NAMESPACE is
+        // deliberately NOT set on the child.
+        let (code, stdout, stderr) = run_with_env(
+            &path,
+            &["kv", "get", "-field=value", "secret/x"],
+            &[("VAULT_ADDR", "https://vault.example.com")],
+            None,
+        );
+        if std::env::var_os("VAULT_NAMESPACE").is_none() {
+            assert_eq!(code, 0, "stderr: {stderr}");
+            assert_eq!(stdout, "ok");
+        }
+    }
+
+    #[test]
+    fn env_value_with_special_chars_is_quoted_safely() {
+        // Value contains a single quote, a dollar sign, and a space —
+        // sq_escape + parameter-expansion comparison should survive all
+        // three.
+        let dir = TempDir::new().unwrap();
+        let nasty = "it's $HOME + space";
+        let path = StrictMock::new("x")
+            .on(&["probe"], Response::success("ok").with_env_var("WEIRD_KEY", nasty))
+            .install(dir.path());
+        let (code, stdout, stderr) = run_with_env(&path, &["probe"], &[("WEIRD_KEY", nasty)], None);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert_eq!(stdout, "ok");
     }
 
     #[test]

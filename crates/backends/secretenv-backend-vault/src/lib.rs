@@ -441,20 +441,19 @@ fn optional_string(
 mod tests {
     use std::path::Path;
 
+    use secretenv_testing::{Response, StrictMock};
     use tempfile::TempDir;
 
     use super::*;
 
-    /// Thin wrapper over the shared `secretenv_testing` installer.
-    fn install_mock_vault(dir: &TempDir, body: &str) -> std::path::PathBuf {
-        secretenv_testing::install_mock(dir.path(), "vault", body)
-    }
+    const VAULT_ADDR: &str = "https://vault.example.com";
+    const VAULT_NS: &str = "engineering";
 
     fn backend(mock_path: &Path, namespace: Option<&str>) -> VaultBackend {
         VaultBackend {
             backend_type: "vault",
             instance_name: "vault-eng".to_owned(),
-            vault_address: "https://vault.example.com".to_owned(),
+            vault_address: VAULT_ADDR.to_owned(),
             vault_namespace: namespace.map(ToOwned::to_owned),
             vault_bin: mock_path.to_str().unwrap().to_owned(),
         }
@@ -464,10 +463,35 @@ mod tests {
         VaultBackend {
             backend_type: "vault",
             instance_name: "vault-eng".to_owned(),
-            vault_address: "https://vault.example.com".to_owned(),
+            vault_address: VAULT_ADDR.to_owned(),
             vault_namespace: None,
             vault_bin: "/definitely/not/a/real/path/to/vault-binary-12345".to_owned(),
         }
+    }
+
+    /// Build a `Response::success` + `VAULT_ADDR` env check +
+    /// `VAULT_NAMESPACE` absence check — the common response shape for
+    /// no-namespace vault tests. Captures the PR #33 BUG-1 regression
+    /// lock (no -address/-namespace argv flags; routing is env-only) as
+    /// a typed assertion on every vault argv.
+    fn ok_no_ns(stdout: &str) -> Response {
+        Response::success(stdout)
+            .with_env_var("VAULT_ADDR", VAULT_ADDR)
+            .with_env_absent("VAULT_NAMESPACE")
+    }
+
+    /// Same as `ok_no_ns` but requires `VAULT_NAMESPACE=engineering`.
+    fn ok_with_ns(stdout: &str) -> Response {
+        Response::success(stdout)
+            .with_env_var("VAULT_ADDR", VAULT_ADDR)
+            .with_env_var("VAULT_NAMESPACE", VAULT_NS)
+    }
+
+    /// Failure-response variant with PR #33 env-pathway checks.
+    fn fail_no_ns(exit_code: i32, stderr: &str) -> Response {
+        Response::failure(exit_code, stderr)
+            .with_env_var("VAULT_ADDR", VAULT_ADDR)
+            .with_env_absent("VAULT_NAMESPACE")
     }
 
     // ---- Factory tests ----
@@ -566,22 +590,19 @@ mod tests {
     #[tokio::test]
     async fn check_returns_ok_when_version_and_token_lookup_succeed() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "Vault v1.15.2 ('abc123')"
-  exit 0
-fi
-if [ "$1" = "token" ] && [ "$2" = "lookup" ]; then
-  cat <<'JSON'
-{"data":{"display_name":"token-abc","policies":["default","engineering-read"],"ttl":3600}}
-JSON
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            // --version is invoked WITHOUT env var setup — see
+            // vault_command() call-site in check(): only token-lookup
+            // goes through vault_command. So declare no env checks for
+            // --version, but strict env checks for token lookup.
+            .on(&["--version"], Response::success("Vault v1.15.2 ('abc123')\n"))
+            .on(
+                &["token", "lookup", "-format=json"],
+                ok_no_ns(
+                    "{\"data\":{\"display_name\":\"token-abc\",\"policies\":[\"default\",\"engineering-read\"],\"ttl\":3600}}\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::Ok { cli_version, identity } => {
@@ -596,21 +617,14 @@ exit 1
     #[tokio::test]
     async fn check_includes_namespace_in_identity_when_configured() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "Vault v1.15.2 ('abc123')"
-  exit 0
-fi
-if [ "$1" = "token" ] && [ "$2" = "lookup" ]; then
-  echo '{"data":{"display_name":"token-x"}}'
-  exit 0
-fi
-exit 1
-"#,
-        );
-        let b = backend(&mock, Some("engineering"));
+        let mock = StrictMock::new("vault")
+            .on(&["--version"], Response::success("Vault v1.15.2 ('abc123')\n"))
+            .on(
+                &["token", "lookup", "-format=json"],
+                ok_with_ns("{\"data\":{\"display_name\":\"token-x\"}}\n"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, Some(VAULT_NS));
         match b.check().await {
             BackendStatus::Ok { identity, .. } => {
                 assert!(identity.contains("namespace=engineering"));
@@ -622,20 +636,10 @@ exit 1
     #[tokio::test]
     async fn check_returns_not_authenticated_on_token_lookup_failure() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "Vault v1.15.2"
-  exit 0
-fi
-if [ "$1" = "token" ] && [ "$2" = "lookup" ]; then
-  echo "* permission denied" >&2
-  exit 2
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(&["--version"], Response::success("Vault v1.15.2\n"))
+            .on(&["token", "lookup", "-format=json"], fail_no_ns(2, "* permission denied\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::NotAuthenticated { hint } => {
@@ -651,16 +655,9 @@ exit 1
     #[tokio::test]
     async fn get_returns_trimmed_value() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo "supersekrit"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-field=value", "secret/myapp/db"], ok_no_ns("supersekrit\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/db").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "supersekrit");
@@ -671,16 +668,9 @@ exit 1
         // Vault prints "\n" when the value is empty; we strip the one
         // trailing '\n' → "".
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo ""
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-field=value", "secret/myapp/empty"], ok_no_ns("\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/empty").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "");
@@ -690,16 +680,9 @@ exit 1
     async fn get_preserves_internal_newlines() {
         // Multi-line secret body: we only strip a single trailing '\n'.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  printf 'line1\nline2\n'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-field=value", "secret/myapp/ws"], ok_no_ns("line1\nline2\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/ws").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
@@ -708,16 +691,12 @@ exit 1
     #[tokio::test]
     async fn get_not_found_wraps_vault_stderr() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo "No value found at secret/myapp/missing" >&2
-  exit 2
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/myapp/missing"],
+                fail_no_ns(2, "No value found at secret/myapp/missing\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/missing").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -730,16 +709,12 @@ exit 1
     #[tokio::test]
     async fn get_permission_denied_wraps_stderr() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo "* permission denied" >&2
-  exit 2
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-field=value", "secret/locked"],
+                fail_no_ns(2, "* permission denied\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/locked").unwrap();
         let err = b.get(&uri).await.unwrap_err();
@@ -751,16 +726,17 @@ exit 1
     #[tokio::test]
     async fn set_succeeds_on_zero_exit() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "put" ]; then
-  echo "Success! Data written to: secret/myapp/db"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "put", "secret/myapp/db", "value=-"],
+                Response::success_with_stdin(
+                    "Success! Data written to: secret/myapp/db\n",
+                    vec!["new-value".to_owned()],
+                )
+                .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/db").unwrap();
         b.set(&uri, "new-value").await.unwrap();
@@ -768,63 +744,36 @@ exit 1
 
     #[tokio::test]
     async fn set_passes_secret_value_via_stdin_not_argv() {
-        // Mock records every argv element + stdin to a log file. We
-        // assert the secret is in stdin AND absent from argv.
+        // CV-1 discipline: secret goes via stdin; argv contains only the
+        // literal `value=-` sentinel. The combined argv-match +
+        // stdin-fragment-check guarantees "secret on stdin, NOT on
+        // argv" as a harness-level assertion — no file-I/O log grep.
+        let very_sensitive = "sk_live_TOP_SECRET_never_on_argv_555";
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("argv_and_stdin.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-{{
-  echo "--- ARGV ---"
-  for a in "$@"; do echo "arg=$a"; done
-  echo "--- STDIN ---"
-  cat
-}} > "$LOG" 2>&1
-if [ "$1" = "kv" ] && [ "$2" = "put" ]; then
-  echo "Success!"
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_vault(&dir, &script);
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "put", "secret/myapp/db", "value=-"],
+                Response::success_with_stdin("Success!\n", vec![very_sensitive.to_owned()])
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/db").unwrap();
-        let very_sensitive = "sk_live_TOP_SECRET_never_on_argv_555";
         b.set(&uri, very_sensitive).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
-        let (argv_section, stdin_section) =
-            log.split_once("--- STDIN ---").expect("log has STDIN section");
-        assert!(
-            !argv_section.contains(very_sensitive),
-            "secret value must NOT appear in argv; argv was:\n{argv_section}"
-        );
-        assert!(
-            stdin_section.contains(very_sensitive),
-            "secret value should have arrived via stdin; stdin was:\n{stdin_section}"
-        );
-        assert!(
-            argv_section.contains("arg=value=-"),
-            "argv should name the stdin sentinel 'value=-':\n{argv_section}"
-        );
     }
 
     #[tokio::test]
     async fn set_propagates_stderr_on_failure() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "put" ]; then
-  echo "Error making API request. Code: 403" >&2
-  exit 2
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "put", "secret/myapp/db", "value=-"],
+                Response::failure(2, "Error making API request. Code: 403\n")
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/db").unwrap();
         let err = b.set(&uri, "x").await.unwrap_err();
@@ -836,16 +785,12 @@ exit 1
     #[tokio::test]
     async fn delete_succeeds_on_zero_exit() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "delete" ]; then
-  echo "Success! Data deleted (if it existed) at: secret/myapp/gone"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "delete", "secret/myapp/gone"],
+                ok_no_ns("Success! Data deleted (if it existed) at: secret/myapp/gone\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/gone").unwrap();
         b.delete(&uri).await.unwrap();
@@ -856,18 +801,10 @@ exit 1
     #[tokio::test]
     async fn list_parses_kv_v2_json() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  cat <<'JSON'
-{"data":{"data":{"stripe-key":"vault-eng://secret/prod/stripe","db-url":"vault-eng://secret/prod/db"},"metadata":{"version":3}}}
-JSON
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let body = "{\"data\":{\"data\":{\"stripe-key\":\"vault-eng://secret/prod/stripe\",\"db-url\":\"vault-eng://secret/prod/db\"},\"metadata\":{\"version\":3}}}\n";
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-format=json", "secret/registries/shared"], ok_no_ns(body))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/registries/shared").unwrap();
         let mut entries = b.list(&uri).await.unwrap();
@@ -885,18 +822,11 @@ exit 1
     async fn list_parses_kv_v1_json_fallback() {
         // KV v1 has a flat `data` map without the inner `data.data` wrap.
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  cat <<'JSON'
-{"data":{"alpha":"vault-eng://secret/a","beta":"vault-eng://secret/b"}}
-JSON
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let body =
+            "{\"data\":{\"alpha\":\"vault-eng://secret/a\",\"beta\":\"vault-eng://secret/b\"}}\n";
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-format=json", "legacy/registries/shared"], ok_no_ns(body))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://legacy/registries/shared").unwrap();
         let mut entries = b.list(&uri).await.unwrap();
@@ -913,16 +843,12 @@ exit 1
     #[tokio::test]
     async fn list_errors_when_body_missing_data_field() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_vault(
-            &dir,
-            r#"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo '{"request_id":"abc"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "get", "-format=json", "secret/malformed"],
+                ok_no_ns("{\"request_id\":\"abc\"}\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/malformed").unwrap();
         let err = b.list(&uri).await.unwrap_err();
@@ -931,65 +857,86 @@ exit 1
         assert!(msg.contains("\"data\""), "explains expected shape: {msg}");
     }
 
-    // ---- Namespace flag omission / inclusion in argv ----
+    // ---- PR #33 BUG-1 regression locks: env-pathway for address + namespace ----
+    //
+    // These two tests codify the PR #33 fix — `-address` / `-namespace`
+    // must NEVER appear on argv; routing goes through `VAULT_ADDR` /
+    // `VAULT_NAMESPACE` env. In v0.2 they used file-log side-channels
+    // (`env | grep ^VAULT_ > /tmp/...`); under v0.2.5 they become
+    // declarative `with_env_var` + `with_env_absent` assertions, which
+    // is both shorter and tighter than the file-based form.
 
     #[tokio::test]
     async fn command_omits_namespace_env_when_not_configured() {
-        // Record every VAULT_* env var. Backend is configured without a
-        // namespace; the mock asserts `VAULT_NAMESPACE` never appears.
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("env.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-env | grep "^VAULT_" | sort > "$LOG"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo "v"
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_vault(&dir, &script);
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-field=value", "secret/x"], ok_no_ns("v\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/x").unwrap();
         b.get(&uri).await.unwrap();
-
-        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
-        assert!(
-            !log.contains("VAULT_NAMESPACE"),
-            "OSS vault would reject VAULT_NAMESPACE; env var must be absent:\n{log}"
-        );
-        // Sanity: VAULT_ADDR IS always set.
-        assert!(log.contains("VAULT_ADDR="), "expected VAULT_ADDR in env:\n{log}");
     }
 
     #[tokio::test]
     async fn command_includes_namespace_env_when_configured() {
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("env.log");
-        let log_path_str = log_path.to_string_lossy();
-        let script = format!(
-            r#"
-LOG="{log_path_str}"
-env | grep "^VAULT_" | sort > "$LOG"
-if [ "$1" = "kv" ] && [ "$2" = "get" ]; then
-  echo "v"
-  exit 0
-fi
-exit 1
-"#
-        );
-        let mock = install_mock_vault(&dir, &script);
-        let b = backend(&mock, Some("engineering"));
+        let mock = StrictMock::new("vault")
+            .on(&["kv", "get", "-field=value", "secret/x"], ok_with_ns("v\n"))
+            .install(dir.path());
+        let b = backend(&mock, Some(VAULT_NS));
         let uri = BackendUri::parse("vault-eng://secret/x").unwrap();
         b.get(&uri).await.unwrap();
+    }
 
-        let log = std::fs::read_to_string(&log_path).expect("mock wrote log");
+    // ---- drift-catch regression locks (new in v0.2.5) ----
+
+    // CV-1 regression lock: secret on stdin, NOT on argv. Declared argv
+    // has the `value=-` sentinel (NOT the secret); success requires
+    // stdin to contain the secret fragment. If a future change moves
+    // the value to argv, either the declared argv shape diverges OR the
+    // stdin fragment check fails — both fail loudly.
+    #[tokio::test]
+    async fn set_drift_catch_rejects_secret_leaking_to_argv() {
+        let secret = "sk_live_CV1_regression_lock";
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "put", "secret/x", "value=-"],
+                Response::success_with_stdin("Success!\n", vec![secret.to_owned()])
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("vault-eng://secret/x").unwrap();
+        // Secret ships via set(); mock only passes if stdin contained it.
+        b.set(&uri, secret).await.unwrap();
+    }
+
+    // Env-pathway regression lock: with the backend configured with a
+    // known VAULT_ADDR but a strict mock that requires a DIFFERENT
+    // value, the env check fails → exit 97 surfaces as a runtime error.
+    // Proves the env channel is what's being read by the child, not
+    // some fallback argv path.
+    #[tokio::test]
+    async fn get_drift_catch_env_check_rejects_wrong_vault_addr() {
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("vault")
+            // Declared VAULT_ADDR deliberately differs from the backend's.
+            .on(
+                &["kv", "get", "-field=value", "secret/x"],
+                Response::success("never-matches\n")
+                    .with_env_var("VAULT_ADDR", "https://DIFFERENT.example.com")
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("vault-eng://secret/x").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
         assert!(
-            log.contains("VAULT_NAMESPACE=engineering"),
-            "expected VAULT_NAMESPACE=engineering in env:\n{log}"
+            msg.contains("env mismatch") || msg.contains("strict-mock"),
+            "expected env mismatch diagnostic propagated as stderr, got: {msg}"
         );
     }
 }

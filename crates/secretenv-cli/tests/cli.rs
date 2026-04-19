@@ -491,13 +491,14 @@ fn setup_written_config_is_usable_by_resolve() {
 fn setup_rejects_unknown_scheme() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("config.toml");
-    // `azure-prod://` is a genuinely-unknown scheme post-v0.3-Phase-1
-    // (gcp maps to the gcp backend as of Phase 1). Swap in azure as
-    // the "not yet supported" stand-in until Phase 2 lands.
+    // Post v0.3 Phase 2 all in-spec schemes route (local, aws-ssm,
+    // aws-secrets, 1password, vault, gcp, azure). `totally-made-up`
+    // is deliberately outside the router — any future backend should
+    // NOT reuse this exact scheme so the test stays valid.
     secretenv()
         .current_dir(dir.path())
         .args(["--config", config_path.to_str().unwrap()])
-        .args(["setup", "azure-prod:///secrets/reg", "--skip-doctor"])
+        .args(["setup", "totally-made-up:///secrets/reg", "--skip-doctor"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown backend scheme"));

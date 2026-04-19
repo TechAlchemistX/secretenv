@@ -342,16 +342,10 @@ impl BackendFactory for OnePasswordFactory {
 mod tests {
     use std::path::Path;
 
+    use secretenv_testing::{Response, StrictMock};
     use tempfile::TempDir;
 
     use super::*;
-
-    /// Thin wrapper preserving the existing `&TempDir → PathBuf`
-    /// shape. The real installer lives in the shared
-    /// `secretenv-testing` crate.
-    fn install_mock_op(dir: &TempDir, body: &str) -> std::path::PathBuf {
-        secretenv_testing::install_mock_op(dir.path(), body)
-    }
 
     fn backend(mock_path: &Path, account: Option<&str>) -> OnePasswordBackend {
         OnePasswordBackend {
@@ -453,16 +447,9 @@ mod tests {
     #[tokio::test]
     async fn get_returns_field_value_no_account() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "read" ]; then
-  echo "super-secret-value"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["read", "op://Eng/API/key"], Response::success("super-secret-value\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://Eng/API/key").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "super-secret-value");
@@ -471,17 +458,12 @@ exit 1
     #[tokio::test]
     async fn get_returns_field_value_with_account() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "read" ]; then
-  echo "args: $*" >&2
-  echo "value-from-team"
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(
+                &["read", "op://Eng/API/key", "--account", "myteam.1password.com"],
+                Response::success("value-from-team\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, Some("myteam.1password.com"));
         let uri = BackendUri::parse("1password-team://Eng/API/key").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "value-from-team");
@@ -490,16 +472,9 @@ exit 1
     #[tokio::test]
     async fn get_strips_single_trailing_newline() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "read" ]; then
-  printf 'raw-secret\n'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["read", "op://V/I/F"], Response::success("raw-secret\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
         assert_eq!(b.get(&uri).await.unwrap(), "raw-secret");
@@ -510,22 +485,21 @@ exit 1
     #[tokio::test]
     async fn get_item_not_found_error_includes_stderr_and_uri() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "read" ]; then
-  echo "[ERROR] 2026/04/17 14:00:00 item \"Prod DB\" not found in vault \"Engineering\"" >&2
-  exit 1
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(
+                &["read", "op://Engineering/ProdDB/url"],
+                Response::failure(
+                    1,
+                    "[ERROR] 2026/04/17 14:00:00 item \"ProdDB\" not found in vault \"Engineering\"\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
-        let uri = BackendUri::parse("1password-personal://Engineering/Prod DB/url").unwrap();
+        let uri = BackendUri::parse("1password-personal://Engineering/ProdDB/url").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("not found"), "stderr propagates: {msg}");
-        assert!(msg.contains("Prod DB"), "uri in context: {msg}");
+        assert!(msg.contains("ProdDB"), "uri in context: {msg}");
         assert!(msg.contains("1password-personal"), "instance in context: {msg}");
     }
 
@@ -538,12 +512,18 @@ exit 1
         assert!(msg.contains("1password-personal"), "instance in context: {msg}");
     }
 
+    // Non-UTF-8 response bodies: the strict harness's `Response.stdout:
+    // String` field is UTF-8-only by construction, so this path stays on
+    // the raw `install_mock` API. If a future backend routinely needs
+    // non-UTF-8 stdout, extend the harness with `stdout_bytes: Vec<u8>`
+    // — YAGNI until then. See v0.2.3 aws-ssm retrofit for precedent.
     #[tokio::test]
     async fn get_non_utf8_response_errors_with_context() {
         let dir = TempDir::new().unwrap();
         // Octal escapes (POSIX), not \xFF (bash-specific).
-        let mock = install_mock_op(
-            &dir,
+        let mock = secretenv_testing::install_mock(
+            dir.path(),
+            "op",
             r#"
 if [ "$1" = "read" ]; then
   printf '\377\376\375\374'
@@ -565,15 +545,9 @@ exit 1
     #[tokio::test]
     async fn set_succeeds_on_zero_exit() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1 $2" = "item edit" ]; then
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["item", "edit", "I", "F=new-secret", "--vault", "V"], Response::success(""))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
         b.set(&uri, "new-secret").await.unwrap();
@@ -582,16 +556,12 @@ exit 1
     #[tokio::test]
     async fn set_propagates_item_not_found_error() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1 $2" = "item edit" ]; then
-  echo "[ERROR] item \"I\" not found in vault \"V\"" >&2
-  exit 1
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(
+                &["item", "edit", "I", "F=v", "--vault", "V"],
+                Response::failure(1, "[ERROR] item \"I\" not found in vault \"V\"\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
         let err = b.set(&uri, "v").await.unwrap_err();
@@ -600,47 +570,28 @@ exit 1
 
     #[tokio::test]
     async fn delete_runs_edit_with_empty_value() {
+        // Under the strict harness, the declared argv `F=` (empty
+        // assignment) is enforced by exact match — no side-channel log
+        // needed. A regression that passed `F=foo` or omitted the
+        // assignment would produce a no-match (exit 97) and fail the
+        // test with a clear diagnostic.
         let dir = TempDir::new().unwrap();
-        // The mock writes its args to a side file so the test can
-        // assert `F=` was passed (empty assignment).
-        let args_log = dir.path().join("args.log");
-        let log_str = args_log.to_str().unwrap().to_owned();
-        let mock = install_mock_op(
-            &dir,
-            &format!(
-                r#"
-if [ "$1 $2" = "item edit" ]; then
-  printf '%s\n' "$*" > "{log_str}"
-  exit 0
-fi
-exit 1
-"#
-            ),
-        );
+        let mock = StrictMock::new("op")
+            .on(&["item", "edit", "I", "F=", "--vault", "V"], Response::success(""))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
         b.delete(&uri).await.unwrap();
-        let logged = std::fs::read_to_string(&args_log).unwrap();
-        assert!(logged.contains("F="), "delete sends F= (empty): {logged}");
-        assert!(!logged.contains("F=foo"), "delete must not pass a value: {logged}");
     }
 
     #[tokio::test]
     async fn list_parses_toml_registry_document() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "read" ]; then
-  cat <<'TOML'
-stripe-key = "aws-ssm-prod:///prod/stripe"
-db-url = "1password-personal://Engineering/Prod DB/url"
-TOML
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let body = "stripe-key = \"aws-ssm-prod:///prod/stripe\"\n\
+                    db-url = \"1password-personal://Engineering/ProdDB/url\"\n";
+        let mock = StrictMock::new("op")
+            .on(&["read", "op://Shared/Registry/content"], Response::success(body))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://Shared/Registry/content").unwrap();
         let mut entries = b.list(&uri).await.unwrap();
@@ -648,7 +599,7 @@ exit 1
         assert_eq!(
             entries,
             vec![
-                ("db-url".to_owned(), "1password-personal://Engineering/Prod DB/url".to_owned(),),
+                ("db-url".to_owned(), "1password-personal://Engineering/ProdDB/url".to_owned(),),
                 ("stripe-key".to_owned(), "aws-ssm-prod:///prod/stripe".to_owned()),
             ]
         );
@@ -657,16 +608,9 @@ exit 1
     #[tokio::test]
     async fn list_errors_when_body_is_not_flat_toml() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "read" ]; then
-  printf '[sub]\nkey = "value"\n'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["read", "op://V/I/F"], Response::success("[sub]\nkey = \"value\"\n"))
+            .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
         let err = b.list(&uri).await.unwrap_err();
@@ -693,20 +637,13 @@ exit 1
     #[tokio::test]
     async fn check_returns_ok_when_version_and_whoami_succeed() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "2.30.0"
-  exit 0
-fi
-if [ "$1" = "whoami" ]; then
-  echo '{"url":"my.1password.com","email":"me@example.com"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["--version"], Response::success("2.30.0\n"))
+            .on(
+                &["whoami", "--format=json", "--account", "my.1password.com"],
+                Response::success("{\"url\":\"my.1password.com\",\"email\":\"me@example.com\"}\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, Some("my.1password.com"));
         match b.check().await {
             BackendStatus::Ok { cli_version, identity } => {
@@ -721,20 +658,16 @@ exit 1
     #[tokio::test]
     async fn check_returns_not_authenticated_on_sign_in_error() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "2.30.0"
-  exit 0
-fi
-if [ "$1" = "whoami" ]; then
-  echo "[ERROR] You are not signed in. Run \"op signin\" to authenticate and try again." >&2
-  exit 1
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["--version"], Response::success("2.30.0\n"))
+            .on(
+                &["whoami", "--format=json"],
+                Response::failure(
+                    1,
+                    "[ERROR] You are not signed in. Run \"op signin\" to authenticate and try again.\n",
+                ),
+            )
+            .install(dir.path());
         let b = backend(&mock, None);
         match b.check().await {
             BackendStatus::NotAuthenticated { hint } => {
@@ -748,20 +681,13 @@ exit 1
     #[tokio::test]
     async fn check_signin_hint_includes_account_when_configured() {
         let dir = TempDir::new().unwrap();
-        let mock = install_mock_op(
-            &dir,
-            r#"
-if [ "$1" = "--version" ]; then
-  echo "2.30.0"
-  exit 0
-fi
-if [ "$1" = "whoami" ]; then
-  echo "[ERROR] You are not signed in." >&2
-  exit 1
-fi
-exit 1
-"#,
-        );
+        let mock = StrictMock::new("op")
+            .on(&["--version"], Response::success("2.30.0\n"))
+            .on(
+                &["whoami", "--format=json", "--account", "myteam.1password.com"],
+                Response::failure(1, "[ERROR] You are not signed in.\n"),
+            )
+            .install(dir.path());
         let b = backend(&mock, Some("myteam.1password.com"));
         match b.check().await {
             BackendStatus::NotAuthenticated { hint } => {
@@ -772,5 +698,48 @@ exit 1
             }
             other => panic!("expected NotAuthenticated, got {other:?}"),
         }
+    }
+
+    // ---- drift-catch regression locks ----
+
+    // Guard against a regression that drops `--account <X>` from the argv
+    // when the backend was configured with an account. The declared argv
+    // intentionally omits the `--account` suffix; the real backend always
+    // appends it when `op_account` is Some. A no-match (exit 97) with a
+    // "strict-mock-no-match" stderr is the desired test outcome —
+    // indicating account pass-through is still active.
+    #[tokio::test]
+    async fn get_drift_catch_rejects_missing_account_flag() {
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("op")
+            // Declared WITHOUT the `--account` tail. Real backend emits it.
+            .on(&["read", "op://V/I/F"], Response::success("never-matches\n"))
+            .install(dir.path());
+        let b = backend(&mock, Some("myteam.1password.com"));
+        let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("strict-mock-no-match") || msg.contains("not found"),
+            "no-match diagnostic or stderr propagated: {msg}"
+        );
+    }
+
+    // Guard against a regression that drops the `--vault <V>` flag from
+    // set()'s argv — without it, `op item edit` would target whatever
+    // vault the user is defaulted to rather than the one the URI names.
+    // Declared argv omits `--vault V`; real backend always appends it.
+    #[tokio::test]
+    async fn set_drift_catch_rejects_missing_vault_flag() {
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("op")
+            // Declared WITHOUT the `--vault V` tail. Real backend emits it.
+            .on(&["item", "edit", "I", "F=new-secret"], Response::success(""))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
+        let err = b.set(&uri, "new-secret").await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("strict-mock-no-match"), "no-match diagnostic: {msg}");
     }
 }

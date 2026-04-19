@@ -8,6 +8,21 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.4]
+
+**Headline:** internal test-infrastructure release — 1password backend's mock-CLI tests migrated to `StrictMock`. No user-facing CLI changes; no prod bugs surfaced.
+
+### Changed
+
+- **Internal:** all 13 mock-using tests in `secretenv-backend-1password` converted from the v0.2 raw `install_mock_op(body)` API to declarative `StrictMock::new("op").on(argv, Response).install(...)`. Every `op read`, `op item edit`, `op --version`, and `op whoami --format=json` argv is now asserted exactly (including the `--account <X>` tail when `op_account` is configured); a regression that drops `--account`, reorders `--vault`, or changes the `F=value` assignment shape will fail at test time rather than silently passing.
+- **Internal:** `delete_runs_edit_with_empty_value` simplified — the args-log side-channel that verified the empty `F=` assignment is now obsolete because the declared argv token `F=` IS the assertion under strict match.
+- **Internal:** two new drift-catch regression-lock tests (`get_drift_catch_rejects_missing_account_flag`, `set_drift_catch_rejects_missing_vault_flag`) that prove the strict harness surfaces drift loudly when it occurs.
+- **Internal (one exception):** `get_non_utf8_response_errors_with_context` stays on the v0.2 raw `install_mock` harness because its assertion relies on a non-UTF-8 response, which the strict harness's `Response.stdout: String` cannot express. Documented inline; same carve-out as aws-ssm in v0.2.3.
+
+### Fixed
+
+- **None.** The retrofit surfaced no prod bugs in the 1password backend. Version-gating for the `set` stdin path (tracked in the backend's CV-1 comment) remains a v0.3 follow-up — not yet implemented, so no strict-mode coverage added for it.
+
 ## [0.2.3]
 
 **Headline:** internal test-infrastructure release — aws-ssm backend's mock-CLI tests migrated to `StrictMock`. No user-facing CLI changes; no prod bugs surfaced.

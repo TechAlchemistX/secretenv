@@ -33,6 +33,20 @@
 //!   `doctor` to flag in v0.3+.
 //! - `doctor` (Phase 10) will warn if a file referenced by a `local://`
 //!   URI is world- or group-readable. v0.1 only enforces on write.
+//!
+//! # v0.2.2 strict-mode mock audit
+//!
+//! The strict-mode mock harness ([`secretenv_testing::StrictMock`])
+//! targets backends that shell out to a child CLI — it validates the
+//! exact argv secretenv sends to `aws` / `op` / `vault` / `gcloud` /
+//! `az`. `local` does NOT shell out: every operation is a direct
+//! `std::fs` call against the configured path. There is no argv surface
+//! to validate and no CLI to mock, so strict-mode has no applicability
+//! here. The v0.2.2 retrofit covers `local` by documentation only; no
+//! test changes are required or meaningful. Subsequent patches in the
+//! series (v0.2.3 aws-ssm, v0.2.4 1password, v0.2.5 vault, v0.2.6
+//! aws-secrets) each migrate their backend's mock-CLI tests to the
+//! strict harness.
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions)]
 

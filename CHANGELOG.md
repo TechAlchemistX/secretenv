@@ -8,6 +8,40 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.2]
+
+**Headline:** internal test-infrastructure release — strict-mode mock harness for backend crates. No user-facing CLI changes.
+
+### Added
+
+- **`secretenv-testing::StrictMock`** — declarative mock-CLI builder.
+  `StrictMock::new(bin).on(argv, Response).install(dir)` generates a
+  POSIX shell script that matches the full joined argv against a rule
+  list and exits 97 on no-match with a diagnostic naming the observed
+  argv and every declared shape. Closes the gap that let the v0.2.0
+  vault flag-order bug and aws-secrets leading-slash bug ship through
+  `cargo test --workspace` green. `Response::success`,
+  `Response::failure`, and `Response::success_with_stdin` (for testing
+  the CV-1 stdin-delivery discipline) cover the response shapes
+  backend tests need. Types are `#[non_exhaustive]` so future
+  matchers (`PositionalThenFlags`, `Regex`, env-var assertions) can
+  land additively as concrete backend retrofits need them.
+- `crates/secretenv-cli/tests/e2e.rs` — two end-to-end scenarios
+  proving `StrictMock` works in anger through the full secretenv call
+  chain: one happy-path exercising exact argv match, one drift-catch
+  asserting exit 97 surfaces a clear diagnostic naming the missing
+  flag. These will serve as the reference pattern for the per-backend
+  retrofits in v0.2.3 → v0.2.6.
+- `secretenv-backend-local` crate-level doc note explaining why the
+  v0.2.2 strict-mode retrofit covers it by documentation only — the
+  backend does not shell out, so there is no argv surface to validate.
+
+### Changed
+
+- **Internal only:** strict-mode harness test infrastructure. No CLI
+  behavior, URI grammar, or backend semantics changed. Users upgrading
+  will see no difference.
+
 ## [0.2.1]
 
 **Headline:** canonical `#key=value` fragment grammar. One deliberate pre-launch breaking change that locks the URI vocabulary before public eyes see the v0.2.0 shorthand form.
@@ -297,7 +331,8 @@ First public release of SecretEnv.
 - Errors include alias + URI + instance name + trimmed backend stderr,
   never the secret value.
 
-[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.2
 [0.2.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.1
 [0.2.0]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.0
 [0.1.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.1.1

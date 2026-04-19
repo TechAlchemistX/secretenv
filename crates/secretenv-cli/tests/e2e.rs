@@ -362,3 +362,157 @@ API_KEY = { from = "secretenv://api-key" }
         .success()
         .stdout(predicate::str::contains("op_api_token_xyz"));
 }
+
+// ---- v0.2.2 Phase 1: first consumer of StrictMock -----------------------
+//
+// These scenarios exercise the new `secretenv_testing::StrictMock` builder
+// against the full secretenv call chain. They're deliberately narrow —
+// just enough to prove the harness works end-to-end before v0.2.3 migrates
+// aws-ssm's backend tests wholesale. If `cargo test` surfaces a failure
+// in this block, the harness itself is broken (not aws-ssm).
+//
+// Pattern differs from the older `install_mock_aws(body)` helpers above:
+// instead of hand-writing a POSIX shell `case`, the test declares the
+// exact argv it expects `secretenv` to send to `aws`, and the mock exits
+// 97 on any mismatch.
+
+/// `StrictMock` happy path: secretenv's aws-ssm backend dispatches the
+/// exact argv the mock declared — every flag, every positional token,
+/// every value — and gets back the declared stdout.
+#[test]
+fn strict_mock_matches_exact_argv_and_injects_resolved_secret() {
+    let mock_dir = TempDir::new().unwrap();
+    // Local registry TOML keeps the strict declarations narrow — only
+    // the secret fetch needs an `aws` call; the registry itself is a
+    // local file so it never touches the mock.
+    let registry_path = mock_dir.path().join("registry.toml");
+    write(&registry_path, r#"stripe_key = "aws-ssm-prod:///prod/stripe""#);
+
+    // Declare exactly the argv secretenv should emit for get-parameter.
+    // aws-ssm backend's get() shape (per backend lib.rs:213-223):
+    //   aws ssm get-parameter --with-decryption --name <n> --query Parameter.Value --output text
+    // then `ssm_command` appends --region at the end.
+    let _ = secretenv_testing::StrictMock::new("aws")
+        .on(
+            &[
+                "ssm",
+                "get-parameter",
+                "--with-decryption",
+                "--name",
+                "/prod/stripe",
+                "--query",
+                "Parameter.Value",
+                "--output",
+                "text",
+                "--region",
+                "us-east-1",
+            ],
+            secretenv_testing::Response::success("sk_live_strict_abc\n"),
+        )
+        .install(mock_dir.path());
+
+    let fixture = TempDir::new().unwrap();
+    write(
+        &fixture.path().join("config.toml"),
+        &format!(
+            r#"
+[registries.default]
+sources = ["local:///{reg}"]
+
+[backends.local]
+type = "local"
+
+[backends.aws-ssm-prod]
+type = "aws-ssm"
+aws_region = "us-east-1"
+"#,
+            reg = registry_path.display(),
+        ),
+    );
+    write(
+        &fixture.path().join("secretenv.toml"),
+        r#"
+[secrets]
+STRIPE = { from = "secretenv://stripe_key" }
+"#,
+    );
+
+    secretenv_with_mock(fixture.path(), mock_dir.path())
+        .args(["--config", fixture.path().join("config.toml").to_str().unwrap()])
+        .args(["run", "--", "sh", "-c", "echo $STRIPE"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sk_live_strict_abc"));
+}
+
+/// `StrictMock` catches argv drift: if secretenv sends argv that differs
+/// from the declared shape in any way (here, a missing `--with-decryption`
+/// flag), the mock exits 97 and secretenv surfaces the backend failure.
+/// This is the mechanism that would have caught v0.2.0 BUG-1 / BUG-2.
+#[test]
+fn strict_mock_rejects_argv_drift_with_exit_97() {
+    let mock_dir = TempDir::new().unwrap();
+    let registry_path = mock_dir.path().join("registry.toml");
+    write(&registry_path, r#"stripe_key = "aws-ssm-prod:///prod/stripe""#);
+
+    // Declared argv DELIBERATELY omits `--with-decryption`. The real
+    // aws-ssm backend always sends it — so the mock will see a mismatch
+    // and exit 97 with the no-match diagnostic. secretenv surfaces this
+    // as a `get` failure; the test just confirms the failure propagates
+    // and the stderr diagnostic names the missing assertion.
+    let _ = secretenv_testing::StrictMock::new("aws")
+        .on(
+            &[
+                "ssm",
+                "get-parameter",
+                "--name",
+                "/prod/stripe",
+                "--query",
+                "Parameter.Value",
+                "--output",
+                "text",
+                "--region",
+                "us-east-1",
+            ],
+            secretenv_testing::Response::success("should-not-be-seen"),
+        )
+        .install(mock_dir.path());
+
+    let fixture = TempDir::new().unwrap();
+    write(
+        &fixture.path().join("config.toml"),
+        &format!(
+            r#"
+[registries.default]
+sources = ["local:///{reg}"]
+
+[backends.local]
+type = "local"
+
+[backends.aws-ssm-prod]
+type = "aws-ssm"
+aws_region = "us-east-1"
+"#,
+            reg = registry_path.display(),
+        ),
+    );
+    write(
+        &fixture.path().join("secretenv.toml"),
+        r#"
+[secrets]
+STRIPE = { from = "secretenv://stripe_key" }
+"#,
+    );
+
+    // secretenv surfaces the mock's exit 97 as a backend failure.
+    // The stderr chain should mention the observed argv (the REAL one
+    // sent by secretenv, including `--with-decryption`) so the test
+    // author can diagnose the drift.
+    secretenv_with_mock(fixture.path(), mock_dir.path())
+        .args(["--config", fixture.path().join("config.toml").to_str().unwrap()])
+        .args(["run", "--", "sh", "-c", "echo $STRIPE"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("strict-mock-no-match"))
+        .stderr(predicate::str::contains("--with-decryption"));
+}

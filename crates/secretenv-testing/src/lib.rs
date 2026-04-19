@@ -1,10 +1,21 @@
 //! Shared test harness for SecretEnv backend crates.
 //!
-//! The only public surface today is [`install_mock`] — the POSIX-shell
-//! script-writer with the ETXTBSY workaround every backend crate's
-//! `tests` module used to duplicate. Two convenience wrappers,
-//! [`install_mock_aws`] and [`install_mock_op`], exist because they
-//! appeared verbatim in three separate locations before this crate.
+//! Two mock-CLI building blocks ship today:
+//!
+//! - [`install_mock`] (v0.2 original) — POSIX-shell script-writer with the
+//!   ETXTBSY workaround every backend crate's `tests` module used to
+//!   duplicate. Two convenience wrappers, [`install_mock_aws`] and
+//!   [`install_mock_op`], exist because they appeared verbatim in three
+//!   separate locations before this crate. The raw-script form is
+//!   permissive — callers write whatever shell they want and match argv
+//!   however they want.
+//!
+//! - [`StrictMock`] (v0.2.2, see [`strict`] module) — declarative
+//!   builder that generates the shell body from a list of
+//!   `(argv, response)` rules. Exact argv match; no-match exits 97;
+//!   stdin fragment verification supported. Closes the gap that let
+//!   v0.2.0 vault BUG-1 (flag-order) and aws-secrets BUG-2 (leading-slash)
+//!   ship through `cargo test` undetected.
 //!
 //! # Why this crate is unpublished
 //!
@@ -39,6 +50,9 @@
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+pub mod strict;
+pub use strict::{Response, StrictMock};
 
 /// Write a POSIX shell script to `dir/<bin_name>`, make it
 /// executable, probe-retry past the Linux ETXTBSY race, and return

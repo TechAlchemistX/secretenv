@@ -178,6 +178,18 @@ pub struct SetupArgs {
     #[arg(long)]
     pub gcp_impersonate_service_account: Option<String>,
 
+    /// Azure Key Vault HTTPS URL — required for azure backends.
+    #[arg(long)]
+    pub azure_vault_url: Option<String>,
+
+    /// Azure tenant ID or domain — optional, azure only.
+    #[arg(long)]
+    pub azure_tenant: Option<String>,
+
+    /// Azure subscription ID — optional, azure only.
+    #[arg(long)]
+    pub azure_subscription: Option<String>,
+
     /// Overwrite an existing config.toml.
     #[arg(long)]
     pub force: bool,
@@ -718,11 +730,10 @@ fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Res
         // `vault` stores registry documents as a single KV secret whose
         // value is a JSON alias→URI map — same wire shape as aws-ssm.
         // `aws-secrets` uses the same shape (one AWS secret, JSON body).
-        "aws-ssm" | "vault" | "aws-secrets" | "gcp" => {
-            serde_json::to_string(map).with_context(|| {
+        "aws-ssm" | "vault" | "aws-secrets" | "gcp" | "azure" => serde_json::to_string(map)
+            .with_context(|| {
                 format!("serializing registry as JSON for backend type '{backend_type}'")
-            })
-        }
+            }),
         other => Err(anyhow!(
             "writing registry documents through backend type '{other}' is not supported"
         )),
@@ -747,6 +758,9 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         vault_namespace: args.vault_namespace.clone(),
         gcp_project: args.gcp_project.clone(),
         gcp_impersonate_service_account: args.gcp_impersonate_service_account.clone(),
+        azure_vault_url: args.azure_vault_url.clone(),
+        azure_tenant: args.azure_tenant.clone(),
+        azure_subscription: args.azure_subscription.clone(),
         force: args.force,
         skip_doctor: args.skip_doctor,
         target: target_config.map(std::path::Path::to_path_buf),

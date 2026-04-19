@@ -10,6 +10,7 @@ members = [
     "crates/backends/secretenv-backend-vault",
     "crates/backends/secretenv-backend-aws-secrets",
     "crates/backends/secretenv-backend-gcp",
+    "crates/backends/secretenv-backend-azure",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1pass
 secretenv-backend-vault      = { path = "crates/backends/secretenv-backend-vault",         version = "0.3.0-alpha.0" }
 secretenv-backend-aws-secrets = { path = "crates/backends/secretenv-backend-aws-secrets",  version = "0.3.0-alpha.0" }
 secretenv-backend-gcp        = { path = "crates/backends/secretenv-backend-gcp",           version = "0.3.0-alpha.0" }
+secretenv-backend-azure      = { path = "crates/backends/secretenv-backend-azure",         version = "0.3.0-alpha.0" }
 # Unpublished test harness — path-only, no version. Revisit publishing once
 # the API has proven itself across Vault + AWS Secrets backends (v0.3+).
 secretenv-testing            = { path = "crates/secretenv-testing" }
@@ -54,6 +56,7 @@ zeroize            = { version = "1", features = ["zeroize_derive"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indexmap           = { version = "2", features = ["serde"] }
+regex              = "1"
 directories        = "5"
 futures            = "0.3"
 tempfile           = "3"

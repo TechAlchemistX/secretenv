@@ -320,7 +320,7 @@ impl Backend for AwsSecretsBackend {
                     );
                 }
                 // Safe: we already verified presence above.
-                let Some(key) = directives.remove("json-key") else {
+                let Some(key) = directives.shift_remove("json-key") else {
                     unreachable!("json-key presence was checked above")
                 };
                 Some(key)

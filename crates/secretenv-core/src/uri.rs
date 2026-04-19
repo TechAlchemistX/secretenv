@@ -19,7 +19,7 @@
 //! grammar is enforced in [`BackendUri::fragment_directives`].
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use thiserror::Error;
 
@@ -134,7 +134,7 @@ impl BackendUri {
     /// See [`FragmentError`] for the full list of rejection conditions.
     /// In particular, legacy plain-string fragments (`#password`, no `=`)
     /// are rejected with a migration hint as of v0.2.1.
-    pub fn fragment_directives(&self) -> Result<Option<HashMap<String, String>>, FragmentError> {
+    pub fn fragment_directives(&self) -> Result<Option<IndexMap<String, String>>, FragmentError> {
         let Some(raw) = self.fragment.as_deref() else {
             return Ok(None);
         };
@@ -203,7 +203,7 @@ fn has_forbidden_control_char(s: &str) -> bool {
 fn parse_fragment_directives(
     uri_raw: &str,
     frag: &str,
-) -> Result<HashMap<String, String>, FragmentError> {
+) -> Result<IndexMap<String, String>, FragmentError> {
     // Shorthand detection runs first: a fragment containing no `=` is the
     // legacy plain-string form ([[build-plan-v0.2.1-fragment-canonicalization]]).
     // We reject with a migration hint that names the canonical replacement.
@@ -213,7 +213,7 @@ fn parse_fragment_directives(
             raw: frag.to_owned(),
         });
     }
-    let mut out: HashMap<String, String> = HashMap::new();
+    let mut out: IndexMap<String, String> = IndexMap::new();
     for part in frag.split(',') {
         if part.is_empty() {
             return Err(FragmentError::Malformed {

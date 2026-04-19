@@ -68,10 +68,16 @@ fn vault_url_re() -> &'static Regex {
     // Statically-valid regex; `Regex::new` cannot fail here. If it
     // ever does, initialization aborts at first backend construction
     // — not an end-user-visible condition.
+    //
+    // Vault-name shape: 3-24 alphanumerics + hyphens, no hyphen-edge.
+    // Structure: [first alphanumeric][middle 1-22 alphanumeric|hyphen]
+    // [last alphanumeric] → total 3-24. Required middle+last (not
+    // optional) so 2-char names are rejected. Matches Azure's own
+    // naming rule.
     #[allow(clippy::expect_used)]
     RE.get_or_init(|| {
         Regex::new(
-            r"^https://[a-zA-Z0-9]([a-zA-Z0-9-]{1,22}[a-zA-Z0-9])?\.vault\.(azure\.net|azure\.cn|usgovcloudapi\.net|microsoftazure\.de)/?$",
+            r"^https://[a-zA-Z0-9][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]\.vault\.(azure\.net|azure\.cn|usgovcloudapi\.net|microsoftazure\.de)/?$",
         )
         .expect("vault URL regex is statically valid")
     })
@@ -110,10 +116,17 @@ pub struct AzureBackend {
 struct SecretShowResponse {
     /// Secret value. `None` when the secret is a certificate binding
     /// (`kid != null` in the response); surfaced as a distinct error.
+    ///
+    /// Deliberately NO `#[serde(default)]`: Azure's JSON response
+    /// always includes `value` (as a string or `null`). Omission is
+    /// unexpected — a missing key should surface as a deserialization
+    /// error rather than silently become `None`.
     value: Option<String>,
     /// Key-identifier present on certificate-bound secrets. If set,
     /// we refuse to extract a scalar value — the caller asked for a
-    /// secret but the storage slot is bound to a cert.
+    /// secret but the storage slot is bound to a cert. Azure omits
+    /// this field entirely for non-cert secrets, so `#[serde(default)]`
+    /// is load-bearing.
     #[serde(default)]
     kid: Option<String>,
 }
@@ -195,7 +208,8 @@ impl AzureBackend {
             bail!(
                 "azure backend '{}': URI '{}' has unsupported fragment directive(s) [{}]; \
                  azure recognizes only 'version' (example: \
-                 '#version=0123456789abcdef0123456789abcdef')",
+                 '#version=0123456789abcdef0123456789abcdef'). \
+                 See docs/fragment-vocabulary.md",
                 self.instance_name,
                 uri.raw,
                 unsupported.join(", ")
@@ -207,13 +221,14 @@ impl AzureBackend {
             extra.sort_unstable();
             bail!(
                 "azure backend '{}': URI '{}' has unsupported directive(s) [{}] alongside \
-                 'version'; azure recognizes only 'version'",
+                 'version'; azure recognizes only 'version'. \
+                 See docs/fragment-vocabulary.md",
                 self.instance_name,
                 uri.raw,
                 extra.join(", ")
             );
         }
-        let Some(value) = directives.remove("version") else {
+        let Some(value) = directives.shift_remove("version") else {
             unreachable!("version presence was checked above")
         };
         if value == "latest" {
@@ -726,6 +741,50 @@ mod tests {
     }
 
     #[test]
+    fn factory_rejects_one_char_vault_name() {
+        // Azure vault naming rule is 3-24 chars. A 1-char leading
+        // group matches the outer `[a-zA-Z0-9]` but then fails the
+        // required middle+last inner pair. Lock the boundary.
+        let factory = AzureFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "azure_vault_url".to_owned(),
+            toml::Value::String("https://a.vault.azure.net/".to_owned()),
+        );
+        let Err(err) = factory.create("azure-prod", &cfg) else {
+            panic!("expected rejection for 1-char vault name");
+        };
+        assert!(format!("{err:#}").contains("not a valid"));
+    }
+
+    #[test]
+    fn factory_rejects_two_char_vault_name() {
+        // 2-char also below the 3-char minimum.
+        let factory = AzureFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "azure_vault_url".to_owned(),
+            toml::Value::String("https://ab.vault.azure.net/".to_owned()),
+        );
+        let Err(err) = factory.create("azure-prod", &cfg) else {
+            panic!("expected rejection for 2-char vault name");
+        };
+        assert!(format!("{err:#}").contains("not a valid"));
+    }
+
+    #[test]
+    fn factory_accepts_three_char_vault_name() {
+        // Minimum valid vault-name length.
+        let factory = AzureFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "azure_vault_url".to_owned(),
+            toml::Value::String("https://abc.vault.azure.net/".to_owned()),
+        );
+        factory.create("azure-prod", &cfg).expect("3-char vault name must be accepted");
+    }
+
+    #[test]
     fn factory_rejects_hyphen_edge_vault_names() {
         // Azure's own naming rules disallow leading/trailing hyphens.
         for bad in ["https://-foo.vault.azure.net/", "https://foo-.vault.azure.net/"] {
@@ -971,6 +1030,7 @@ mod tests {
         assert!(msg.contains("unsupported"), "names problem: {msg}");
         assert!(msg.contains("json-key"), "lists offender: {msg}");
         assert!(msg.contains("version"), "names supported directive: {msg}");
+        assert!(msg.contains("fragment-vocabulary"), "error links to canonical doc: {msg}");
         assert!(!msg.contains("strict-mock-no-match"), "error from backend, not mock: {msg}");
     }
 
@@ -1226,10 +1286,11 @@ mod tests {
         let uri = BackendUri::parse("azure-prod:///x").unwrap();
         let err = b.get(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("strict-mock-no-match") || msg.contains("azure"),
-            "expected strict no-match propagated as get() failure: {msg}"
-        );
+        // Must be mock-level divergence — `unwrap_err` alone catches
+        // the regression; this content check additionally confirms the
+        // failure came from strict argv-mismatch, not from some other
+        // azure-named error that could mask a different regression.
+        assert!(msg.contains("strict-mock-no-match"), "must be mock-level divergence, got: {msg}");
     }
 
     #[tokio::test]
@@ -1245,6 +1306,22 @@ mod tests {
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("azure-prod:///rotate-me").unwrap();
         b.set(&uri, secret).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_extensive_counts_registry_entries() {
+        // Locks the Backend-trait-default `check_extensive` behavior
+        // (list().len()) for azure. A regression that overrode the
+        // method with a broken impl would be caught here.
+        let dir = TempDir::new().unwrap();
+        let body = "{\"alpha\":\"azure-prod:///a\",\"beta\":\"azure-prod:///b\",\"gamma\":\"azure-prod:///c\"}";
+        let response_body = format!("{{\"value\":{}}}\n", serde_json::to_string(body).unwrap());
+        let mock = StrictMock::new("az")
+            .on(&show_argv("reg-doc"), Response::success(&response_body))
+            .install(dir.path());
+        let b = backend(&mock, None, None);
+        let uri = BackendUri::parse("azure-prod:///reg-doc").unwrap();
+        assert_eq!(b.check_extensive(&uri).await.unwrap(), 3);
     }
 
     #[tokio::test]
@@ -1279,8 +1356,8 @@ mod tests {
         let err = b.set(&uri, secret).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("strict-mock-no-match") || msg.contains("azure"),
-            "expected strict no-match — any regression emitting --value would pass this test: {msg}"
+            msg.contains("strict-mock-no-match"),
+            "must be mock-level divergence — regression emitting --value would match buggy rule: {msg}"
         );
     }
 
@@ -1314,8 +1391,8 @@ mod tests {
         let err = b.set(&uri, "v").await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("strict-mock-no-match") || msg.contains("azure"),
-            "expected strict no-match — regression dropping --encoding utf-8 would pass: {msg}"
+            msg.contains("strict-mock-no-match"),
+            "must be mock-level divergence — regression dropping --encoding utf-8 would match buggy rule: {msg}"
         );
     }
 }

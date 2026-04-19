@@ -8,6 +8,11 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### Added
+
+- **`secretenv-backend-gcp` (new crate):** first v0.3 backend — Google Cloud Secret Manager via the `gcloud` CLI. URI shape `gcp-<instance>:///<secret-name>[#version=<n>]`. Canonical `#version=<n>` directive supports positive integers + `latest` (latest = flag omitted; `gcloud` resolves to newest enabled version). Required config: `gcp_project`. Optional: `gcp_impersonate_service_account` (plausibility-validated as an SA email at factory time), `gcloud_bin` (test hook). `set` pipes the secret value through child stdin via `--data-file=/dev/stdin` (CV-1 discipline); fragment on `set` URI explicitly rejected before any network call. `check()` runs Level 1 (`gcloud --version`) + Level 2 (`gcloud auth print-access-token`) + identity enrichment (`gcloud config get-value account`) concurrently via `tokio::join!`. The OAuth2 bearer token returned by `print-access-token` is read only for exit status — `output.stdout` is dropped immediately and never interpolated into logs, errors, or identity strings. A dedicated canary test (`check_level2_auth_ok_never_logs_token_body`) locks this defense-in-depth contract with a sentinel token substring. Strict-mode mocks from day one — 32 tests across factory validation, the `check` probe triad, `get` + `set` + `delete` + `list`, fragment grammar rejection (shorthand, unsupported directive, invalid version value, invalid secret name), impersonation argv shape, and two drift-catch locks (missing `--project`, CV-1 stdin discipline). Secret-name charset `[a-zA-Z0-9_-]{1,255}` validated locally BEFORE any `gcloud` call.
+- **`secretenv setup` gains `--gcp-project` + `--gcp-impersonate-service-account` flags** for gcp-scheme registry URIs. Scheme router accepts `gcp` + `gcp-*` suffix forms; registry serializer emits gcp registries as JSON (same wire shape as aws-ssm / vault / aws-secrets).
+
 ## [0.3.0-alpha.0]
 
 **Headline:** v0.3 Phase 0 groundwork. Workspace version bumped to `0.3.0-alpha.0` — the aggregate release window is now open. This patch is pure internal refactoring — zero behavior change. GCP + Azure backend implementation follows in subsequent patches.

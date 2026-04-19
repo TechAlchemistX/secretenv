@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
 /// Register every compiled-in backend factory (`local`, `aws-ssm`,
-/// `1password`, `vault`) and instantiate the backends declared in
-/// `config`.
+/// `1password`, `vault`, `aws-secrets`, `gcp`) and instantiate the
+/// backends declared in `config`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a
@@ -23,6 +23,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_1password::OnePasswordFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_vault::VaultFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_aws_secrets::AwsSecretsFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_gcp::GcpFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

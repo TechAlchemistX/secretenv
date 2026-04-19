@@ -170,6 +170,14 @@ pub struct SetupArgs {
     #[arg(long)]
     pub vault_namespace: Option<String>,
 
+    /// GCP project ID — required for gcp backends.
+    #[arg(long)]
+    pub gcp_project: Option<String>,
+
+    /// GCP service-account email to impersonate — optional, gcp only.
+    #[arg(long)]
+    pub gcp_impersonate_service_account: Option<String>,
+
     /// Overwrite an existing config.toml.
     #[arg(long)]
     pub force: bool,
@@ -710,9 +718,11 @@ fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Res
         // `vault` stores registry documents as a single KV secret whose
         // value is a JSON alias→URI map — same wire shape as aws-ssm.
         // `aws-secrets` uses the same shape (one AWS secret, JSON body).
-        "aws-ssm" | "vault" | "aws-secrets" => serde_json::to_string(map).with_context(|| {
-            format!("serializing registry as JSON for backend type '{backend_type}'")
-        }),
+        "aws-ssm" | "vault" | "aws-secrets" | "gcp" => {
+            serde_json::to_string(map).with_context(|| {
+                format!("serializing registry as JSON for backend type '{backend_type}'")
+            })
+        }
         other => Err(anyhow!(
             "writing registry documents through backend type '{other}' is not supported"
         )),
@@ -735,6 +745,8 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         account: args.account.clone(),
         vault_address: args.vault_address.clone(),
         vault_namespace: args.vault_namespace.clone(),
+        gcp_project: args.gcp_project.clone(),
+        gcp_impersonate_service_account: args.gcp_impersonate_service_account.clone(),
         force: args.force,
         skip_doctor: args.skip_doctor,
         target: target_config.map(std::path::Path::to_path_buf),

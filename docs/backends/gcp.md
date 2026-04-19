@@ -1,8 +1,8 @@
 # GCP Secret Manager
 
 **Type:** `gcp`  
-**CLI required:** `gcloud` (Google Cloud SDK)  
-**URI scheme:** `<instance-name>://project-id/secret-name`
+**CLI required:** `gcloud` (Google Cloud SDK 380+)  
+**URI scheme:** `<instance-name>:///<secret-name>[#version=<n>]`
 
 ---
 
@@ -11,7 +11,9 @@
 ```toml
 [backends.gcp-prod]
 type        = "gcp"
-gcp_project = "my-project-prod"   # required
+gcp_project = "my-project-prod"
+# Optional — impersonate a service account on every call:
+# gcp_impersonate_service_account = "secretenv-reader@my-project-prod.iam.gserviceaccount.com"
 ```
 
 ### Fields
@@ -19,91 +21,150 @@ gcp_project = "my-project-prod"   # required
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"gcp"` |
-| `gcp_project` | Yes | GCP project ID where secrets live |
+| `gcp_project` | Yes | GCP project ID where the secrets live |
+| `gcp_impersonate_service_account` | No | Service account email to impersonate for every operation. Requires `roles/iam.serviceAccountTokenCreator` on the target SA. |
 
 ---
 
 ## URI Format
 
 ```
-gcp-prod://my-project-prod/stripe_api_key
-└────────┘  └─────────────┘ └─────────────┘
-instance    project id       secret name
+gcp-prod:///stripe_api_key
+└────────┘   └───────────┘
+instance      secret name
 ```
 
-secretenv always fetches the latest enabled version. Version pinning is not currently supported.
+Use triple-slash (`gcp-prod:///stripe_key`) — the project is always in config, never the URI. This matches the convention across all cloud backends.
+
+### Fragment directives
+
+Append `#version=<n>` to pin a specific secret version:
+
+```
+gcp-prod:///stripe_api_key#version=5          # Pin to version 5
+gcp-prod:///stripe_api_key#version=latest     # Explicit latest (same as omitting)
+gcp-prod:///stripe_api_key                    # Default: latest enabled version
+```
+
+| URI | Result |
+|---|---|
+| `gcp-prod:///my-secret` | Latest enabled version |
+| `gcp-prod:///my-secret#version=latest` | Same as above |
+| `gcp-prod:///my-secret#version=5` | Version 5 explicitly |
+| `gcp-prod:///my-secret#version=abc` | **Rejected** — version must be a positive integer or `latest` |
+| `gcp-prod:///my-secret#secret` | **Rejected** — legacy shorthand; use `#version=...` |
+| `gcp-prod:///my-secret#scope=ro` | **Rejected** — `scope` is not a gcp directive |
+
+`version` is the only fragment directive the gcp backend recognizes. See [../fragment-vocabulary.md](../fragment-vocabulary.md) for the full grammar.
 
 ---
 
 ## Authentication
 
-secretenv delegates to the `gcloud` CLI. Supported mechanisms:
+secretenv delegates entirely to the `gcloud` CLI. All of these work:
 
-- Application Default Credentials (`gcloud auth application-default login`)
-- Service account key file (`GOOGLE_APPLICATION_CREDENTIALS`)
-- Workload Identity (GKE)
-- Cloud Shell credentials
+- **User account** — `gcloud auth login` (browser OAuth).
+- **Service account key file** — set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`, or run `gcloud auth activate-service-account --key-file /path/to/key.json`.
+- **Workload Identity (GKE)** — pod-mounted credentials; zero config.
+- **Compute Engine metadata** — VM-attached service account; zero config.
+- **Cloud Shell** — pre-authenticated.
+- **Impersonation** — set `gcp_impersonate_service_account` in the backend config; every call adds `--impersonate-service-account`.
+
+secretenv has zero auth code. If `gcloud <any-command>` works in your shell, the backend will too.
 
 ---
 
 ## IAM Permissions
 
-The identity accessing secrets needs `roles/secretmanager.secretAccessor` on the specific secrets or the project.
+### Read-only (for `secretenv run`)
 
----
+Grant `roles/secretmanager.secretAccessor` at the secret or project level.
 
-# Local File
+Per-secret (least privilege):
 
-**Type:** `local`  
-**CLI required:** None  
-**URI scheme:** `<instance-name>:///path/to/file.toml`
-
----
-
-## Configuration
-
-```toml
-[backends.local]
-type = "local"
+```bash
+gcloud secrets add-iam-policy-binding stripe_api_key \
+  --role=roles/secretmanager.secretAccessor \
+  --member=user:alice@example.com
 ```
 
-No credential fields. Reads from the local filesystem directly.
+Project-wide:
 
----
-
-## URI Format
-
-```
-local:///Users/yourname/.config/secretenv/local-registry.toml
+```bash
+gcloud projects add-iam-policy-binding my-project-prod \
+  --role=roles/secretmanager.secretAccessor \
+  --member=user:alice@example.com
 ```
 
-The file at the path must be a flat TOML key-value document.
+### Read-write (for `registry set` / `delete`)
 
----
+Grant `roles/secretmanager.admin` OR a custom role with:
 
-## Use Cases
+- `secretmanager.versions.add` (for `set`)
+- `secretmanager.secrets.delete` (for `delete`)
+- `secretmanager.secrets.get` + `secretmanager.versions.access` (for read, inherited from accessor)
 
-- Solo developers who want zero-infrastructure local workflow
-- Development environments where cloud backends are overkill
-- Offline development
-- Testing secretenv itself
+**Note on `set`:** secretenv's `set` is **update-only** — it adds a new version to an existing secret. Create the secret first with `gcloud secrets create <name>` (one-time setup); afterwards `registry set` adds versions.
 
----
+### Impersonation
 
-## Local Registry File Format
+If `gcp_impersonate_service_account` is configured, the CALLER needs `roles/iam.serviceAccountTokenCreator` on the target SA:
 
-```toml
-# ~/.config/secretenv/local-registry.toml
-
-stripe-key  = "keychain://secretenv/stripe-key"
-dev-db-url  = "keychain://secretenv/dev-db-url"
-api-key     = "keychain://secretenv/api-key"
+```bash
+gcloud iam service-accounts add-iam-policy-binding \
+  secretenv-reader@my-project-prod.iam.gserviceaccount.com \
+  --role=roles/iam.serviceAccountTokenCreator \
+  --member=user:alice@example.com
 ```
 
-The local backend is typically used as a registry source pointing to keychain entries, not as a secret store itself (though it can store plaintext values for non-sensitive defaults).
+The impersonated SA then needs the accessor role on the secrets.
 
 ---
 
-## Security Note
+## How `secretenv doctor` reports GCP status
 
-If the local registry file contains actual secret values rather than pointers to a credential store, ensure it is `chmod 600` and excluded from any backup solutions that sync to cloud storage.
+```
+├── gcp-prod [gcp]
+│   ✓ ready
+│     cli:      Google Cloud SDK 458.0.1
+│     identity: account=alice@example.com project=my-project-prod
+```
+
+With impersonation:
+
+```
+├── gcp-prod [gcp]
+│   ✓ ready
+│     cli:      Google Cloud SDK 458.0.1
+│     identity: account=alice@example.com project=my-project-prod impersonate=secretenv-reader@my-project-prod.iam.gserviceaccount.com
+```
+
+If not authenticated:
+
+```
+├── gcp-prod [gcp]
+│   ✗ not authenticated
+│     run: gcloud auth login  OR  gcloud auth activate-service-account --key-file <path>
+```
+
+---
+
+## Known Limitations
+
+- **Update-only `set`.** The secret must exist before `registry set` can add a version. Create with `gcloud secrets create <name>` first.
+- **Delete removes the whole secret.** No soft-delete / recovery window (matches aws-secrets and vault). All versions are destroyed.
+- **Multi-region only.** Regional secrets (launched late 2024) require `--location <region>`; not supported in v0.3. Will add in a follow-up.
+- **`latest` is a keyword.** `#version=latest` behaves identically to omitting the fragment. Future-proofs readability in registry documents.
+- **No binary secret support.** GCP Secret Manager stores bytes; the `gcloud` CLI decodes on read. Strings only for v0.3.
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `NOT_FOUND: Secret [...]` | Secret doesn't exist or typo'd | Check `gcloud secrets list --project <p>` |
+| `PERMISSION_DENIED` | Missing accessor role | `gcloud secrets add-iam-policy-binding ... --role=roles/secretmanager.secretAccessor` |
+| `FAILED_PRECONDITION: ... DESTROYED` | Version explicitly destroyed | Access a different version or restore |
+| `NotAuthenticated` on `doctor` | `gcloud` session expired | `gcloud auth login` |
+| `strict-mock-no-match` in unit tests | Developer-facing — see [../fragment-vocabulary.md](../fragment-vocabulary.md) |

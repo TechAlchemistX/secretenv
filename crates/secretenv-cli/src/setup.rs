@@ -35,6 +35,10 @@ pub struct SetupOpts {
     pub vault_address: Option<String>,
     /// Vault Enterprise namespace — optional, `vault` only.
     pub vault_namespace: Option<String>,
+    /// GCP project ID — required when the URI scheme resolves to `gcp`.
+    pub gcp_project: Option<String>,
+    /// GCP service-account email to impersonate — optional, `gcp` only.
+    pub gcp_impersonate_service_account: Option<String>,
     /// Overwrite an existing config.toml instead of erroring.
     pub force: bool,
     /// Skip the post-write `doctor` run.
@@ -81,6 +85,13 @@ pub async fn run_setup(opts: &SetupOpts) -> Result<()> {
         bail!(
             "vault backends require --vault-address \
              (e.g. `secretenv setup {} --vault-address https://vault.company.com`)",
+            opts.registry_uri
+        );
+    }
+    if backend_type == "gcp" && opts.gcp_project.is_none() {
+        bail!(
+            "gcp backends require --gcp-project \
+             (e.g. `secretenv setup {} --gcp-project my-project-prod`)",
             opts.registry_uri
         );
     }
@@ -139,10 +150,13 @@ fn backend_type_from_scheme(scheme: &str) -> Result<&'static str> {
         Ok("1password")
     } else if scheme == "vault" || scheme.starts_with("vault-") {
         Ok("vault")
+    } else if scheme == "gcp" || scheme.starts_with("gcp-") {
+        Ok("gcp")
     } else {
         bail!(
             "unknown backend scheme '{scheme}' — supported: local, aws-ssm(-*), \
-             aws-secrets(-*), 1password(-*), vault(-*). Did you mean one of these?"
+             aws-secrets(-*), 1password(-*), vault(-*), gcp(-*). Did you mean one \
+             of these?"
         )
     }
 }
@@ -194,6 +208,14 @@ fn build_config_toml(uri: &BackendUri, backend_type: &str, opts: &SetupOpts) -> 
                 writeln!(out, "vault_namespace = {}", toml_string(ns)).unwrap();
             }
         }
+        "gcp" => {
+            if let Some(p) = &opts.gcp_project {
+                writeln!(out, "gcp_project = {}", toml_string(p)).unwrap();
+            }
+            if let Some(sa) = &opts.gcp_impersonate_service_account {
+                writeln!(out, "gcp_impersonate_service_account = {}", toml_string(sa)).unwrap();
+            }
+        }
         _ => {}
     }
 
@@ -228,6 +250,8 @@ mod tests {
             account: None,
             vault_address: None,
             vault_namespace: None,
+            gcp_project: None,
+            gcp_impersonate_service_account: None,
             force: false,
             skip_doctor: true,
             target: None,
@@ -267,10 +291,16 @@ mod tests {
     }
 
     #[test]
+    fn scheme_gcp_bare_and_suffixed() {
+        assert_eq!(backend_type_from_scheme("gcp").unwrap(), "gcp");
+        assert_eq!(backend_type_from_scheme("gcp-prod").unwrap(), "gcp");
+    }
+
+    #[test]
     fn scheme_unknown_errors() {
-        // Keep a genuinely-unknown scheme here; `vault-prod` is no
-        // longer unknown post-v0.2 Phase 5.
-        let err = backend_type_from_scheme("gcp-prod").unwrap_err();
+        // Keep a genuinely-unknown scheme here; `gcp-prod` is no longer
+        // unknown post-v0.3 Phase 1.
+        let err = backend_type_from_scheme("azure-prod").unwrap_err();
         assert!(format!("{err:#}").contains("unknown backend scheme"));
     }
 

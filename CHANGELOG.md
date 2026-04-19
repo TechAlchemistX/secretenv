@@ -8,6 +8,14 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.4.0-alpha.0]
+
+**Headline:** v0.4 preflight. Workspace version bumped to `0.4.0-alpha.0`; build-plan at [`kb/wiki/build-plan-v0.4.md`](../kb/wiki/build-plan-v0.4.md). Functionality-only release — no new backends. Scope: `doctor --fix/--extensive`, `registry history/invite`, distribution profile system served from `secretenv.dev`, per-instance `timeout_secs`, 1Password `set` stdin-path version-gating polish, harness promotion to `scripts/smoke-test/`, Node.js 24 bump, `deny.toml` AGPL exception tightening, and a decision on publishing `secretenv-testing`.
+
+### Internal
+
+- Workspace version `0.3.0` → `0.4.0-alpha.0`. Alpha signal only; aggregate `v0.4.0` tag happens after all phases + closing audit.
+
 ## [0.3.0] - 2026-04-19
 
 **Headline:** two new cloud backends (GCP Secret Manager + Azure Key Vault), the canonical `#key=value` fragment grammar locked in (v0.2.1 work), strict-mode mock test harness retrofitted across every backend (v0.2.2 → v0.2.7 + Phase 0), shared factory helpers, parallel `check()` probes via `tokio::join!`, and a **relicensing from MIT → AGPL-3.0-only + Contributor License Agreement**. The entire v0.2.1 → v0.2.7 internal-dev arc ships as one cohesive `v0.3.0` release (the last public version was v0.2.0 on 2026-04-18; v0.2.x patches were dev-merged without separate publishes per the aggregate-release posture locked during the cycle). 7 backends live: local, aws-ssm, aws-secrets, 1password, vault, **gcp**, **azure**.

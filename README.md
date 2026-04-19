@@ -435,8 +435,8 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Local file | `local` | `local:///path/to/file.toml` | — | Available |
 | AWS SSM Parameter Store | `aws-ssm` | `aws-ssm-<instance>:///path` | `aws` | Available |
 | 1Password | `1password` | `1password-<instance>://vault/item/field` | `op` | Available |
-| HashiCorp Vault | `vault` | `vault-<instance>://mount/path` | `vault` | Available |
-| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>://name[#json-key=<field>]` | `aws` | Available |
+| HashiCorp Vault | `vault` | `vault-<instance>:///<mount>/<path>` | `vault` | Available |
+| AWS Secrets Manager | `aws-secrets` | `aws-secrets-<instance>:///<secret-name>[#json-key=<field>]` | `aws` | Available |
 | GCP Secret Manager | `gcp` | `gcp-<instance>:///<secret-name>[#version=<n>]` | `gcloud` | Available |
 | Azure Key Vault | `azure` | `azure-<instance>:///<secret-name>[#version=<32-hex>]` | `az` | Available |
 | macOS Keychain | `keychain` | `keychain-<instance>://service/account` | `security` | Coming Soon |
@@ -450,6 +450,8 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Delinea Secret Server | `delinea` | `delinea-<instance>://folder/secret` | `tss` | Coming Soon |
 
 The URI scheme is your named instance. Multiple instances of the same backend type — for multiple accounts, multiple vaults, or multiple credential sets — are configured in `config.toml` and referenced by their instance name.
+
+**Why some URIs have three slashes.** Standard URI grammar is `<scheme>://<authority>/<path>`. SecretEnv URIs have no authority component (the "host" position is empty — the instance is encoded in the scheme), so a leading-slash path produces the triple-slash form `<scheme>:///<path>`. Backends storing flat secret-name identifiers (aws-secrets, gcp, azure, vault, 1password) accept either form and strip a leading `/` if present. AWS SSM REQUIRES the leading `/` because Parameter Store names actually begin with `/`. The 1Password row uses the double-slash form because its path tokens are `vault/item/field` segments — no leading-slash idiom.
 
 **Fragment directives.** URIs optionally carry a `#key=value[,key=value]*` fragment that each backend interprets per its own registered directives — for example, aws-secrets uses `#json-key=<field>` to pick a value out of a JSON-shaped secret. See [docs/fragment-vocabulary.md](docs/fragment-vocabulary.md) for the full grammar and the per-backend directive registry.
 

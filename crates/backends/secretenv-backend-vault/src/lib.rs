@@ -53,9 +53,11 @@
 use std::collections::HashMap;
 use std::io;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
+use secretenv_core::{
+    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -178,9 +180,17 @@ impl Backend for VaultBackend {
         &self.instance_name
     }
 
+    #[allow(clippy::similar_names)]
     async fn check(&self) -> BackendStatus {
-        // Level 1: `vault --version`
-        let version_out = match Command::new(&self.vault_bin).arg("--version").output().await {
+        // v0.3: Level 1 (`vault --version`) and Level 2 (`vault token
+        // lookup -format=json`) run concurrently via `tokio::join!`.
+        // Halves `doctor` latency.
+        let version_fut = Command::new(&self.vault_bin).arg("--version").output();
+        let token_fut = self.vault_command("token", &["lookup", "-format=json"]).output();
+        let (version_res, token_res) = tokio::join!(version_fut, token_fut);
+
+        // --- Level 1 ---
+        let version_out = match version_res {
             Ok(o) => o,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::cli_missing(),
             Err(e) => {
@@ -203,22 +213,21 @@ impl Backend for VaultBackend {
         }
         let cli_version = String::from_utf8_lossy(&version_out.stdout).trim().to_owned();
 
-        // Level 2: `vault token lookup -format=json`
+        // --- Level 2: `vault token lookup -format=json` ---
         // `vault status` succeeds with no token (it reports cluster
         // state); `token lookup` requires an actual valid token and
         // is what confirms the user can `get` a secret.
-        let token_out =
-            match self.vault_command("token", &["lookup", "-format=json"]).output().await {
-                Ok(o) => o,
-                Err(e) => {
-                    return BackendStatus::Error {
-                        message: format!(
-                            "vault backend '{}': failed to invoke 'vault token lookup': {e}",
-                            self.instance_name
-                        ),
-                    };
-                }
-            };
+        let token_out = match token_res {
+            Ok(o) => o,
+            Err(e) => {
+                return BackendStatus::Error {
+                    message: format!(
+                        "vault backend '{}': failed to invoke 'vault token lookup': {e}",
+                        self.instance_name
+                    ),
+                };
+            }
+        };
         if !token_out.status.success() {
             let stderr = String::from_utf8_lossy(&token_out.stderr).trim().to_owned();
             return BackendStatus::NotAuthenticated {
@@ -243,9 +252,7 @@ impl Backend for VaultBackend {
         }
     }
 
-    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize> {
-        Ok(self.list(test_uri).await?.len())
-    }
+    // `check_extensive` uses the `Backend` trait default (list().len()).
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         uri.reject_any_fragment("vault")?;
@@ -389,9 +396,9 @@ impl BackendFactory for VaultFactory {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let vault_address = required_string(config, "vault_address", instance_name)?;
-        let vault_namespace = optional_string(config, "vault_namespace", instance_name)?;
-        let vault_bin = optional_string(config, "vault_bin", instance_name)?
+        let vault_address = required_string(config, "vault_address", "vault", instance_name)?;
+        let vault_namespace = optional_string(config, "vault_namespace", "vault", instance_name)?;
+        let vault_bin = optional_string(config, "vault_bin", "vault", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
         Ok(Box::new(VaultBackend {
             backend_type: "vault",
@@ -403,42 +410,10 @@ impl BackendFactory for VaultFactory {
     }
 }
 
-/// Required string field. Errors if missing or wrong type.
-fn required_string(
-    config: &HashMap<String, toml::Value>,
-    field: &str,
-    instance_name: &str,
-) -> Result<String> {
-    let value = config.get(field).ok_or_else(|| {
-        anyhow!(
-            "vault instance '{instance_name}': missing required field '{field}' \
-             (set {field} = \"...\" under [backends.{instance_name}])"
-        )
-    })?;
-    value.as_str().map(str::to_owned).ok_or_else(|| {
-        anyhow!(
-            "vault instance '{instance_name}': field '{field}' must be a string, got {}",
-            value.type_str()
-        )
-    })
-}
-
-/// Optional string field. Ok(None) when absent; error when present with
-/// wrong type.
-fn optional_string(
-    config: &HashMap<String, toml::Value>,
-    field: &str,
-    instance_name: &str,
-) -> Result<Option<String>> {
-    config.get(field).map_or(Ok(None), |value| {
-        value.as_str().map(|s| Some(s.to_owned())).ok_or_else(|| {
-            anyhow!(
-                "vault instance '{instance_name}': field '{field}' must be a string, got {}",
-                value.type_str()
-            )
-        })
-    })
-}
+// v0.3 Phase 0: `required_string` / `optional_string` moved to
+// `secretenv_core::factory_helpers` (or via re-export as
+// `secretenv_core::{required_string, optional_string}`). The backend-
+// type label is passed as the second argument.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

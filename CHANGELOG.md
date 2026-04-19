@@ -8,6 +8,24 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.3.0-alpha.0]
+
+**Headline:** v0.3 Phase 0 groundwork. Workspace version bumped to `0.3.0-alpha.0` — the aggregate release window is now open. This patch is pure internal refactoring — zero behavior change. GCP + Azure backend implementation follows in subsequent patches.
+
+Aggregate release posture (locked 2026-04-19): the entire v0.2.1 → v0.2.7 + v0.3 backend series will ship as ONE cohesive `v0.3.0` release on crates.io, Homebrew, and GH Releases.
+
+### Changed
+
+- **`Backend::check_extensive`:** now has a default implementation on the trait itself (`Ok(self.list(test_uri).await?.len())`). The five backends' duplicated verbatim impls removed. A backend with a faster "count without materializing" CLI path may still override. Rust-engineer review flagged this as a 5× duplication.
+- **`secretenv-core::factory_helpers`:** new public module exposing `required_string(config, field, backend_type, instance_name)` and `optional_string(config, field, backend_type, instance_name)`. The `backend_type` label is the new argument (vs. v0.2's hard-coded-per-backend strings); error shape is unchanged. aws-ssm, vault, aws-secrets factory blocks now call the shared helpers. v0.3 gcp + azure will use the same entry points, avoiding two more copies. 6 new unit tests in the helper module.
+- **`Backend::check` for aws-ssm, aws-secrets, vault, 1password:** Level 1 (`<cli> --version`) and Level 2 (auth probe) now run concurrently via `tokio::join!`. The two probes are independent; serializing them doubled `secretenv doctor` latency per backend. For a config with 5 backends (current) that's ~5× the latency saving vs. v0.2; for v0.3 with 7 backends (adding gcp + azure) it becomes ~7×. No behavior change — error handling and short-circuiting semantics preserved.
+
+### Internal
+
+- Workspace version 0.2.7 → 0.3.0-alpha.0.
+- Workspace test count 359 → 365 (+6 new factory_helpers unit tests).
+- CHANGELOG entries undated — per the dev-only posture, no tag pushed yet. Date fills in at `v0.3.0` tag.
+
 ## [0.2.7]
 
 **Headline:** security hardening follow-up to the v0.2.x retrofit series — three reviewer agents (code / security / rust) audited the full v0.2.x scope; this patch lands the defense-in-depth fixes surfaced by the security review. No user-facing behavior change for valid URIs.

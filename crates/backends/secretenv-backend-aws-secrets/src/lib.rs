@@ -72,7 +72,9 @@ use std::io;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
+use secretenv_core::{
+    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -188,9 +190,20 @@ impl Backend for AwsSecretsBackend {
         &self.instance_name
     }
 
+    #[allow(clippy::similar_names)]
     async fn check(&self) -> BackendStatus {
-        // Level 1: `aws --version`
-        let version_out = match Command::new(&self.aws_bin).arg("--version").output().await {
+        // v0.3: Level 1 + Level 2 via `tokio::join!` — see aws-ssm
+        // counterpart for rationale. `doctor` latency halved per
+        // backend; both probes are independent.
+        let version_fut = Command::new(&self.aws_bin).arg("--version").output();
+        let mut sts_cmd = Command::new(&self.aws_bin);
+        sts_cmd.args(["sts", "get-caller-identity", "--output", "json"]);
+        self.append_region_and_profile(&mut sts_cmd);
+        let sts_fut = sts_cmd.output();
+        let (version_res, sts_res) = tokio::join!(version_fut, sts_fut);
+
+        // --- Level 1 ---
+        let version_out = match version_res {
             Ok(o) => o,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::cli_missing(),
             Err(e) => {
@@ -211,7 +224,6 @@ impl Backend for AwsSecretsBackend {
                 ),
             };
         }
-        // aws --version prints to stdout (v2) or stderr (v1). Prefer stdout.
         let cli_version = {
             let stdout = String::from_utf8_lossy(&version_out.stdout).trim().to_owned();
             if stdout.is_empty() {
@@ -221,11 +233,8 @@ impl Backend for AwsSecretsBackend {
             }
         };
 
-        // Level 2: `aws sts get-caller-identity`
-        let mut sts_cmd = Command::new(&self.aws_bin);
-        sts_cmd.args(["sts", "get-caller-identity", "--output", "json"]);
-        self.append_region_and_profile(&mut sts_cmd);
-        let sts_out = match sts_cmd.output().await {
+        // --- Level 2 ---
+        let sts_out = match sts_res {
             Ok(o) => o,
             Err(e) => {
                 return BackendStatus::Error {
@@ -268,9 +277,7 @@ impl Backend for AwsSecretsBackend {
         }
     }
 
-    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize> {
-        Ok(self.list(test_uri).await?.len())
-    }
+    // `check_extensive` uses the `Backend` trait default (list().len()).
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         // Validate the fragment directive BEFORE any AWS API call. An
@@ -479,9 +486,9 @@ impl BackendFactory for AwsSecretsFactory {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let aws_region = required_string(config, "aws_region", instance_name)?;
-        let aws_profile = optional_string(config, "aws_profile", instance_name)?;
-        let aws_bin = optional_string(config, "aws_bin", instance_name)?
+        let aws_region = required_string(config, "aws_region", "aws-secrets", instance_name)?;
+        let aws_profile = optional_string(config, "aws_profile", "aws-secrets", instance_name)?;
+        let aws_bin = optional_string(config, "aws_bin", "aws-secrets", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
         Ok(Box::new(AwsSecretsBackend {
             backend_type: "aws-secrets",
@@ -493,42 +500,8 @@ impl BackendFactory for AwsSecretsFactory {
     }
 }
 
-/// Required string field. Errors if missing or wrong type.
-fn required_string(
-    config: &HashMap<String, toml::Value>,
-    field: &str,
-    instance_name: &str,
-) -> Result<String> {
-    let value = config.get(field).ok_or_else(|| {
-        anyhow!(
-            "aws-secrets instance '{instance_name}': missing required field '{field}' \
-             (set {field} = \"...\" under [backends.{instance_name}])"
-        )
-    })?;
-    value.as_str().map(str::to_owned).ok_or_else(|| {
-        anyhow!(
-            "aws-secrets instance '{instance_name}': field '{field}' must be a string, got {}",
-            value.type_str()
-        )
-    })
-}
-
-/// Optional string field. Ok(None) when absent; error when present with
-/// wrong type.
-fn optional_string(
-    config: &HashMap<String, toml::Value>,
-    field: &str,
-    instance_name: &str,
-) -> Result<Option<String>> {
-    config.get(field).map_or(Ok(None), |value| {
-        value.as_str().map(|s| Some(s.to_owned())).ok_or_else(|| {
-            anyhow!(
-                "aws-secrets instance '{instance_name}': field '{field}' must be a string, got {}",
-                value.type_str()
-            )
-        })
-    })
-}
+// v0.3 Phase 0: `required_string` / `optional_string` moved to
+// `secretenv_core::factory_helpers`.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

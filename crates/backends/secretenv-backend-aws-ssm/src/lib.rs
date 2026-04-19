@@ -45,9 +45,11 @@
 use std::collections::HashMap;
 use std::io;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
+use secretenv_core::{
+    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -123,9 +125,26 @@ impl Backend for AwsSsmBackend {
         &self.instance_name
     }
 
+    // `version_fut` / `version_out` / `version_res` are distinct
+    // lifetimes of the same probe; clippy's similar-names lint would
+    // flag them. Allow scoped to this method only.
+    #[allow(clippy::similar_names)]
     async fn check(&self) -> BackendStatus {
-        // Level 1: `aws --version`
-        let version_out = match Command::new(&self.aws_bin).arg("--version").output().await {
+        // v0.3: Level 1 (`aws --version`) and Level 2 (`aws sts
+        // get-caller-identity`) run concurrently via `tokio::join!`
+        // since they are independent. Halves the `doctor` latency for
+        // this backend. A `CliMissing` on the version probe still
+        // short-circuits — the sts probe result is discarded if the
+        // binary isn't present.
+        let version_fut = Command::new(&self.aws_bin).arg("--version").output();
+        let mut sts_cmd = Command::new(&self.aws_bin);
+        sts_cmd.args(["sts", "get-caller-identity", "--output", "json"]);
+        self.append_region_and_profile(&mut sts_cmd);
+        let sts_fut = sts_cmd.output();
+        let (version_res, sts_res) = tokio::join!(version_fut, sts_fut);
+
+        // --- Level 1 interpretation ---
+        let version_out = match version_res {
             Ok(o) => o,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::cli_missing(),
             Err(e) => {
@@ -157,11 +176,8 @@ impl Backend for AwsSsmBackend {
             }
         };
 
-        // Level 2: `aws sts get-caller-identity`
-        let mut sts_cmd = Command::new(&self.aws_bin);
-        sts_cmd.args(["sts", "get-caller-identity", "--output", "json"]);
-        self.append_region_and_profile(&mut sts_cmd);
-        let sts_out = match sts_cmd.output().await {
+        // --- Level 2 interpretation ---
+        let sts_out = match sts_res {
             Ok(o) => o,
             Err(e) => {
                 return BackendStatus::Error {
@@ -204,9 +220,7 @@ impl Backend for AwsSsmBackend {
         }
     }
 
-    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize> {
-        Ok(self.list(test_uri).await?.len())
-    }
+    // `check_extensive` uses the `Backend` trait default (list().len()).
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         uri.reject_any_fragment("aws-ssm")?;
@@ -363,8 +377,8 @@ impl BackendFactory for AwsSsmFactory {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let aws_region = required_string(config, "aws_region", instance_name)?;
-        let aws_profile = optional_string(config, "aws_profile", instance_name)?;
+        let aws_region = required_string(config, "aws_region", "aws-ssm", instance_name)?;
+        let aws_profile = optional_string(config, "aws_profile", "aws-ssm", instance_name)?;
         Ok(Box::new(AwsSsmBackend {
             backend_type: "aws-ssm",
             instance_name: instance_name.to_owned(),
@@ -375,44 +389,9 @@ impl BackendFactory for AwsSsmFactory {
     }
 }
 
-/// Extract a required string field from the raw backend config. Returns
-/// a typed error naming the instance + field when missing or when the
-/// value has the wrong TOML type.
-fn required_string(
-    config: &HashMap<String, toml::Value>,
-    field: &str,
-    instance_name: &str,
-) -> Result<String> {
-    let value = config.get(field).ok_or_else(|| {
-        anyhow!(
-            "aws-ssm instance '{instance_name}': missing required field '{field}' \
-             (set {field} = \"...\" under [backends.{instance_name}])"
-        )
-    })?;
-    value.as_str().map(str::to_owned).ok_or_else(|| {
-        anyhow!(
-            "aws-ssm instance '{instance_name}': field '{field}' must be a string, got {}",
-            value.type_str()
-        )
-    })
-}
-
-/// Extract an optional string field. `Ok(None)` when absent; error when
-/// present with the wrong type.
-fn optional_string(
-    config: &HashMap<String, toml::Value>,
-    field: &str,
-    instance_name: &str,
-) -> Result<Option<String>> {
-    config.get(field).map_or(Ok(None), |value| {
-        value.as_str().map(|s| Some(s.to_owned())).ok_or_else(|| {
-            anyhow!(
-                "aws-ssm instance '{instance_name}': field '{field}' must be a string, got {}",
-                value.type_str()
-            )
-        })
-    })
-}
+// v0.3 Phase 0: `required_string` / `optional_string` moved to
+// `secretenv_core::factory_helpers` (re-exported as
+// `secretenv_core::{required_string, optional_string}`).
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

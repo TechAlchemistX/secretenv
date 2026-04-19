@@ -19,6 +19,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod factory_helpers;
 pub mod manifest;
 pub mod registry;
 pub mod resolver;
@@ -29,6 +30,7 @@ pub mod uri;
 
 pub use backend::{Backend, BackendFactory};
 pub use config::{BackendConfig, Config, RegistryConfig};
+pub use factory_helpers::{optional_string, required_string};
 pub use manifest::{Manifest, SecretDecl};
 pub use registry::BackendRegistry;
 pub use resolver::{

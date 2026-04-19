@@ -46,9 +46,16 @@ pub trait Backend: Send + Sync {
     /// `test_uri` and return the number of entries found. Used by
     /// `doctor` in verbose mode and by registry pre-flight.
     ///
+    /// Default implementation calls `list(test_uri)` and returns the
+    /// length — which is what every v0.2 backend was duplicating
+    /// verbatim. A backend with a faster "count without materializing"
+    /// CLI path may override.
+    ///
     /// # Errors
     /// Returns an error if the backend is reachable but `list` fails.
-    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize>;
+    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize> {
+        Ok(self.list(test_uri).await?.len())
+    }
 
     /// Fetch the secret value at `uri`.
     ///

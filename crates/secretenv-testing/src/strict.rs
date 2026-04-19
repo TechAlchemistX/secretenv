@@ -141,6 +141,21 @@ impl Response {
     pub fn success_with_stdin(stdout: impl Into<String>, stdin_must_contain: Vec<String>) -> Self {
         Self { stdout: stdout.into(), stderr: String::new(), exit_code: 0, stdin_must_contain }
     }
+
+    /// Chainable: attach a stderr body to any response. Useful for CLIs
+    /// that emit informational output to stderr (notably AWS CLI v1,
+    /// whose `aws --version` writes to stderr not stdout).
+    ///
+    /// ```no_run
+    /// # use secretenv_testing::Response;
+    /// let r = Response::success("")
+    ///     .with_stderr("aws-cli/1.18.69 Python/2.7.16 Darwin/19.6.0\n");
+    /// ```
+    #[must_use]
+    pub fn with_stderr(mut self, stderr: impl Into<String>) -> Self {
+        self.stderr = stderr.into();
+        self
+    }
 }
 
 impl StrictMock {

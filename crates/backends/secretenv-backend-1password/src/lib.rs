@@ -123,9 +123,19 @@ impl Backend for OnePasswordBackend {
         &self.instance_name
     }
 
+    #[allow(clippy::similar_names)]
     async fn check(&self) -> BackendStatus {
-        // Level 1: `op --version`
-        let version_out = match Command::new(&self.op_bin).arg("--version").output().await {
+        // v0.3: Level 1 + Level 2 via `tokio::join!`. Halves `doctor`
+        // latency for this backend.
+        let version_fut = Command::new(&self.op_bin).arg("--version").output();
+        let mut whoami_cmd = Command::new(&self.op_bin);
+        whoami_cmd.args(["whoami", "--format=json"]);
+        self.append_account(&mut whoami_cmd);
+        let whoami_fut = whoami_cmd.output();
+        let (version_res, whoami_res) = tokio::join!(version_fut, whoami_fut);
+
+        // --- Level 1 ---
+        let version_out = match version_res {
             Ok(o) => o,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::cli_missing(),
             Err(e) => {
@@ -149,11 +159,8 @@ impl Backend for OnePasswordBackend {
         let version_str = String::from_utf8_lossy(&version_out.stdout).trim().to_owned();
         let cli_version = format!("op/{version_str}");
 
-        // Level 2: `op whoami --format=json`
-        let mut whoami_cmd = Command::new(&self.op_bin);
-        whoami_cmd.args(["whoami", "--format=json"]);
-        self.append_account(&mut whoami_cmd);
-        let whoami_out = match whoami_cmd.output().await {
+        // --- Level 2 ---
+        let whoami_out = match whoami_res {
             Ok(o) => o,
             Err(e) => {
                 return BackendStatus::Error {
@@ -190,9 +197,7 @@ impl Backend for OnePasswordBackend {
         BackendStatus::Ok { cli_version, identity: format!("account={}{email_part}", who.url) }
     }
 
-    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize> {
-        Ok(self.list(test_uri).await?.len())
-    }
+    // `check_extensive` uses the `Backend` trait default (list().len()).
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         uri.reject_any_fragment("1password")?;

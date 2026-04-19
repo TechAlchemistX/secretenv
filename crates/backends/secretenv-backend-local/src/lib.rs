@@ -91,10 +91,7 @@ impl Backend for LocalBackend {
         BackendStatus::Ok { cli_version: "local".into(), identity: "filesystem".into() }
     }
 
-    async fn check_extensive(&self, test_uri: &BackendUri) -> Result<usize> {
-        let entries = self.list(test_uri).await?;
-        Ok(entries.len())
-    }
+    // `check_extensive` uses the `Backend` trait's default (list().len()).
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         let path = Self::file_path(uri);

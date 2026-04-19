@@ -8,6 +8,25 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.2.5]
+
+**Headline:** internal test-infrastructure release — vault backend's mock-CLI tests migrated to `StrictMock`, and PR #33 BUG-1 (the flag-order fix: address/namespace routed via `VAULT_ADDR` / `VAULT_NAMESPACE` env vars rather than argv flags) is now a typed regression lock on every vault argv. No user-facing CLI changes; no prod bugs surfaced.
+
+### Changed
+
+- **Internal:** all 17 mock-using tests in `secretenv-backend-vault` converted from the v0.2 raw `install_mock` API to declarative `StrictMock::new("vault")...install()`. Every `vault kv get`, `vault kv put`, `vault kv delete`, `vault token lookup`, and `vault --version` argv is now asserted exactly. The PR #33 BUG-1 regression lock (no `-address` / `-namespace` argv flags) is implicit in the strict argv match — any regression that reintroduces those flags would fail with a `strict-mock-no-match` diagnostic.
+- **Internal:** the two env-log side-channel tests (`command_omits_namespace_env_when_not_configured`, `command_includes_namespace_env_when_configured`) rewritten as declarative `with_env_var` / `with_env_absent` assertions — shorter, tighter, and checkable uniformly with argv at every invocation (not just this one test).
+- **Internal:** `set_passes_secret_value_via_stdin_not_argv` rewritten using `Response::success_with_stdin` — CV-1 discipline is now a typed harness assertion rather than a log-file grep (same pattern aws-ssm adopted in v0.2.3).
+- **Internal:** two new drift-catch regression-lock tests (`set_drift_catch_rejects_secret_leaking_to_argv` for CV-1, `get_drift_catch_env_check_rejects_wrong_vault_addr` for env-pathway) that prove the strict harness surfaces env drift loudly when it occurs.
+
+### Added
+
+- **`secretenv-testing`:** `Response::with_env_var(key, value)` and `Response::with_env_absent(key)` chainable methods for declaring per-rule env-var contracts. The generated POSIX shell uses `${KEY+set}` parameter expansion rather than `grep` so values with spaces, quotes, or regex metacharacters round-trip safely. Additive; `#[non_exhaustive]` policy honored. 6 new unit tests in `secretenv-testing::strict::tests` cover match / mismatch / key-absent / absence-violated / absence-satisfied / special-char-value.
+
+### Fixed
+
+- **None.** The retrofit surfaced no prod bugs in the vault backend — the PR #33 fix is correct and now has typed regression locks preventing its accidental reversal.
+
 ## [0.2.4]
 
 **Headline:** internal test-infrastructure release — 1password backend's mock-CLI tests migrated to `StrictMock`. No user-facing CLI changes; no prod bugs surfaced.

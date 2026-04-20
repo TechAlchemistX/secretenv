@@ -357,6 +357,87 @@ fn doctor_json_includes_registries_key_with_sources_array() {
 }
 
 #[test]
+fn doctor_extensive_renders_depth_probe_for_local_backend() {
+    // Phase 1 (v0.4): --extensive runs check_extensive() against each
+    // registry source served by an Ok backend. The local backend
+    // returns the alias count (1 in the fixture) via the trait
+    // default. Both human and JSON output should reflect it.
+    let (dir, config) = full_fixture();
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["doctor", "--extensive"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("depth probe (1 source)"))
+        .stdout(predicate::str::contains("1 alias readable"));
+}
+
+#[test]
+fn doctor_extensive_json_includes_depth_array() {
+    let (dir, config) = full_fixture();
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["doctor", "--extensive", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "doctor --extensive --json should exit 0");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let depth = parsed["backends"][0]["depth"].as_array().expect("depth array");
+    assert_eq!(depth.len(), 1);
+    assert_eq!(depth[0]["depth_status"], "read");
+    assert_eq!(depth[0]["entry_count"], 1);
+}
+
+#[test]
+fn doctor_fix_is_a_noop_when_all_backends_already_ok() {
+    // The local backend always reports Ok, so --fix has nothing to
+    // remediate. Exit must still be 0; the report should NOT show a
+    // "Remediation actions" section because no actions were taken.
+    let (dir, config) = full_fixture();
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["doctor", "--fix"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "doctor --fix on healthy fixture should exit 0");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("Remediation actions"), "no actions taken → no section: {stdout}");
+    assert!(stdout.contains("✓ ready"));
+}
+
+#[test]
+fn doctor_fix_extensive_compose_cleanly() {
+    // The two flags should compose: nothing to remediate (all-Ok
+    // fixture), depth probe still runs and reports counts.
+    let (dir, config) = full_fixture();
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["doctor", "--fix", "--extensive"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("depth probe"))
+        .stdout(predicate::str::contains("1 alias readable"));
+}
+
+#[test]
+fn doctor_help_lists_fix_and_extensive_flags() {
+    // Surface-level locking — clap's --help output should advertise
+    // the v0.4 Phase 1 additions so users discover them. Catches
+    // accidental rename / removal regressions.
+    secretenv()
+        .args(["doctor", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--fix"))
+        .stdout(predicate::str::contains("--extensive"));
+}
+
+#[test]
 fn setup_writes_config_for_local_backend() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("config.toml");

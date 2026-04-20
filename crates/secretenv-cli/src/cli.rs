@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use secretenv_core::{
     resolve_manifest, resolve_registry, run as runner_run, Backend, BackendRegistry, BackendUri,
-    Config, Manifest, RegistryCache, RegistrySelection,
+    Config, HistoryEntry, Manifest, RegistryCache, RegistrySelection,
 };
 
 /// Command-line arguments for `secretenv`.
@@ -107,6 +107,18 @@ pub enum RegistryCommand {
         alias: String,
         #[arg(long)]
         registry: Option<String>,
+    },
+    /// Show version history for the secret an alias resolves to.
+    /// Output is most-recent-first; backends with no native history
+    /// API report "unsupported".
+    History {
+        /// Alias name. Resolved through the cascade just like `get`.
+        alias: String,
+        #[arg(long)]
+        registry: Option<String>,
+        /// Emit machine-readable JSON instead of the human table.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -607,6 +619,9 @@ async fn cmd_registry(
         RegistryCommand::Unset { alias, registry } => {
             registry_unset(alias, registry.as_deref(), config, backends).await
         }
+        RegistryCommand::History { alias, registry, json } => {
+            registry_history(alias, registry.as_deref(), *json, config, backends).await
+        }
     }
 }
 
@@ -681,6 +696,99 @@ async fn registry_set(
         .with_context(|| format!("writing updated registry document to '{}'", source_uri.raw))?;
     eprintln!("set {alias} → {target_uri} in registry at '{}'", source_uri.raw);
     Ok(())
+}
+
+async fn registry_history(
+    alias: &str,
+    registry: Option<&str>,
+    json: bool,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<()> {
+    let selection = resolve_selection_from_env(registry, config)?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
+    let (target, _source) = aliases.get(alias).ok_or_else(|| {
+        anyhow!("alias '{alias}' not found in registry cascade [{}]", format_sources(&aliases))
+    })?;
+    let target = target.clone();
+    let backend = backends
+        .get(&target.scheme)
+        .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
+    let entries = backend.history(&target).await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&render_history_json(alias, &target.raw, &entries))?
+        );
+    } else {
+        print!("{}", render_history_human(alias, &target.raw, &entries));
+    }
+    Ok(())
+}
+
+/// Tabular human format: alias header + per-version rows. Width-aware
+/// so a long actor or description doesn't push the table to one
+/// column-per-row. Empty `entries` renders an explanatory line — the
+/// backend reported zero versions (locally-untracked file, fresh
+/// secret, etc.) without erroring.
+#[allow(clippy::write_literal)] // Header literals + width-aligned format read more clearly as positional args.
+fn render_history_human(alias: &str, uri: &str, entries: &[HistoryEntry]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "alias:    {alias}");
+    let _ = writeln!(out, "resolved: {uri}");
+    let _ = writeln!(out);
+    if entries.is_empty() {
+        let _ = writeln!(out, "(no versions reported by the backend)");
+        return out;
+    }
+    // Column widths derived from the longest cell in each.
+    let v_w = entries.iter().map(|e| e.version.len()).max().unwrap_or(7).max(7);
+    let t_w = entries.iter().map(|e| e.timestamp.len()).max().unwrap_or(20).max(20);
+    let a_w =
+        entries.iter().map(|e| e.actor.as_deref().unwrap_or("-").len()).max().unwrap_or(6).max(6);
+    let _ = writeln!(
+        out,
+        "{:<v_w$}  {:<t_w$}  {:<a_w$}  {}",
+        "VERSION",
+        "TIMESTAMP",
+        "ACTOR",
+        "DESCRIPTION",
+        v_w = v_w,
+        t_w = t_w,
+        a_w = a_w
+    );
+    for e in entries {
+        let _ = writeln!(
+            out,
+            "{:<v_w$}  {:<t_w$}  {:<a_w$}  {}",
+            e.version,
+            e.timestamp,
+            e.actor.as_deref().unwrap_or("-"),
+            e.description.as_deref().unwrap_or(""),
+            v_w = v_w,
+            t_w = t_w,
+            a_w = a_w
+        );
+    }
+    out
+}
+
+fn render_history_json(alias: &str, uri: &str, entries: &[HistoryEntry]) -> serde_json::Value {
+    serde_json::json!({
+        "alias": alias,
+        "resolved": uri,
+        "versions": entries
+            .iter()
+            .map(|e| serde_json::json!({
+                "version": e.version,
+                "timestamp": e.timestamp,
+                "actor": e.actor,
+                "description": e.description,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 async fn registry_unset(

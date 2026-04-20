@@ -240,6 +240,154 @@ fn registry_get_prints_single_uri() {
         .stdout(predicate::str::contains("local://"));
 }
 
+// ---- registry history (v0.4 Phase 2a) ----
+
+/// Initialize a git repo in `dir`, commit `path` once with `subject`,
+/// then re-stage + commit again to produce a 2-version history. Names
+/// the local committer so the test's actor assertion stays
+/// deterministic across machines.
+fn git_init_and_commit_twice(dir: &Path, path: &Path, subject_one: &str, subject_two: &str) {
+    use std::process::Command;
+    let run = |args: &[&str]| {
+        let status = Command::new("git").current_dir(dir).args(args).status().unwrap();
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    };
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "SecretEnv Test"]);
+    // commit messages need newlines after; we control the registry
+    // file contents from the caller so we can rewrite + re-commit.
+    run(&["add", path.file_name().unwrap().to_str().unwrap()]);
+    run(&["commit", "-q", "-m", subject_one]);
+    // Mutate the file to produce a second distinct commit.
+    let mut current = std::fs::read_to_string(path).unwrap();
+    current.push_str("# bump\n");
+    std::fs::write(path, current).unwrap();
+    run(&["add", path.file_name().unwrap().to_str().unwrap()]);
+    run(&["commit", "-q", "-m", subject_two]);
+}
+
+#[test]
+fn registry_history_renders_git_log_entries_in_most_recent_first_order() {
+    // Fresh tempdir, init git, commit the registry twice. The local
+    // backend's history() shells out to `git log --follow`; we expect
+    // both commit subjects + the SecretEnv Test author to appear.
+    let dir = TempDir::new().unwrap();
+    let registry_path = dir.path().join("registry.toml");
+    let config_path = dir.path().join("config.toml");
+    let manifest_path = dir.path().join("secretenv.toml");
+    let secret_path = dir.path().join("secret.toml");
+
+    write_file(
+        &registry_path,
+        &format!("stripe-key = \"local://{}\"\n", secret_path.to_str().unwrap()),
+    );
+    write_file(&secret_path, "v");
+    write_file(
+        &config_path,
+        &format!(
+            "[registries.default]\nsources = [\"local://{reg}\"]\n\n[backends.local]\ntype = \"local\"\n",
+            reg = registry_path.to_str().unwrap()
+        ),
+    );
+    write_file(&manifest_path, "[secrets]\nSTRIPE = { from = \"secretenv://stripe-key\" }\n");
+
+    // The alias resolves to `secret_path`; that's the file whose
+    // history we expect to see. Commit it twice so git log returns
+    // two entries.
+    git_init_and_commit_twice(
+        dir.path(),
+        &secret_path,
+        "Initial registry import",
+        "Bump shared key revision",
+    );
+
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["registry", "history", "stripe-key"])
+        .assert()
+        .success()
+        // Header lines.
+        .stdout(predicate::str::contains("alias:    stripe-key"))
+        .stdout(predicate::str::contains("resolved: local://"))
+        // Tabular header.
+        .stdout(predicate::str::contains("VERSION"))
+        .stdout(predicate::str::contains("TIMESTAMP"))
+        .stdout(predicate::str::contains("ACTOR"))
+        // Both commit subjects rendered, most-recent-first → "Bump"
+        // appears before "Initial" in stdout. We can't easily assert
+        // that ordering through `predicate::str::contains` alone; the
+        // JSON variant below carries the order check.
+        .stdout(predicate::str::contains("Bump shared key revision"))
+        .stdout(predicate::str::contains("Initial registry import"))
+        .stdout(predicate::str::contains("SecretEnv Test"));
+}
+
+#[test]
+fn registry_history_json_includes_versions_array_in_order() {
+    let dir = TempDir::new().unwrap();
+    let registry_path = dir.path().join("registry.toml");
+    let config_path = dir.path().join("config.toml");
+    let manifest_path = dir.path().join("secretenv.toml");
+    let secret_path = dir.path().join("secret.toml");
+
+    write_file(
+        &registry_path,
+        &format!("stripe-key = \"local://{}\"\n", secret_path.to_str().unwrap()),
+    );
+    write_file(&secret_path, "v");
+    write_file(
+        &config_path,
+        &format!(
+            "[registries.default]\nsources = [\"local://{reg}\"]\n\n[backends.local]\ntype = \"local\"\n",
+            reg = registry_path.to_str().unwrap()
+        ),
+    );
+    write_file(&manifest_path, "[secrets]\nSTRIPE = { from = \"secretenv://stripe-key\" }\n");
+    // The alias resolves to `secret_path`; that's the file whose
+    // history we expect to see. Commit it twice so git log returns
+    // two entries.
+    git_init_and_commit_twice(
+        dir.path(),
+        &secret_path,
+        "Initial registry import",
+        "Bump shared key revision",
+    );
+
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["registry", "history", "stripe-key", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(parsed["alias"], "stripe-key");
+    let versions = parsed["versions"].as_array().expect("versions array");
+    assert_eq!(versions.len(), 2);
+    // Most-recent-first → versions[0] is the bump, versions[1] is the import.
+    assert_eq!(versions[0]["description"], "Bump shared key revision");
+    assert_eq!(versions[1]["description"], "Initial registry import");
+    // Actor includes both name and email per `%an <%ae>`.
+    let actor = versions[0]["actor"].as_str().unwrap();
+    assert!(actor.contains("SecretEnv Test"), "actor name: {actor}");
+    assert!(actor.contains("test@example.com"), "actor email: {actor}");
+}
+
+#[test]
+fn registry_history_errors_when_alias_unknown() {
+    let (dir, config) = full_fixture();
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["registry", "history", "not-an-alias"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not-an-alias"));
+}
+
 // ---- run --dry-run ----
 
 #[test]

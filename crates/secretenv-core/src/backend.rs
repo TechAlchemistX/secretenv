@@ -15,10 +15,38 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 
 use crate::{BackendStatus, BackendUri};
+
+/// One historical version of a secret or registry document, produced
+/// by [`Backend::history`].
+///
+/// Each backend maps its native version-history shape onto this struct.
+/// Fields are deliberately string-typed so backend-specific identifiers
+/// (git SHAs, integer version numbers, ULIDs, RFC-3339 timestamps,
+/// raw native timestamps) all fit without forcing a parse step the
+/// CLI doesn't need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// Backend-specific version identifier. Always non-empty. Examples:
+    /// git short SHA (`local`), AWS SSM parameter version
+    /// integer (`aws-ssm`), vault KV v2 metadata version (`vault`).
+    pub version: String,
+    /// Timestamp of when this version was created. RFC 3339 when the
+    /// backend exposes a structured one; otherwise the raw native
+    /// string. Always non-empty.
+    pub timestamp: String,
+    /// User / principal that created this version (git author email,
+    /// AWS IAM ARN, vault display name, etc.). `None` when the
+    /// backend doesn't expose it.
+    pub actor: Option<String>,
+    /// Backend-supplied note (git commit subject, vault metadata
+    /// description, AWS parameter description). `None` when not
+    /// available.
+    pub description: Option<String>,
+}
 
 /// A live, credentialed backend instance.
 ///
@@ -87,6 +115,26 @@ pub trait Backend: Send + Sync {
     /// Returns an error if the target is unreachable or the caller is
     /// unauthorized.
     async fn list(&self, uri: &BackendUri) -> Result<Vec<(String, String)>>;
+
+    /// Return a chronological list of historical versions of the
+    /// secret or document at `uri`. Order is most-recent-first.
+    ///
+    /// Default implementation reports the operation as unsupported —
+    /// backends with a native history surface (`local` via git,
+    /// `aws-ssm` via `get-parameter-history`, `vault` via KV v2
+    /// metadata) override.
+    ///
+    /// # Errors
+    /// Returns an error if the backend doesn't expose history, the
+    /// target is unreachable, or the caller is unauthorized. The
+    /// default's "unsupported" error names the backend type so a
+    /// CLI handler can distinguish it from a real failure.
+    async fn history(&self, _uri: &BackendUri) -> Result<Vec<HistoryEntry>> {
+        Err(anyhow!(
+            "history() is not implemented for backend type '{}' — supported in v0.4: local, aws-ssm, vault",
+            self.backend_type()
+        ))
+    }
 }
 
 /// Builds [`Backend`] instances from raw config.

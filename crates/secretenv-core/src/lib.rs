@@ -28,7 +28,7 @@ pub mod status;
 pub mod timeouts;
 pub mod uri;
 
-pub use backend::{Backend, BackendFactory};
+pub use backend::{Backend, BackendFactory, HistoryEntry};
 pub use config::{BackendConfig, Config, RegistryConfig};
 pub use factory_helpers::{optional_string, required_string};
 pub use manifest::{Manifest, SecretDecl};

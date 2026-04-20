@@ -49,6 +49,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+    HistoryEntry,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -73,6 +74,27 @@ struct CallerIdentity {
     account: String,
     #[serde(rename = "Arn")]
     arn: String,
+}
+
+/// One record in `aws ssm get-parameter-history`'s `Parameters` array.
+/// We deliberately do NOT capture `Value` — we don't want secret
+/// payloads to flow through history rendering.
+#[derive(Deserialize)]
+struct ParameterHistoryRecord {
+    #[serde(rename = "Version")]
+    version: u64,
+    #[serde(rename = "LastModifiedDate")]
+    last_modified_date: String,
+    #[serde(rename = "LastModifiedUser", default)]
+    last_modified_user: Option<String>,
+    #[serde(rename = "Description", default)]
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ParameterHistoryResponse {
+    #[serde(rename = "Parameters")]
+    parameters: Vec<ParameterHistoryRecord>,
 }
 
 impl AwsSsmBackend {
@@ -347,6 +369,49 @@ impl Backend for AwsSsmBackend {
             )
         })?;
         Ok(map.into_iter().collect())
+    }
+
+    /// `aws ssm get-parameter-history` returns each historical version
+    /// most-recent-LAST. We reverse to match the unified history
+    /// contract (most-recent-first). `Value` payloads in the response
+    /// are explicitly NOT captured — `ParameterHistoryRecord` lacks a
+    /// `value` field so even an accidental log statement can't leak.
+    async fn history(&self, uri: &BackendUri) -> Result<Vec<HistoryEntry>> {
+        uri.reject_any_fragment("aws-ssm")?;
+        let name = Self::parameter_name(uri);
+        let mut cmd = self.ssm_command(
+            "get-parameter-history",
+            &["--with-decryption", "--name", &name, "--output", "json"],
+        );
+        let output = cmd.output().await.with_context(|| {
+            format!(
+                "aws-ssm backend '{}': failed to invoke 'aws ssm get-parameter-history' for URI '{}'",
+                self.instance_name, uri.raw
+            )
+        })?;
+        if !output.status.success() {
+            bail!(self.operation_failure_message(uri, "history", &output.stderr));
+        }
+        let parsed: ParameterHistoryResponse = serde_json::from_slice(&output.stdout)
+            .with_context(|| {
+                format!(
+                    "aws-ssm backend '{}': parsing get-parameter-history JSON for URI '{}'",
+                    self.instance_name, uri.raw
+                )
+            })?;
+        let mut entries: Vec<HistoryEntry> = parsed
+            .parameters
+            .into_iter()
+            .map(|r| HistoryEntry {
+                version: r.version.to_string(),
+                timestamp: r.last_modified_date,
+                actor: r.last_modified_user,
+                description: r.description.filter(|s| !s.is_empty()),
+            })
+            .collect();
+        // AWS sorts oldest-first; flip to most-recent-first.
+        entries.reverse();
+        Ok(entries)
     }
 }
 
@@ -959,5 +1024,106 @@ exit 1
         // Succeeds only if argv exactly matches PUT_ARGV_NO_PROFILE AND
         // stdin contains the canary — any CV-1 regression causes 97.
         b.set(&uri, "CV1_REGRESSION_CANARY_2026").await.unwrap();
+    }
+
+    // ---- history (v0.4 Phase 2a) ----
+
+    /// Full argv emitted by `history()`. Mirrors the `GET_ARGV_NO_PROFILE`
+    /// shape — Same `--with-decryption`, `--name`, `--region` discipline,
+    /// different subcommand + JSON output forced via `--output json`.
+    const HISTORY_ARGV_NO_PROFILE: &[&str] = &[
+        "ssm",
+        "get-parameter-history",
+        "--with-decryption",
+        "--name",
+        "/prod/api-key",
+        "--output",
+        "json",
+        "--region",
+        "us-east-1",
+    ];
+
+    #[tokio::test]
+    async fn history_returns_versions_in_most_recent_first_order() {
+        let dir = TempDir::new().unwrap();
+        // AWS returns oldest-first; backend reverses to most-recent-first.
+        let body = r#"{"Parameters":[
+            {"Version":1,"LastModifiedDate":"2026-04-17T09:00:00+00:00","LastModifiedUser":"arn:aws:iam::123:user/old","Description":"first","Type":"SecureString","Name":"/prod/api-key","Value":"v1"},
+            {"Version":2,"LastModifiedDate":"2026-04-18T10:00:00+00:00","LastModifiedUser":"arn:aws:iam::123:user/mid","Description":"","Type":"SecureString","Name":"/prod/api-key","Value":"v2"},
+            {"Version":3,"LastModifiedDate":"2026-04-19T11:00:00+00:00","LastModifiedUser":"arn:aws:iam::123:user/new","Description":"latest","Type":"SecureString","Name":"/prod/api-key","Value":"v3"}
+        ]}"#;
+        let mock = StrictMock::new("aws")
+            .on(HISTORY_ARGV_NO_PROFILE, Response::success(body))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        let entries = b.history(&uri).await.unwrap();
+        assert_eq!(entries.len(), 3);
+        // Most-recent-first per the unified history contract.
+        assert_eq!(entries[0].version, "3");
+        assert_eq!(entries[0].timestamp, "2026-04-19T11:00:00+00:00");
+        assert_eq!(entries[0].actor.as_deref(), Some("arn:aws:iam::123:user/new"));
+        assert_eq!(entries[0].description.as_deref(), Some("latest"));
+        // Empty Description gets normalized to None.
+        assert!(entries[1].description.is_none(), "empty description → None");
+        assert_eq!(entries[2].version, "1");
+    }
+
+    #[tokio::test]
+    async fn history_propagates_access_denied() {
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("aws")
+            .on(
+                HISTORY_ARGV_NO_PROFILE,
+                Response::failure(
+                    255,
+                    "An error occurred (AccessDeniedException): User is not authorized to perform: ssm:GetParameterHistory\n",
+                ),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("AccessDeniedException"), "stderr propagates: {msg}");
+        assert!(msg.contains("history failed"), "operation labeled: {msg}");
+    }
+
+    #[tokio::test]
+    async fn history_drift_catch_rejects_missing_with_decryption_flag() {
+        // Same drift-catch shape as get(): if a refactor drops
+        // `--with-decryption`, the strict mock declares no rule for the
+        // drifted argv → exits 97 → call surfaces as `history failed`.
+        let dir = TempDir::new().unwrap();
+        let drifted = &[
+            "ssm",
+            "get-parameter-history",
+            "--name",
+            "/prod/api-key",
+            "--output",
+            "json",
+            "--region",
+            "us-east-1",
+        ];
+        let mock = StrictMock::new("aws")
+            .on(drifted, Response::success(r#"{"Parameters":[]}"#))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("history failed"), "strict-mock failure surfaced: {msg}");
+    }
+
+    #[tokio::test]
+    async fn history_rejects_fragment_on_uri() {
+        // Fragments select a single version; history is a multi-version
+        // query — the combination is meaningless. Reject pre-network so
+        // operators see a clean error instead of an aws CLI surprise.
+        let b = backend(Path::new("/bin/echo"), None);
+        let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key#anything=here").unwrap();
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("aws-ssm"), "instance/type in error: {msg}");
     }
 }

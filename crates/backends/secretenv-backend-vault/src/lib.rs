@@ -432,13 +432,15 @@ impl Backend for VaultBackend {
         // Sort keys numerically descending so most-recent-first holds.
         // Vault emits version keys as decimal strings; bare lexical
         // sort gives wrong ordering past 9 (10 < 2 lexically).
+        // `Reverse(n)` flips ascending → descending without a manual
+        // closure (clippy::sort_by-then-reverse warns the other shape).
         let mut versions: Vec<(u64, KvMetadataVersion)> = parsed
             .data
             .versions
             .into_iter()
             .filter_map(|(k, v)| k.parse::<u64>().ok().map(|n| (n, v)))
             .collect();
-        versions.sort_by(|a, b| b.0.cmp(&a.0));
+        versions.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
 
         Ok(versions
             .into_iter()

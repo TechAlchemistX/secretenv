@@ -120,6 +120,21 @@ pub enum RegistryCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Emit a copy-pasteable config.toml snippet + IAM/RBAC grant
+    /// command for onboarding a new collaborator to the named registry.
+    Invite {
+        /// Registry name. Defaults to the `default` registry / value
+        /// of `$SECRETENV_REGISTRY`.
+        #[arg(long)]
+        registry: Option<String>,
+        /// Identifier (IAM username, email, etc.) the inviter wants
+        /// in the grant command. Defaults to a `<INVITEE>` placeholder.
+        #[arg(long)]
+        invitee: Option<String>,
+        /// Emit machine-readable JSON instead of the human sections.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `secretenv resolve <alias>` — print the alias → URI mapping plus
@@ -622,7 +637,26 @@ async fn cmd_registry(
         RegistryCommand::History { alias, registry, json } => {
             registry_history(alias, registry.as_deref(), *json, config, backends).await
         }
+        RegistryCommand::Invite { registry, invitee, json } => {
+            registry_invite(registry.as_deref(), invitee.as_deref(), *json, config)
+        }
     }
+}
+
+fn registry_invite(
+    registry: Option<&str>,
+    invitee: Option<&str>,
+    json: bool,
+    config: &Config,
+) -> Result<()> {
+    let selection = resolve_selection_from_env(registry, config)?;
+    let invitation = crate::invite::build_invitation(config, &selection, invitee)?;
+    if json {
+        println!("{}", crate::invite::render_json(&invitation)?);
+    } else {
+        print!("{}", crate::invite::render_human(&invitation));
+    }
+    Ok(())
 }
 
 async fn registry_list(

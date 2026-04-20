@@ -12,6 +12,18 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 **Headline:** v0.4 preflight. Workspace version bumped to `0.4.0-alpha.0`; build-plan at [`kb/wiki/build-plan-v0.4.md`](../kb/wiki/build-plan-v0.4.md). Functionality-only release — no new backends. Scope: `doctor --fix/--extensive`, `registry history/invite`, distribution profile system served from `secretenv.dev`, per-instance `timeout_secs`, 1Password `set` stdin-path version-gating polish, harness promotion to `scripts/smoke-test/`, Node.js 24 bump, `deny.toml` AGPL exception tightening, and a decision on publishing `secretenv-testing`.
 
+### Added
+
+- **`secretenv doctor --fix`** — when any backend reports `NotAuthenticated`, `--fix` shells out to the canonical remediation CLI for that backend type and inherits stdio so the user can complete the interactive flow (SSO browser handoff, MFA, password entry). Mapping: `aws-ssm`/`aws-secrets` → `aws sso login`; `1password` → `op signin`; `gcp` → `gcloud auth login`; `azure` → `az login`; `vault` → `vault login`. Local backend (no auth surface) and any unrecognized type are skipped without panicking. After all remediation attempts, doctor re-runs `check()` once and renders the post-remediation report. The audit trail (which command, exit success, any spawn-error) is recorded in a `Remediation actions` section of human output and a `fix_actions` array of `--json` output.
+- **`secretenv doctor --extensive`** — Level 3 depth probe. For each `Ok` backend, doctor reads every `[registries.*]` source whose scheme matches that backend instance and runs `Backend::check_extensive(uri)`. The result (alias count or read-failure error) is rendered as an indented `depth probe` block under the backend's tree node and serialized into a `backends[*].depth` array of `--json` output. Source URIs are deduped across registries so the same URI listed in two cascades is only probed once. The depth probe surfaces permission scope (`12 aliases readable` vs `read failed: permission denied`) so operators can verify IAM/RBAC scope without leaving doctor.
+- **`--fix` and `--extensive` compose** — operators can run `secretenv doctor --fix --extensive` to first remediate any auth gaps and then probe depth against the post-remediation backend set in a single invocation.
+- **`DoctorOpts` struct** — flags are passed to `run_doctor` via a struct rather than positional booleans so future Phase 2+ knobs (e.g. `--quiet`, `--strict`) can be added without churning every internal call site. Implements `Default` so `setup`'s embedded post-write doctor run keeps the existing behavior unchanged.
+
+### Tests
+
+- 11 new doctor-module unit tests: `remediation_argv` lookup table (3 tests covering known backends, `local` returning `None`, unknown-type fallthrough), human-render coverage for the new `Remediation actions` section + spawn-error rendering, JSON serialization of `fix_actions`, depth-block rendering with alias-count + plural form + read-failure paths, JSON serialization of `depth` array including `depth_status` discriminator + `entry_count` + `error` payload, and `omits-when-empty` keys for both `fix_actions` and `depth` (preserves the v0.3 default JSON contract for non-`--fix`/`--extensive` consumers).
+- 5 new CLI integration tests in `tests/cli.rs`: `doctor --extensive` happy path on the local-backend fixture (human + JSON), `--fix` no-op behavior (no remediation needed → no actions section), `--fix --extensive` composition, and `doctor --help` flag-discovery lock.
+
 ### Internal
 
 - Workspace version `0.3.0` → `0.4.0-alpha.0`. Alpha signal only; aggregate `v0.4.0` tag happens after all phases + closing audit.

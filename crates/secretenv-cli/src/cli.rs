@@ -134,12 +134,23 @@ pub struct GetArgs {
     pub yes: bool,
 }
 
-/// `secretenv doctor [--json]` — Phase 10 stub.
+/// `secretenv doctor [--json] [--fix] [--extensive]`.
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Emit machine-readable JSON instead of human output.
     #[arg(long)]
     pub json: bool,
+    /// For each `NotAuthenticated` backend, run the canonical
+    /// remediation CLI (`aws sso login`, `op signin`, `gcloud auth
+    /// login`, `az login`, `vault login`) interactively, then re-run
+    /// the health check and render the post-remediation report.
+    #[arg(long)]
+    pub fix: bool,
+    /// Level 3 depth probe — for each `Ok` backend, read each
+    /// registry source it serves and count the aliases found, surfacing
+    /// permission scope ("can read" vs "denied").
+    #[arg(long)]
+    pub extensive: bool,
 }
 
 /// `secretenv setup <registry-uri>` — bootstrap a fresh config.toml.
@@ -234,7 +245,18 @@ impl Cli {
             Command::Registry(rc) => cmd_registry(rc, config, backends).await,
             Command::Resolve(args) => cmd_resolve(args, config, backends).await,
             Command::Get(args) => cmd_get(args, config, backends).await,
-            Command::Doctor(args) => crate::doctor::run_doctor(config, backends, args.json).await,
+            Command::Doctor(args) => {
+                crate::doctor::run_doctor(
+                    config,
+                    backends,
+                    crate::doctor::DoctorOpts {
+                        json: args.json,
+                        fix: args.fix,
+                        extensive: args.extensive,
+                    },
+                )
+                .await
+            }
             Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
             Command::Completions(args) => cmd_completions(args),
         }

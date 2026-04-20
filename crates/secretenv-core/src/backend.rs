@@ -14,11 +14,12 @@
 #![allow(clippy::module_name_repetitions)]
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 
-use crate::{BackendStatus, BackendUri};
+use crate::{BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT};
 
 /// One historical version of a secret or registry document, produced
 /// by [`Backend::history`].
@@ -65,6 +66,20 @@ pub trait Backend: Send + Sync {
     /// The instance name from `config.toml` (e.g. `aws-ssm-prod`).
     /// Doubles as the scheme on URIs that target this instance.
     fn instance_name(&self) -> &str;
+
+    /// Per-instance deadline applied by call sites that wrap
+    /// `get` / `set` / `delete` / `list` / `history` in
+    /// [`crate::with_timeout`]. Defaults to
+    /// [`crate::DEFAULT_GET_TIMEOUT`]; backends override when their
+    /// factory reads a `timeout_secs` config field.
+    ///
+    /// `check` (the doctor health probe) deliberately does NOT consult
+    /// this — its `DEFAULT_CHECK_TIMEOUT` is a tighter deadline so
+    /// `secretenv doctor` parallelism stays predictable across
+    /// instances regardless of any per-instance fetch deadlines.
+    fn timeout(&self) -> Duration {
+        DEFAULT_GET_TIMEOUT
+    }
 
     /// Level 1 + Level 2 health check: is the native CLI installed and
     /// is the backend authenticated? Rendered by `secretenv doctor`.

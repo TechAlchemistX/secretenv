@@ -44,12 +44,13 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
-    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
-    HistoryEntry,
+    optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
+    BackendStatus, BackendUri, HistoryEntry, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -66,6 +67,10 @@ pub struct AwsSsmBackend {
     /// Path or name of the `aws` binary. Defaults to `"aws"` (PATH
     /// lookup); tests override to point at a mock script.
     aws_bin: String,
+    /// Per-instance deadline for `get` / `set` / `delete` / `list` /
+    /// `history`. Configured via `timeout_secs` in `[backends.<name>]`;
+    /// defaults to [`DEFAULT_GET_TIMEOUT`].
+    timeout: Duration,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +150,10 @@ impl Backend for AwsSsmBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     // `version_fut` / `version_out` / `version_res` are distinct
@@ -444,12 +453,15 @@ impl BackendFactory for AwsSsmFactory {
     ) -> Result<Box<dyn Backend>> {
         let aws_region = required_string(config, "aws_region", "aws-ssm", instance_name)?;
         let aws_profile = optional_string(config, "aws_profile", "aws-ssm", instance_name)?;
+        let timeout = optional_duration_secs(config, "timeout_secs", "aws-ssm", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
         Ok(Box::new(AwsSsmBackend {
             backend_type: "aws-ssm",
             instance_name: instance_name.to_owned(),
             aws_region,
             aws_profile,
             aws_bin: CLI_NAME.to_owned(),
+            timeout,
         }))
     }
 }
@@ -492,6 +504,7 @@ mod tests {
             aws_region: "us-east-1".to_owned(),
             aws_profile: profile.map(ToOwned::to_owned),
             aws_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 
@@ -502,6 +515,7 @@ mod tests {
             aws_region: "us-east-1".to_owned(),
             aws_profile: None,
             aws_bin: "/definitely/not/a/real/path/to/aws-binary-12345".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 
@@ -528,6 +542,35 @@ mod tests {
         let b = factory.create("aws-ssm-prod", &cfg).unwrap();
         assert_eq!(b.backend_type(), "aws-ssm");
         assert_eq!(b.instance_name(), "aws-ssm-prod");
+    }
+
+    #[test]
+    fn factory_propagates_timeout_secs_to_backend() {
+        // v0.4 Phase 3: `timeout_secs` config field flows through the
+        // factory into the backend instance. Default-when-absent is
+        // `DEFAULT_GET_TIMEOUT` — `factory_accepts_region_and_no_profile`
+        // already covers that path. This test locks the override path:
+        // a configured value reaches `Backend::timeout()`.
+        let factory = AwsSsmFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(45));
+        let b = factory.create("aws-ssm-prod", &cfg).unwrap();
+        assert_eq!(b.timeout(), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn factory_rejects_negative_timeout_secs() {
+        let factory = AwsSsmFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(-1));
+        let Err(err) = factory.create("aws-ssm-prod", &cfg) else {
+            panic!("expected error for negative timeout_secs");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timeout_secs"), "names the field: {msg}");
+        assert!(msg.contains("positive"), "explains the constraint: {msg}");
     }
 
     #[test]

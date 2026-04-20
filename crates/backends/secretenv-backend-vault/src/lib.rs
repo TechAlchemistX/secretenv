@@ -52,12 +52,13 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
-    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
-    HistoryEntry,
+    optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
+    BackendStatus, BackendUri, HistoryEntry, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -78,6 +79,9 @@ pub struct VaultBackend {
     /// Path or name of the `vault` binary. Defaults to `"vault"` (PATH
     /// lookup); tests override to point at a mock script.
     vault_bin: String,
+    /// Per-instance deadline for fetch-class operations. From
+    /// `timeout_secs` config field; defaults to [`DEFAULT_GET_TIMEOUT`].
+    timeout: Duration,
 }
 
 /// Level 2 identity response from `vault token lookup -format=json`.
@@ -210,6 +214,10 @@ impl Backend for VaultBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     #[allow(clippy::similar_names)]
@@ -499,12 +507,15 @@ impl BackendFactory for VaultFactory {
         let vault_namespace = optional_string(config, "vault_namespace", "vault", instance_name)?;
         let vault_bin = optional_string(config, "vault_bin", "vault", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
+        let timeout = optional_duration_secs(config, "timeout_secs", "vault", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
         Ok(Box::new(VaultBackend {
             backend_type: "vault",
             instance_name: instance_name.to_owned(),
             vault_address,
             vault_namespace,
             vault_bin,
+            timeout,
         }))
     }
 }
@@ -534,6 +545,7 @@ mod tests {
             vault_address: VAULT_ADDR.to_owned(),
             vault_namespace: namespace.map(ToOwned::to_owned),
             vault_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 
@@ -544,6 +556,7 @@ mod tests {
             vault_address: VAULT_ADDR.to_owned(),
             vault_namespace: None,
             vault_bin: "/definitely/not/a/real/path/to/vault-binary-12345".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 

@@ -222,11 +222,10 @@ async fn fetch_one(
         )
     })?;
     let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
-    let value = crate::with_timeout(crate::DEFAULT_GET_TIMEOUT, &op_label, backend.get(target))
-        .await
-        .with_context(|| {
-            format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw)
-        })?;
+    let value =
+        crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await.with_context(
+            || format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw),
+        )?;
     Ok(Some(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) }))
 }
 

@@ -46,11 +46,14 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::OnceLock;
 
+use std::time::Duration;
+
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
 use secretenv_core::{
-    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+    optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
+    BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -110,6 +113,8 @@ pub struct AzureBackend {
     azure_tenant: Option<String>,
     azure_subscription: Option<String>,
     az_bin: String,
+    /// Per-instance fetch deadline; from `timeout_secs` config field.
+    timeout: Duration,
 }
 
 #[derive(Deserialize)]
@@ -328,6 +333,10 @@ impl Backend for AzureBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     #[allow(clippy::similar_names)]
@@ -571,6 +580,8 @@ impl BackendFactory for AzureFactory {
             optional_string(config, "azure_subscription", "azure", instance_name)?;
         let az_bin = optional_string(config, "az_bin", "azure", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
+        let timeout = optional_duration_secs(config, "timeout_secs", "azure", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
         Ok(Box::new(AzureBackend {
             backend_type: "azure",
             instance_name: instance_name.to_owned(),
@@ -579,6 +590,7 @@ impl BackendFactory for AzureFactory {
             azure_tenant,
             azure_subscription,
             az_bin,
+            timeout,
         }))
     }
 }
@@ -608,6 +620,7 @@ mod tests {
             azure_tenant: tenant.map(ToOwned::to_owned),
             azure_subscription: sub.map(ToOwned::to_owned),
             az_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 
@@ -620,6 +633,7 @@ mod tests {
             azure_tenant: None,
             azure_subscription: None,
             az_bin: "/definitely/not/a/real/path/to/az-binary-XYZ".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 

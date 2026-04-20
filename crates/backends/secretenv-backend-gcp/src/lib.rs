@@ -38,11 +38,13 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
-    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+    optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
+    BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
 };
 use tokio::process::Command;
 
@@ -59,6 +61,8 @@ pub struct GcpBackend {
     /// Path or name of the `gcloud` binary. Defaults to `"gcloud"`
     /// (PATH lookup); tests override to point at a mock script.
     gcloud_bin: String,
+    /// Per-instance fetch deadline; from `timeout_secs` config field.
+    timeout: Duration,
 }
 
 impl GcpBackend {
@@ -222,6 +226,10 @@ impl Backend for GcpBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     #[allow(clippy::similar_names)]
@@ -456,12 +464,15 @@ impl BackendFactory for GcpFactory {
         }
         let gcloud_bin = optional_string(config, "gcloud_bin", "gcp", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
+        let timeout = optional_duration_secs(config, "timeout_secs", "gcp", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
         Ok(Box::new(GcpBackend {
             backend_type: "gcp",
             instance_name: instance_name.to_owned(),
             gcp_project,
             gcp_impersonate_service_account,
             gcloud_bin,
+            timeout,
         }))
     }
 }
@@ -500,6 +511,7 @@ mod tests {
             gcp_project: PROJECT.to_owned(),
             gcp_impersonate_service_account: impersonate.map(ToOwned::to_owned),
             gcloud_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 
@@ -510,6 +522,7 @@ mod tests {
             gcp_project: PROJECT.to_owned(),
             gcp_impersonate_service_account: None,
             gcloud_bin: "/definitely/not/a/real/path/to/gcloud-binary-XYZ".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 

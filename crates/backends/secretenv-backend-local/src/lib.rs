@@ -53,9 +53,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
+use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri, HistoryEntry};
 
 /// A live instance of the local filesystem backend.
 pub struct LocalBackend {
@@ -186,6 +186,89 @@ impl Backend for LocalBackend {
         })?;
         Ok(parsed.into_iter().collect())
     }
+
+    /// Shell out to `git log --follow` against the registry file.
+    /// The repo lookup walks upward from the file's parent directory;
+    /// if no repo is found we surface a clean "not under git" error
+    /// so the CLI can render it without dumping a stack trace.
+    async fn history(&self, uri: &BackendUri) -> Result<Vec<HistoryEntry>> {
+        let path = Self::file_path(uri);
+        if !path.exists() {
+            bail!(
+                "local backend '{}': cannot read history of '{}' — file does not exist",
+                self.instance_name,
+                path.display()
+            );
+        }
+        let parent = path.parent().ok_or_else(|| {
+            anyhow!(
+                "local backend '{}': '{}' has no parent directory",
+                self.instance_name,
+                path.display()
+            )
+        })?;
+
+        // git log fields are tab-separated to keep parsing robust
+        // against whitespace in author names and commit subjects.
+        // Field order: short-sha, ISO-8601 author date, author name
+        // <email>, subject. The author "name <email>" form is what
+        // git produces with %an + %ae; we keep it as a single Actor
+        // string so the CLI doesn't need to reconstruct.
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.arg("-C").arg(parent);
+        cmd.args(["log", "--follow", "--pretty=format:%h%x09%aI%x09%an <%ae>%x09%s", "--"]);
+        cmd.arg(&path);
+        let output = cmd.output().await.with_context(|| {
+            format!(
+                "local backend '{}': failed to spawn `git log` for '{}'",
+                self.instance_name,
+                path.display()
+            )
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            // The two we care about: not under a git repo, and the
+            // path being untracked. git emits both via stderr+nonzero.
+            // Pass through verbatim so the user sees git's own message.
+            bail!(
+                "local backend '{}': `git log` failed for '{}': {stderr}",
+                self.instance_name,
+                path.display()
+            );
+        }
+        let stdout = String::from_utf8(output.stdout).with_context(|| {
+            format!(
+                "local backend '{}': non-UTF-8 `git log` output for '{}'",
+                self.instance_name,
+                path.display()
+            )
+        })?;
+        Ok(parse_git_log(&stdout))
+    }
+}
+
+/// Parse the tab-separated git-log payload into `HistoryEntry` rows.
+/// Empty input returns an empty Vec (a tracked-but-never-modified file
+/// is unusual but possible). Malformed lines are skipped; we trust git
+/// to emit our format reliably and prefer "drop weird line" over
+/// "fail the whole call" for partial parses.
+fn parse_git_log(stdout: &str) -> Vec<HistoryEntry> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.splitn(4, '\t');
+        let (Some(version), Some(timestamp), Some(actor), description) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        out.push(HistoryEntry {
+            version: version.to_owned(),
+            timestamp: timestamp.to_owned(),
+            actor: Some(actor.to_owned()),
+            description: description.map(str::to_owned),
+        });
+    }
+    out
 }
 
 /// Factory for the local filesystem backend. No config fields required.
@@ -370,6 +453,72 @@ db-url     = "1password-personal://Engineering/Prod DB/url"
         b.set(&uri, "a = \"1\"\nb = \"2\"\nc = \"3\"\n").await.unwrap();
         let count = b.check_extensive(&uri).await.unwrap();
         assert_eq!(count, 3);
+    }
+
+    // ---- history() ----
+
+    #[test]
+    fn parse_git_log_handles_well_formed_input() {
+        // Two commits, tab-delimited per the format string. Most-recent-first
+        // is the expected git-log default; the parser preserves order.
+        let stdout = "abc1234\t2026-04-19T11:00:00+00:00\tBot <bot@example.com>\tAdd alias\n\
+                      def5678\t2026-04-19T10:00:00+00:00\tHuman <h@example.com>\tInitial registry\n";
+        let entries = parse_git_log(stdout);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].version, "abc1234");
+        assert_eq!(entries[0].timestamp, "2026-04-19T11:00:00+00:00");
+        assert_eq!(entries[0].actor.as_deref(), Some("Bot <bot@example.com>"));
+        assert_eq!(entries[0].description.as_deref(), Some("Add alias"));
+        assert_eq!(entries[1].description.as_deref(), Some("Initial registry"));
+    }
+
+    #[test]
+    fn parse_git_log_skips_malformed_lines_without_failing_call() {
+        // Lines with fewer than 3 tabs (no actor / no timestamp) are
+        // skipped silently; we trust git's format string but defend
+        // against a future schema drift by not panicking.
+        let stdout = "good\t2026\tactor\tdesc\n\
+             malformed-no-tabs\n\
+             also\t2026\tjust-actor\n";
+        let entries = parse_git_log(stdout);
+        assert_eq!(entries.len(), 2, "1 well-formed + 1 with optional desc absent");
+        assert_eq!(entries[0].description.as_deref(), Some("desc"));
+        assert!(entries[1].description.is_none(), "missing description → None");
+    }
+
+    #[test]
+    fn parse_git_log_empty_input_returns_empty() {
+        assert!(parse_git_log("").is_empty());
+        assert!(parse_git_log("\n").is_empty());
+    }
+
+    #[tokio::test]
+    async fn history_errors_when_file_does_not_exist() {
+        let dir = TempDir::new().unwrap();
+        let b = local_instance();
+        let uri = uri_for(&dir.path().join("ghost.toml"));
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("does not exist"), "error names absence: {msg}");
+        assert!(msg.contains("ghost.toml"), "error names path: {msg}");
+    }
+
+    #[tokio::test]
+    async fn history_errors_when_path_is_not_under_a_git_repo() {
+        // Tempdir under /tmp is (usually) not inside a git repo. The
+        // git binary should fail with a "not a git repository" stderr;
+        // we surface that verbatim so the user can react.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("reg.toml");
+        let b = local_instance();
+        let uri = uri_for(&path);
+        b.set(&uri, "k = \"v\"\n").await.unwrap();
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("git log") || msg.contains("not a git repository") || msg.contains("git"),
+            "git error surfaced: {msg}"
+        );
     }
 
     #[cfg(unix)]

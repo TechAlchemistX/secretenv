@@ -57,6 +57,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+    HistoryEntry,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -110,6 +111,37 @@ enum KvData {
     V2 { data: HashMap<String, String> },
     /// KV v1: the entries directly under `data`.
     V1(HashMap<String, String>),
+}
+
+/// `vault kv metadata get -format=json` envelope. Only the `data` arm
+/// is captured; `request_id`, `lease_*`, `wrap_info`, etc. are ignored.
+#[derive(Deserialize)]
+struct KvMetadataResponse {
+    data: KvMetadataData,
+}
+
+#[derive(Deserialize)]
+struct KvMetadataData {
+    /// Map keyed by version-as-string (`"1"`, `"2"`, ...). Vault's
+    /// own JSON shape — we sort numerically descending so the unified
+    /// `Vec<HistoryEntry>` contract (most-recent-first) holds.
+    versions: HashMap<String, KvMetadataVersion>,
+}
+
+#[derive(Deserialize)]
+struct KvMetadataVersion {
+    /// RFC 3339 timestamp Vault stamps on the version when written.
+    created_time: String,
+    /// Empty string when the version is live; populated when soft-
+    /// deleted (`vault kv delete`). We surface this as the
+    /// `description` field so operators can spot deleted versions in
+    /// the unified history table.
+    #[serde(default)]
+    deletion_time: String,
+    /// `true` after `vault kv destroy` (versus the soft-delete above).
+    /// We add a `[destroyed]` marker to the description for visibility.
+    #[serde(default)]
+    destroyed: bool,
 }
 
 impl VaultBackend {
@@ -366,6 +398,71 @@ impl Backend for VaultBackend {
             KvData::V2 { data } | KvData::V1(data) => data,
         };
         Ok(map.into_iter().collect())
+    }
+
+    /// `vault kv metadata get -format=json <path>` is the KV v2 surface
+    /// that exposes per-version timestamps + soft-delete + destroy
+    /// state. KV v1 has no version history; vault rejects this command
+    /// against v1 mounts and we surface that error verbatim.
+    ///
+    /// Vault's metadata response doesn't carry an actor — that lives
+    /// in the audit log, which secretenv is deliberately not reading
+    /// (no privileged-credential requirement). Actor stays `None`.
+    async fn history(&self, uri: &BackendUri) -> Result<Vec<HistoryEntry>> {
+        uri.reject_any_fragment("vault")?;
+        let path = Self::vault_path(uri);
+        let mut cmd = self.vault_command("kv", &["metadata", "get", "-format=json", &path]);
+        let output = cmd.output().await.with_context(|| {
+            format!(
+                "vault backend '{}': failed to invoke 'vault kv metadata get' for URI '{}'",
+                self.instance_name, uri.raw
+            )
+        })?;
+        if !output.status.success() {
+            bail!(self.operation_failure_message(uri, "history", &output.stderr));
+        }
+        let parsed: KvMetadataResponse =
+            serde_json::from_slice(&output.stdout).with_context(|| {
+                format!(
+                    "vault backend '{}': parsing 'vault kv metadata get' JSON for URI '{}'",
+                    self.instance_name, uri.raw
+                )
+            })?;
+
+        // Sort keys numerically descending so most-recent-first holds.
+        // Vault emits version keys as decimal strings; bare lexical
+        // sort gives wrong ordering past 9 (10 < 2 lexically).
+        let mut versions: Vec<(u64, KvMetadataVersion)> = parsed
+            .data
+            .versions
+            .into_iter()
+            .filter_map(|(k, v)| k.parse::<u64>().ok().map(|n| (n, v)))
+            .collect();
+        versions.sort_by(|a, b| b.0.cmp(&a.0));
+
+        Ok(versions
+            .into_iter()
+            .map(|(n, v)| {
+                let mut markers: Vec<&str> = Vec::new();
+                if v.destroyed {
+                    markers.push("destroyed");
+                }
+                if !v.deletion_time.is_empty() && !v.destroyed {
+                    markers.push("soft-deleted");
+                }
+                let description = if markers.is_empty() {
+                    None
+                } else {
+                    Some(format!("[{}]", markers.join(", ")))
+                };
+                HistoryEntry {
+                    version: n.to_string(),
+                    timestamp: v.created_time,
+                    actor: None,
+                    description,
+                }
+            })
+            .collect())
     }
 }
 
@@ -917,5 +1014,121 @@ mod tests {
             msg.contains("env mismatch") || msg.contains("strict-mock"),
             "expected env mismatch diagnostic propagated as stderr, got: {msg}"
         );
+    }
+
+    // ---- history (v0.4 Phase 2a) ----
+
+    #[tokio::test]
+    async fn history_returns_versions_most_recent_first_with_numeric_sort() {
+        // Vault's metadata response keys versions as decimal strings.
+        // A naive lexical sort would put "10" before "2"; this test
+        // uses 12 versions to force the issue and asserts the parser
+        // sorts numerically descending.
+        let dir = TempDir::new().unwrap();
+        let body = r#"{
+            "data": {
+                "versions": {
+                    "1":  {"created_time": "2026-04-01T00:00:00Z", "deletion_time": "", "destroyed": false},
+                    "2":  {"created_time": "2026-04-02T00:00:00Z", "deletion_time": "", "destroyed": false},
+                    "3":  {"created_time": "2026-04-03T00:00:00Z", "deletion_time": "", "destroyed": false},
+                    "10": {"created_time": "2026-04-10T00:00:00Z", "deletion_time": "", "destroyed": false},
+                    "11": {"created_time": "2026-04-11T00:00:00Z", "deletion_time": "", "destroyed": false},
+                    "12": {"created_time": "2026-04-12T00:00:00Z", "deletion_time": "", "destroyed": false}
+                }
+            }
+        }"#;
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "metadata", "get", "-format=json", "secret/registry"],
+                Response::success(body)
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("vault-eng://secret/registry").unwrap();
+        let entries = b.history(&uri).await.unwrap();
+        assert_eq!(entries.len(), 6);
+        let versions: Vec<&str> = entries.iter().map(|e| e.version.as_str()).collect();
+        assert_eq!(versions, vec!["12", "11", "10", "3", "2", "1"], "numeric desc");
+    }
+
+    #[tokio::test]
+    async fn history_marks_destroyed_and_soft_deleted_versions_distinctly() {
+        let dir = TempDir::new().unwrap();
+        let body = r#"{
+            "data": {
+                "versions": {
+                    "1": {"created_time": "2026-04-01T00:00:00Z", "deletion_time": "2026-04-15T00:00:00Z", "destroyed": false},
+                    "2": {"created_time": "2026-04-02T00:00:00Z", "deletion_time": "2026-04-16T00:00:00Z", "destroyed": true},
+                    "3": {"created_time": "2026-04-03T00:00:00Z", "deletion_time": "", "destroyed": false}
+                }
+            }
+        }"#;
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "metadata", "get", "-format=json", "secret/x"],
+                Response::success(body)
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("vault-eng://secret/x").unwrap();
+        let entries = b.history(&uri).await.unwrap();
+        // Most-recent-first: 3 (live), 2 (destroyed), 1 (soft-deleted).
+        assert_eq!(entries[0].version, "3");
+        assert!(entries[0].description.is_none(), "live version → no marker");
+        assert_eq!(entries[1].version, "2");
+        assert_eq!(entries[1].description.as_deref(), Some("[destroyed]"), "destroyed only");
+        assert_eq!(entries[2].version, "1");
+        assert_eq!(
+            entries[2].description.as_deref(),
+            Some("[soft-deleted]"),
+            "soft-deleted only when not destroyed"
+        );
+        // Vault doesn't expose actor in metadata — stays None.
+        assert!(entries.iter().all(|e| e.actor.is_none()));
+    }
+
+    #[tokio::test]
+    async fn history_propagates_kv_v1_unsupported_error() {
+        // Vault rejects `kv metadata get` against KV v1 mounts. We
+        // surface the native vault error verbatim so operators see why.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "metadata", "get", "-format=json", "kv1/legacy"],
+                Response::failure(2, "Metadata not supported on KV Version 1\n")
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_absent("VAULT_NAMESPACE"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("vault-eng://kv1/legacy").unwrap();
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("Metadata not supported"), "stderr surfaced: {msg}");
+        assert!(msg.contains("history failed"), "operation labeled: {msg}");
+    }
+
+    #[tokio::test]
+    async fn history_uses_namespace_env_when_configured() {
+        // Same env-channel rigor as the other vault tests — assert
+        // that namespace propagates through to the mock's env check.
+        let dir = TempDir::new().unwrap();
+        let body = r#"{"data":{"versions":{"1":{"created_time":"2026-04-19T00:00:00Z","deletion_time":"","destroyed":false}}}}"#;
+        let mock = StrictMock::new("vault")
+            .on(
+                &["kv", "metadata", "get", "-format=json", "secret/x"],
+                Response::success(body)
+                    .with_env_var("VAULT_ADDR", VAULT_ADDR)
+                    .with_env_var("VAULT_NAMESPACE", VAULT_NS),
+            )
+            .install(dir.path());
+        let b = backend(&mock, Some(VAULT_NS));
+        let uri = BackendUri::parse("vault-eng://secret/x").unwrap();
+        let entries = b.history(&uri).await.unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }

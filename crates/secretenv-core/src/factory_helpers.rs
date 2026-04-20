@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
@@ -70,6 +71,73 @@ pub fn optional_string<S: BuildHasher>(
             )
         })
     })
+}
+
+/// Extract an optional boolean field from the factory config block.
+/// `Ok(None)` when absent; error when present with a non-boolean value.
+///
+/// # Errors
+///
+/// Wrong-type errors follow the shape documented at the module level.
+pub fn optional_bool<S: BuildHasher>(
+    config: &HashMap<String, toml::Value, S>,
+    field: &str,
+    backend_type: &str,
+    instance_name: &str,
+) -> Result<Option<bool>> {
+    config.get(field).map_or(Ok(None), |value| {
+        value.as_bool().map(Some).ok_or_else(|| {
+            anyhow!(
+                "{backend_type} instance '{instance_name}': field '{field}' must be a boolean, got {}",
+                value.type_str()
+            )
+        })
+    })
+}
+
+/// Read an optional `timeout_secs` integer field and convert to a
+/// [`Duration`]. `Ok(None)` when absent; error when present with a
+/// non-integer value or a negative number.
+///
+/// Used by every backend factory to honor a per-instance
+/// `timeout_secs = N` override of the default `with_timeout` window
+/// for `get` / `set` / `delete` / `list` / `history`. The `check`
+/// timeout stays on `DEFAULT_CHECK_TIMEOUT` so doctor parallelism
+/// remains predictable across instances.
+///
+/// # Errors
+///
+/// - Field present and not an integer.
+/// - Integer is negative or zero (`Duration::from_secs` is unsigned;
+///   a zero or negative timeout makes the operation impossible).
+pub fn optional_duration_secs<S: BuildHasher>(
+    config: &HashMap<String, toml::Value, S>,
+    field: &str,
+    backend_type: &str,
+    instance_name: &str,
+) -> Result<Option<Duration>> {
+    let Some(value) = config.get(field) else {
+        return Ok(None);
+    };
+    let n = value.as_integer().ok_or_else(|| {
+        anyhow!(
+            "{backend_type} instance '{instance_name}': field '{field}' must be an integer (seconds), got {}",
+            value.type_str()
+        )
+    })?;
+    if n <= 0 {
+        return Err(anyhow!(
+            "{backend_type} instance '{instance_name}': field '{field}' must be a positive \
+             number of seconds, got {n}"
+        ));
+    }
+    // u64 cast is safe — the i64 is positive (just guarded above) and
+    // Rust u64 covers every positive i64. `clippy::cast_sign_loss` is
+    // technically correct in the abstract but disjoint from this
+    // already-guarded path.
+    #[allow(clippy::cast_sign_loss)]
+    let secs = n as u64;
+    Ok(Some(Duration::from_secs(secs)))
 }
 
 #[cfg(test)]
@@ -127,5 +195,69 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("aws-ssm instance 'aws-ssm-prod'"));
         assert!(msg.contains("field 'aws_profile' must be a string, got boolean"));
+    }
+
+    #[test]
+    fn optional_bool_returns_none_when_absent() {
+        let cfg = HashMap::new();
+        let v = optional_bool(&cfg, "op_unsafe_set", "1password", "1password-team").unwrap();
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn optional_bool_returns_some_on_boolean() {
+        let cfg = config(&[("op_unsafe_set", toml::Value::Boolean(true))]);
+        let v = optional_bool(&cfg, "op_unsafe_set", "1password", "1password-team").unwrap();
+        assert_eq!(v, Some(true));
+    }
+
+    #[test]
+    fn optional_bool_errors_on_wrong_type() {
+        let cfg = config(&[("op_unsafe_set", toml::Value::String("yes".to_owned()))]);
+        let err = optional_bool(&cfg, "op_unsafe_set", "1password", "1password-team").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("op_unsafe_set"));
+        assert!(msg.contains("must be a boolean"));
+    }
+
+    #[test]
+    fn optional_duration_secs_returns_none_when_absent() {
+        let cfg = HashMap::new();
+        let v = optional_duration_secs(&cfg, "timeout_secs", "aws-ssm", "aws-ssm-prod").unwrap();
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn optional_duration_secs_converts_positive_integer() {
+        let cfg = config(&[("timeout_secs", toml::Value::Integer(45))]);
+        let v = optional_duration_secs(&cfg, "timeout_secs", "aws-ssm", "aws-ssm-prod").unwrap();
+        assert_eq!(v, Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn optional_duration_secs_errors_on_zero() {
+        let cfg = config(&[("timeout_secs", toml::Value::Integer(0))]);
+        let err =
+            optional_duration_secs(&cfg, "timeout_secs", "aws-ssm", "aws-ssm-prod").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("positive"), "rejects zero: {msg}");
+    }
+
+    #[test]
+    fn optional_duration_secs_errors_on_negative() {
+        let cfg = config(&[("timeout_secs", toml::Value::Integer(-5))]);
+        let err =
+            optional_duration_secs(&cfg, "timeout_secs", "aws-ssm", "aws-ssm-prod").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("positive"), "rejects negative: {msg}");
+    }
+
+    #[test]
+    fn optional_duration_secs_errors_on_wrong_type() {
+        let cfg = config(&[("timeout_secs", toml::Value::String("30".to_owned()))]);
+        let err =
+            optional_duration_secs(&cfg, "timeout_secs", "aws-ssm", "aws-ssm-prod").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("integer"), "specific type error: {msg}");
     }
 }

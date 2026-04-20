@@ -69,11 +69,13 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
-    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri,
+    optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
+    BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -90,6 +92,9 @@ pub struct AwsSecretsBackend {
     /// Path or name of the `aws` binary. Defaults to `"aws"` (PATH
     /// lookup); tests override to point at a mock script.
     aws_bin: String,
+    /// Per-instance deadline for fetch-class operations. From
+    /// `timeout_secs` config field; defaults to [`DEFAULT_GET_TIMEOUT`].
+    timeout: Duration,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +193,10 @@ impl Backend for AwsSecretsBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     #[allow(clippy::similar_names)]
@@ -490,12 +499,15 @@ impl BackendFactory for AwsSecretsFactory {
         let aws_profile = optional_string(config, "aws_profile", "aws-secrets", instance_name)?;
         let aws_bin = optional_string(config, "aws_bin", "aws-secrets", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
+        let timeout = optional_duration_secs(config, "timeout_secs", "aws-secrets", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
         Ok(Box::new(AwsSecretsBackend {
             backend_type: "aws-secrets",
             instance_name: instance_name.to_owned(),
             aws_region,
             aws_profile,
             aws_bin,
+            timeout,
         }))
     }
 }
@@ -522,6 +534,7 @@ mod tests {
             aws_region: REGION.to_owned(),
             aws_profile: profile.map(ToOwned::to_owned),
             aws_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 
@@ -532,6 +545,7 @@ mod tests {
             aws_region: REGION.to_owned(),
             aws_profile: None,
             aws_bin: "/definitely/not/a/real/path/to/aws-binary-XYZ".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
         }
     }
 

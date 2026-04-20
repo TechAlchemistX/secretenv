@@ -52,22 +52,23 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri, HistoryEntry};
+use secretenv_core::{
+    optional_duration_secs, Backend, BackendFactory, BackendStatus, BackendUri, HistoryEntry,
+    DEFAULT_GET_TIMEOUT,
+};
 
 /// A live instance of the local filesystem backend.
 pub struct LocalBackend {
     backend_type: &'static str,
     instance_name: String,
+    timeout: Duration,
 }
 
 impl LocalBackend {
-    const fn new(instance_name: String) -> Self {
-        Self { backend_type: "local", instance_name }
-    }
-
     fn file_path(uri: &BackendUri) -> PathBuf {
         if uri.path.starts_with('/') {
             PathBuf::from(&uri.path)
@@ -85,6 +86,10 @@ impl Backend for LocalBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     async fn check(&self) -> BackendStatus {
@@ -296,9 +301,15 @@ impl BackendFactory for LocalFactory {
     fn create(
         &self,
         instance_name: &str,
-        _config: &HashMap<String, toml::Value>,
+        config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        Ok(Box::new(LocalBackend::new(instance_name.to_owned())))
+        let timeout = optional_duration_secs(config, "timeout_secs", "local", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
+        Ok(Box::new(LocalBackend {
+            backend_type: "local",
+            instance_name: instance_name.to_owned(),
+            timeout,
+        }))
     }
 }
 
@@ -310,7 +321,11 @@ mod tests {
     use super::*;
 
     fn local_instance() -> LocalBackend {
-        LocalBackend::new("local".to_owned())
+        LocalBackend {
+            backend_type: "local",
+            instance_name: "local".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
+        }
     }
 
     fn uri_for(path: &std::path::Path) -> BackendUri {

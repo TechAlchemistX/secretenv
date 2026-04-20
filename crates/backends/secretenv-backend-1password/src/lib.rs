@@ -46,10 +46,14 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
+use secretenv_core::{
+    optional_bool, optional_duration_secs, Backend, BackendFactory, BackendStatus, BackendUri,
+    DEFAULT_GET_TIMEOUT,
+};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -65,6 +69,17 @@ pub struct OnePasswordBackend {
     /// Path or name of the `op` binary. Defaults to `"op"` (PATH
     /// lookup); tests override to a mock script path.
     op_bin: String,
+    /// Per-instance fetch deadline; from `timeout_secs` config field.
+    timeout: Duration,
+    /// **Opt-in to the v0.3 CV-1 limitation.** Default `false` —
+    /// `set` errors out with a clean message rather than silently
+    /// passing the secret value through child argv. Set
+    /// `op_unsafe_set = true` in `[backends.<name>]` to acknowledge
+    /// the exposure (`/proc/<pid>/cmdline` on multi-user Linux
+    /// hosts) and proceed with the legacy argv-based behavior. The
+    /// `op` CLI offers no portable stdin-fed value form across the
+    /// 1.x and 2.x generations, so the safer default is to refuse.
+    op_unsafe_set: bool,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +136,10 @@ impl Backend for OnePasswordBackend {
 
     fn instance_name(&self) -> &str {
         &self.instance_name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     #[allow(clippy::similar_names)]
@@ -230,28 +249,41 @@ impl Backend for OnePasswordBackend {
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
         uri.reject_any_fragment("1password")?;
-        // KNOWN LIMITATION (review finding CV-1, partial): the 1Password
-        // CLI (`op item edit`) reads field assignments as `field=value`
-        // argv tokens. Unlike AWS SSM, `op` does not offer a portable
-        // stdin-fed value form that works across the 2.x and 1.x
-        // CLI generations users have installed. A version-gated stdin
-        // path (`op item edit ... field[password]=-`) is planned in a
-        // v0.3 follow-up once we have concrete compatibility testing
-        // against a live `op` binary.
+        // KNOWN LIMITATION (review finding CV-1): the 1Password CLI
+        // (`op item edit`) reads field assignments as `field=value`
+        // argv tokens. Across the 1.x and 2.x CLI generations users
+        // have installed, `op` offers no portable stdin-fed value
+        // form (the closest, `op item create --template -`, doesn't
+        // apply to in-place field edits). Until that lands upstream,
+        // secretenv refuses the operation by default.
         //
-        // Exposure: the secret value is visible in the child process's
-        // argv for the lifetime of the `op` subprocess (normally
-        // O(200ms) — 2s). On multi-user Linux hosts, `/proc/<pid>/cmdline`
-        // is world-readable. `secretenv registry set` on 1password
-        // backends should not be run on shared machines until this is
-        // fixed.
+        // Exposure: the secret value is visible in the child
+        // process's argv for the lifetime of the `op` subprocess
+        // (normally O(200 ms) — 2 s). On multi-user Linux hosts,
+        // `/proc/<pid>/cmdline` is world-readable. Operators who
+        // accept this exposure (single-user host, audited shared
+        // host) opt in by setting `op_unsafe_set = true` under
+        // `[backends.<instance>]` in config.toml.
+        if !self.op_unsafe_set {
+            bail!(
+                "1password backend '{instance}': refusing `set` for URI '{uri}' — the `op` CLI \
+                 has no portable stdin-fed value form across 1.x/2.x, so the secret would pass \
+                 through subprocess argv (visible via /proc/<pid>/cmdline on multi-user Linux \
+                 hosts). Either edit the field manually with `op item edit`, or opt in by adding \
+                 `op_unsafe_set = true` to [backends.{instance}] (acknowledging the exposure on \
+                 single-user / audited hosts).",
+                instance = self.instance_name,
+                uri = uri.raw,
+            );
+        }
         let (vault, item, field) = Self::parse_path(uri)?;
         let assignment = format!("{field}={value}");
         tracing::warn!(
             instance = self.instance_name.as_str(),
             uri = uri.raw.as_str(),
-            "`op item edit` passes the field value through subprocess argv — \
-             do not run on multi-user hosts (CV-1; full stdin fix in v0.3)"
+            "`op item edit` passes the field value through subprocess argv \
+             (op_unsafe_set = true was set; CV-1 exposure acknowledged) — \
+             do not run on multi-user hosts unless audited"
         );
         let mut cmd = Command::new(&self.op_bin);
         cmd.args(["item", "edit", &item, &assignment, "--vault", &vault]);
@@ -340,11 +372,17 @@ impl BackendFactory for OnePasswordFactory {
                 )
             })?),
         };
+        let timeout = optional_duration_secs(config, "timeout_secs", "1password", instance_name)?
+            .unwrap_or(DEFAULT_GET_TIMEOUT);
+        let op_unsafe_set =
+            optional_bool(config, "op_unsafe_set", "1password", instance_name)?.unwrap_or(false);
         Ok(Box::new(OnePasswordBackend {
             backend_type: "1password",
             instance_name: instance_name.to_owned(),
             op_account,
             op_bin: CLI_NAME.to_owned(),
+            timeout,
+            op_unsafe_set,
         }))
     }
 }
@@ -360,11 +398,28 @@ mod tests {
     use super::*;
 
     fn backend(mock_path: &Path, account: Option<&str>) -> OnePasswordBackend {
+        // Default test backend opts INTO unsafe-set so the existing
+        // strict-mock argv lock for `set` keeps working. The
+        // dedicated `set_refuses_when_op_unsafe_set_is_false` test
+        // covers the new default-off behavior.
         OnePasswordBackend {
             backend_type: "1password",
             instance_name: "1password-personal".to_owned(),
             op_account: account.map(ToOwned::to_owned),
             op_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
+            op_unsafe_set: true,
+        }
+    }
+
+    fn backend_safe_default(mock_path: &Path) -> OnePasswordBackend {
+        OnePasswordBackend {
+            backend_type: "1password",
+            instance_name: "1password-personal".to_owned(),
+            op_account: None,
+            op_bin: mock_path.to_str().unwrap().to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
+            op_unsafe_set: false,
         }
     }
 
@@ -374,6 +429,8 @@ mod tests {
             instance_name: "1password-personal".to_owned(),
             op_account: None,
             op_bin: "/definitely/not/a/real/path/to/op-binary-98765".to_owned(),
+            timeout: DEFAULT_GET_TIMEOUT,
+            op_unsafe_set: false,
         }
     }
 
@@ -735,6 +792,45 @@ exit 1
             msg.contains("strict-mock-no-match") || msg.contains("not found"),
             "no-match diagnostic or stderr propagated: {msg}"
         );
+    }
+
+    // ---- v0.4 Phase 3: op_unsafe_set default-off lock ----
+
+    #[tokio::test]
+    async fn set_refuses_when_op_unsafe_set_is_false() {
+        // The default-off behavior is the security improvement: rather
+        // than silently passing the secret through argv (CV-1),
+        // secretenv refuses unless the operator explicitly opts in.
+        // The error message names the field and the exposure so the
+        // operator can make an informed call.
+        let dir = TempDir::new().unwrap();
+        // Mock would succeed if reached, but the safe-default backend
+        // shouldn't even invoke `op` — the bail! short-circuits.
+        let mock = StrictMock::new("op")
+            .on(&["item", "edit", "I", "F=v", "--vault", "V"], Response::success(""))
+            .install(dir.path());
+        let b = backend_safe_default(&mock);
+        let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
+        let err = b.set(&uri, "v").await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("op_unsafe_set"), "names the opt-in field: {msg}");
+        assert!(msg.contains("1password-personal"), "names instance: {msg}");
+        assert!(msg.contains("argv"), "explains exposure: {msg}");
+    }
+
+    #[tokio::test]
+    async fn set_proceeds_when_op_unsafe_set_is_true() {
+        // The opt-in path uses the existing argv-based behavior,
+        // logged with a warning. The strict mock asserts the same
+        // argv as before — proves the opt-in restores prior shape.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("op")
+            .on(&["item", "edit", "I", "F=new-secret", "--vault", "V"], Response::success(""))
+            .install(dir.path());
+        let mut b = backend_safe_default(&mock);
+        b.op_unsafe_set = true;
+        let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
+        b.set(&uri, "new-secret").await.unwrap();
     }
 
     // Guard against a regression that drops the `--vault <V>` flag from

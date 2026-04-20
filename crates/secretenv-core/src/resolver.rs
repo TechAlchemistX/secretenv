@@ -379,8 +379,8 @@ async fn fetch_layer(source_uri: &BackendUri, backends: &BackendRegistry) -> Res
         )
     })?;
 
-    let entries = backend
-        .list(source_uri)
+    let op_label = format!("{}::list (registry '{}')", source_uri.scheme, source_uri.raw);
+    let entries = crate::with_timeout(backend.timeout(), &op_label, backend.list(source_uri))
         .await
         .with_context(|| format!("failed to load registry document at '{}'", source_uri.raw))?;
 

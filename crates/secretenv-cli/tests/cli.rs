@@ -388,6 +388,64 @@ fn registry_history_errors_when_alias_unknown() {
         .stderr(predicate::str::contains("not-an-alias"));
 }
 
+// ---- registry invite (v0.4 Phase 2b) ----
+
+#[test]
+fn registry_invite_emits_config_snippet_grant_and_verify_steps() {
+    let (dir, config) = full_fixture();
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["registry", "invite", "--invitee", "alice@example.com"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "invite happy path on local fixture exits 0");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Sectioned output.
+    assert!(stdout.contains("# 1. Invitee — add to your config.toml"), "section 1: {stdout}");
+    assert!(stdout.contains("# 2. Inviter — grant access"), "section 2: {stdout}");
+    assert!(stdout.contains("# 3. Invitee — verify the onboarding"), "section 3: {stdout}");
+    // Local backend → filesystem-served grant text.
+    assert!(stdout.contains("filesystem-served"));
+    // Invitee identifier is propagated.
+    assert!(stdout.contains("alice@example.com"));
+    // Verify step lines.
+    assert!(stdout.contains("secretenv doctor"));
+    assert!(stdout.contains("secretenv registry list"));
+    // Config snippet has the right structural pieces.
+    assert!(stdout.contains("[registries.default]"));
+    assert!(stdout.contains("[backends.local]"));
+    assert!(stdout.contains("type = \"local\""));
+}
+
+#[test]
+fn registry_invite_json_output_round_trips() {
+    let (dir, config) = full_fixture();
+    let output = secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["registry", "invite", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(parsed["registry_name"], "default");
+    assert_eq!(parsed["backend_type"], "local");
+    assert_eq!(parsed["invitee"], "<INVITEE>");
+    assert!(parsed["config_block"].as_str().unwrap().contains("[registries.default]"));
+}
+
+#[test]
+fn registry_invite_help_lists_invitee_flag() {
+    secretenv()
+        .args(["registry", "invite", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--invitee"))
+        .stdout(predicate::str::contains("--json"));
+}
+
 // ---- run --dry-run ----
 
 #[test]

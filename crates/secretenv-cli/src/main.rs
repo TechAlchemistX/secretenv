@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 mod backends_init;
 mod cli;
 mod doctor;
+mod invite;
 mod setup;
 
 use cli::Cli;

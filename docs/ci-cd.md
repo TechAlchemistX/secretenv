@@ -44,7 +44,7 @@ jobs:
           aws-region: us-east-1
 
       - name: Install secretenv
-        run: curl -sfS https://secretenv.dev/install.sh | sh
+        run: curl -sfS https://secretenv.io/install.sh | sh
 
       - name: Deploy
         env:
@@ -120,7 +120,7 @@ Install backend CLIs and secretenv on the agent image or via agent provisioning:
 
 ```bash
 # Install secretenv
-curl -sfS https://secretenv.dev/install.sh | sh
+curl -sfS https://secretenv.io/install.sh | sh
 
 # Install backend CLIs (examples)
 apt-get install -y awscli
@@ -185,7 +185,7 @@ deploy:
   image: ubuntu:22.04
   before_script:
     - apt-get update && apt-get install -y curl awscli
-    - curl -sfS https://secretenv.dev/install.sh | sh
+    - curl -sfS https://secretenv.io/install.sh | sh
 
   script:
     - secretenv run -- ./scripts/deploy.sh

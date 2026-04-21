@@ -182,7 +182,7 @@ Share this with new team members:
 secretenv setup aws-ssm-platform:///secretenv/org-registry
 
 Or with a distribution profile (pre-configures all backends and registries):
-curl -sfS https://secretenv.dev/install.sh | sh -s -- --profile acme-corp
+curl -sfS https://secretenv.io/install.sh | sh -s -- --profile acme-corp
 ```
 
 ---

@@ -1,19 +1,19 @@
 #!/bin/sh
-# secretenv installer — https://secretenv.dev
+# secretenv installer — https://secretenv.io
 #
 # Downloads a signed, checksummed release binary from GitHub Releases
 # and installs it to the chosen prefix. Pure POSIX sh — works under
 # dash, bash, zsh, and busybox ash.
 #
 # Usage:
-#   curl -sfSL https://secretenv.dev/install.sh | sh
-#   curl -sfSL https://secretenv.dev/install.sh | sh -s -- --version v0.1.0
-#   curl -sfSL https://secretenv.dev/install.sh | sh -s -- --prefix "$HOME/.local/bin"
-#   curl -sfSL https://secretenv.dev/install.sh | sh -s -- --profile engineering
+#   curl -sfSL https://secretenv.io/install.sh | sh
+#   curl -sfSL https://secretenv.io/install.sh | sh -s -- --version v0.1.0
+#   curl -sfSL https://secretenv.io/install.sh | sh -s -- --prefix "$HOME/.local/bin"
+#   curl -sfSL https://secretenv.io/install.sh | sh -s -- --profile engineering
 #
 # Environment overrides:
 #   SECRETENV_PROFILE_URL   Base URL for --profile fetches
-#                           (default: https://secretenv.dev/profiles)
+#                           (default: https://secretenv.io/profiles)
 #
 # Exit codes: 0 on success, non-zero on any error with a clear message.
 
@@ -24,7 +24,7 @@ BINARY="secretenv"
 PREFIX="/usr/local/bin"
 VERSION=""
 PROFILE=""
-PROFILE_BASE_URL="${SECRETENV_PROFILE_URL:-https://secretenv.dev/profiles}"
+PROFILE_BASE_URL="${SECRETENV_PROFILE_URL:-https://secretenv.io/profiles}"
 
 usage() {
     cat <<'EOF'

@@ -148,7 +148,7 @@ secretenv run --registry dev -- npm start
 brew install secretenv
 
 # Linux / macOS (universal)
-curl -sfS https://secretenv.dev/install.sh | sh
+curl -sfS https://secretenv.io/install.sh | sh
 
 # Cargo
 cargo install secretenv
@@ -326,7 +326,7 @@ The new engineer runs it, gets access through their normal IAM/Vault/Keeper prov
 For teams using distribution profiles, it's one line:
 
 ```bash
-curl -sfS https://secretenv.dev/install.sh | sh -s -- --profile acme-corp
+curl -sfS https://secretenv.io/install.sh | sh -s -- --profile acme-corp
 ```
 
 This installs the binary and pre-populates `~/.config/secretenv/config.toml` with all named instances, all registry sources, and all backend configurations for your org. The new engineer's `doctor` output is clean from the first run.
@@ -412,7 +412,7 @@ jobs:
           aws-region: us-east-1
 
       - name: Install secretenv
-        run: curl -sfS https://secretenv.dev/install.sh | sh
+        run: curl -sfS https://secretenv.io/install.sh | sh
 
       - name: Run with secrets
         env:

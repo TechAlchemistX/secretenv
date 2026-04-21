@@ -469,14 +469,22 @@ secretenv [--config <path>] <command>
 ├── run [--registry <name-or-uri>] [--dry-run] [--verbose] -- <command>
 │
 ├── registry
-│   ├── list   [--registry <name-or-uri>]
-│   ├── get    <alias>  [--registry <name-or-uri>]
-│   ├── set    <alias> <backend-uri>  [--registry <name-or-uri>]
-│   └── unset  <alias>  [--registry <name-or-uri>]
+│   ├── list    [--registry <name-or-uri>]
+│   ├── get     <alias>  [--registry <name-or-uri>]
+│   ├── set     <alias> <backend-uri>  [--registry <name-or-uri>]
+│   ├── unset   <alias>  [--registry <name-or-uri>]
+│   ├── history <alias>  [--registry <name-or-uri>] [--json]
+│   └── invite  [--registry <name-or-uri>] [--invitee <id>] [--json]
+│
+├── profile
+│   ├── install    <name> [--url <url>]
+│   ├── list       [--json]
+│   ├── update     [<name>]
+│   └── uninstall  <name>
 │
 ├── setup <registry-uri> [--region R] [--profile P] [--account A] [--force] [--skip-doctor]
 │
-├── doctor [--json]
+├── doctor [--json] [--fix] [--extensive]
 │
 ├── resolve <alias> [--registry <name-or-uri>]
 └── get <alias> [--registry <name-or-uri>] [--yes]

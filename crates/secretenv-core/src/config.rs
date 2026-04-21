@@ -91,35 +91,93 @@ impl<'de> Deserialize<'de> for BackendConfig {
 }
 
 impl Config {
-    /// Load the machine-level config from the XDG-standard location.
+    /// Load the machine-level config from the XDG-standard location,
+    /// auto-merging any profile files found in the `profiles/`
+    /// subdirectory next to `config.toml`.
     ///
-    /// Returns [`Config::default`] (empty) if the file does not exist;
-    /// caller decides whether that is fatal for their operation.
+    /// Returns [`Config::default`] (empty) if neither `config.toml` nor
+    /// any profile files exist; caller decides whether that is fatal.
     ///
     /// # Errors
     /// Returns an error if the XDG config directory cannot be
-    /// determined, if the file exists but is unreadable, malformed, or
-    /// contains invalid URIs.
+    /// determined, if any config file exists but is unreadable,
+    /// malformed, or contains invalid URIs.
     pub fn load() -> Result<Self> {
         let path = default_config_path()?;
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        Self::load_from(&path)
+        let mut config = if path.exists() {
+            let contents = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read config at '{}'", path.display()))?;
+            toml::from_str::<Self>(&contents)
+                .with_context(|| format!("failed to parse config at '{}'", path.display()))?
+        } else {
+            Self::default()
+        };
+        let profiles_dir = path.parent().unwrap_or_else(|| Path::new(".")).join("profiles");
+        config
+            .merge_profiles_from(&profiles_dir)
+            .with_context(|| format!("merging profiles from '{}'", profiles_dir.display()))?;
+        config.validate().with_context(|| format!("invalid config at '{}'", path.display()))?;
+        Ok(config)
     }
 
-    /// Load the config from an explicit path (typically `--config <path>`).
+    /// Load the config from an explicit path (typically `--config <path>`),
+    /// auto-merging any profile files found in the `profiles/`
+    /// subdirectory next to the given path.
+    ///
+    /// Profiles (installed via `secretenv profile install`) are
+    /// additive — they fill in registries + backends that are *not*
+    /// already defined in `config.toml`. The user's own `config.toml`
+    /// always wins where both define the same key.
     ///
     /// # Errors
     /// Returns an error if the file cannot be read, parsed, or
-    /// validated.
+    /// validated, or if any profile file is malformed. A missing
+    /// `path` is a hard error — `--config X` is an explicit user
+    /// intent, not a hint.
     pub fn load_from(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read config at '{}'", path.display()))?;
-        let config: Self = toml::from_str(&contents)
+        let mut config: Self = toml::from_str(&contents)
             .with_context(|| format!("failed to parse config at '{}'", path.display()))?;
+
+        let profiles_dir = path.parent().unwrap_or_else(|| Path::new(".")).join("profiles");
+        config
+            .merge_profiles_from(&profiles_dir)
+            .with_context(|| format!("merging profiles from '{}'", profiles_dir.display()))?;
+
         config.validate().with_context(|| format!("invalid config at '{}'", path.display()))?;
         Ok(config)
+    }
+
+    /// Merge all `*.toml` files under `dir` into `self`. Profile values
+    /// fill in missing keys only — existing entries in `self` always win.
+    /// Files are processed in alphabetical order so the merge is
+    /// deterministic. A missing or empty `dir` is a no-op.
+    fn merge_profiles_from(&mut self, dir: &Path) -> Result<()> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+            .with_context(|| format!("reading profiles dir '{}'", dir.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        entries.sort();
+
+        for path in entries {
+            let contents = fs::read_to_string(&path)
+                .with_context(|| format!("reading profile '{}'", path.display()))?;
+            let profile: Self = toml::from_str(&contents)
+                .with_context(|| format!("parsing profile '{}'", path.display()))?;
+            for (name, reg) in profile.registries {
+                self.registries.entry(name).or_insert(reg);
+            }
+            for (name, backend) in profile.backends {
+                self.backends.entry(name).or_insert(backend);
+            }
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<()> {
@@ -144,6 +202,24 @@ fn default_config_path() -> Result<PathBuf> {
     let base = directories::BaseDirs::new()
         .ok_or_else(|| anyhow!("could not determine a home directory for XDG config lookup"))?;
     Ok(base.config_dir().join("secretenv").join("config.toml"))
+}
+
+/// Return the canonical XDG path to `config.toml`, used by the CLI's
+/// `profile` subcommand to derive the profiles directory without
+/// having to know XDG semantics.
+///
+/// # Errors
+/// Returns an error if the XDG base directories cannot be determined.
+pub fn default_config_path_xdg() -> Result<PathBuf> {
+    default_config_path()
+}
+
+/// Return the profiles directory that sits next to the given
+/// `config.toml` path (`<parent>/profiles`). Used by the CLI's
+/// `profile` subcommand.
+#[must_use]
+pub fn profiles_dir_for(config_path: &Path) -> PathBuf {
+    config_path.parent().unwrap_or_else(|| Path::new(".")).join("profiles")
 }
 
 #[cfg(test)]
@@ -357,5 +433,122 @@ sources = []
         let msg = format!("{err:#}");
         assert!(msg.contains("default"), "error names the registry: {msg}");
         assert!(msg.contains("empty sources"), "error explains the problem: {msg}");
+    }
+
+    // ---- profile merge ---------------------------------------------------
+
+    fn write_profile(dir: &TempDir, name: &str, body: &str) {
+        let profiles = dir.path().join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        fs::write(profiles.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn profile_fills_in_missing_backends() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            r#"
+[backends.local-main]
+type = "local"
+"#,
+        );
+        write_profile(
+            &dir,
+            "team.toml",
+            r#"
+[backends.team-ssm]
+type = "aws-ssm"
+aws_region = "us-east-1"
+
+[registries.team]
+sources = ["team-ssm:///teams/acme/registry"]
+"#,
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.backends.contains_key("local-main"), "user-config entry preserved");
+        assert!(cfg.backends.contains_key("team-ssm"), "profile entry merged in");
+        assert!(cfg.registries.contains_key("team"), "profile registry merged in");
+    }
+
+    #[test]
+    fn user_config_wins_over_profile_on_conflict() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            r#"
+[backends.shared]
+type = "local"
+"#,
+        );
+        // Profile tries to redefine `shared` as a different backend type.
+        write_profile(
+            &dir,
+            "team.toml",
+            r#"
+[backends.shared]
+type = "aws-ssm"
+aws_region = "us-east-1"
+"#,
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        let backend = cfg.backends.get("shared").unwrap();
+        assert_eq!(
+            backend.backend_type, "local",
+            "user config must win when both define the same backend key"
+        );
+    }
+
+    #[test]
+    fn profiles_merged_in_alphabetical_order() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(&dir, "");
+        write_profile(
+            &dir,
+            "01-first.toml",
+            r#"
+[backends.ordered]
+type = "local"
+"#,
+        );
+        write_profile(
+            &dir,
+            "02-second.toml",
+            r#"
+[backends.ordered]
+type = "aws-ssm"
+aws_region = "us-east-1"
+"#,
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        // Alphabetical: 01 goes first → inserts `ordered` as local.
+        // 02 goes second → `or_insert` no-ops. First-writer-wins among
+        // profiles, user config wins over both.
+        assert_eq!(cfg.backends.get("ordered").unwrap().backend_type, "local");
+    }
+
+    #[test]
+    fn malformed_profile_surfaces_error_naming_the_file() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(&dir, "");
+        write_profile(&dir, "broken.toml", "this is = not [valid toml");
+        let err = Config::load_from(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("broken.toml"), "error names the bad profile file: {msg}");
+    }
+
+    #[test]
+    fn missing_profiles_dir_is_silent_noop() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            r#"
+[backends.local-main]
+type = "local"
+"#,
+        );
+        // No profiles/ dir at all.
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.backends.contains_key("local-main"));
     }
 }

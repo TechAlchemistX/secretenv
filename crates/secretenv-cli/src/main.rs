@@ -14,6 +14,7 @@ mod backends_init;
 mod cli;
 mod doctor;
 mod invite;
+mod profile;
 mod setup;
 
 use cli::Cli;

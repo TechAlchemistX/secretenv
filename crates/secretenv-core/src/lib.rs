@@ -29,7 +29,9 @@ pub mod timeouts;
 pub mod uri;
 
 pub use backend::{Backend, BackendFactory, HistoryEntry};
-pub use config::{BackendConfig, Config, RegistryConfig};
+pub use config::{
+    default_config_path_xdg, profiles_dir_for, BackendConfig, Config, RegistryConfig,
+};
 pub use factory_helpers::{
     optional_bool, optional_duration_secs, optional_string, required_string,
 };

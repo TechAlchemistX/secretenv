@@ -8,6 +8,15 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### Added
+
+- **`secretenv profile install|list|update|uninstall`** — distribution profile system. A "profile" is a TOML document (`[backends.*]` + `[registries.*]` fragments only) fetched over HTTPS and auto-merged into the active `config.toml` at load time. Profiles fill gaps, never override: the user's own `config.toml` always wins where both define the same key; among profiles, alphabetical filename order decides conflicts. Profiles land in `<config_dir>/profiles/<name>.toml` with a sidecar `<name>.meta.json` (source URL + `ETag` + install timestamp) that `profile update` uses for conditional `If-None-Match` re-fetch. Default base URL is `https://secretenv.io/profiles`; overridable globally via `SECRETENV_PROFILE_URL` or per-invocation via `--url <url>` (supports `file://` for offline / local-staging flows). Fetching uses `curl` (subprocess) — no new HTTP client dependency, consistent with every other backend's CLI-spawn pattern. Fetched bodies are validated as `Config` fragments before being written to disk, so a malformed profile never lands. `profile list --json` emits a machine-readable array; `profile update` (no name) updates every installed profile with a per-row report. Full walkthrough at [`docs/profiles.md`](docs/profiles.md).
+- **`Config::load` + `Config::load_from` now auto-merge profiles** from the `profiles/` directory next to the active config. Behavior for callers with no profiles installed is unchanged. New public helpers `secretenv_core::default_config_path_xdg()` and `secretenv_core::profiles_dir_for(config_path)` give the CLI a single source of truth for "where do profiles live for this config path?" without duplicating XDG logic.
+
+### Changed
+
+- **Signing + an index file for profiles are deferred to v0.5+.** v0.4 ships unsigned profiles over HTTPS — threat-model rationale documented in [`docs/profiles.md`](docs/profiles.md) §"Security considerations". Until signing lands, treat `SECRETENV_PROFILE_URL` overrides like `curl | sh`: only install from hosts you trust; review profile contents before installing.
+
 ## [0.4.0-alpha.0]
 
 **Headline:** v0.4 preflight. Workspace version bumped to `0.4.0-alpha.0`; build-plan at [`kb/wiki/build-plan-v0.4.md`](../kb/wiki/build-plan-v0.4.md). Functionality-only release — no new backends. Scope: `doctor --fix/--extensive`, `registry history/invite`, distribution profile system served from `secretenv.io`, per-instance `timeout_secs`, 1Password `set` stdin-path version-gating polish, harness promotion to `scripts/smoke-test/`, Node.js 24 bump, `deny.toml` AGPL exception tightening, and a decision on publishing `secretenv-testing`.

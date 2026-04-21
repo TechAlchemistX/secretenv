@@ -42,6 +42,10 @@ pub enum Command {
     /// Registry document operations.
     #[command(subcommand)]
     Registry(RegistryCommand),
+    /// Distribution profile operations — install, list, update, and
+    /// uninstall shared config fragments (v0.4).
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Print the backend URI an alias resolves to (no fetch) plus
     /// the cascade source and backend auth status.
     Resolve(ResolveArgs),
@@ -54,6 +58,37 @@ pub enum Command {
     Setup(SetupArgs),
     /// Generate shell completion scripts.
     Completions(CompletionsArgs),
+}
+
+/// `secretenv profile <subcommand>` — distribution-profile operations.
+#[derive(Debug, Subcommand)]
+pub enum ProfileCommand {
+    /// Download a profile from the canonical host (or an explicit URL)
+    /// and install it into the profiles directory. Auto-merges on the
+    /// next config load — no manual editing of `config.toml` needed.
+    Install {
+        /// Profile name. Determines both the URL (when --url is absent)
+        /// and the on-disk filename under `profiles/`.
+        name: String,
+        /// Override the fetch URL. Useful for private / staged /
+        /// filesystem-hosted (file://) profiles.
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// List installed profiles with their source URLs + install times.
+    List {
+        /// Emit machine-readable JSON instead of the human table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-fetch a profile (or all profiles when no name is given) from
+    /// their stored source URL. Uses `ETag` for conditional re-fetch.
+    Update {
+        /// Profile name. Omit to update every installed profile.
+        name: Option<String>,
+    },
+    /// Remove an installed profile (both the .toml and .meta.json).
+    Uninstall { name: String },
 }
 
 /// `secretenv run [...] -- <command>`
@@ -284,6 +319,7 @@ impl Cli {
                 )
                 .await
             }
+            Command::Profile(pc) => cmd_profile(pc, self.config.as_deref()).await,
             Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
             Command::Completions(args) => cmd_completions(args),
         }
@@ -930,6 +966,94 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         target: target_config.map(std::path::Path::to_path_buf),
     };
     crate::setup::run_setup(&opts).await
+}
+
+// ---- profile ------------------------------------------------------------
+
+async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path>) -> Result<()> {
+    // The profiles dir sits next to the active config.toml. If the user
+    // passed `--config <path>`, use that path's parent; otherwise fall
+    // back to the XDG-default location. Both paths go through the
+    // `profiles_dir_for` core helper so the logic matches the loader.
+    let config_path: std::path::PathBuf = match target_config {
+        Some(p) => p.to_path_buf(),
+        None => secretenv_core::default_config_path_xdg()?,
+    };
+    let opts = crate::profile::ProfileOpts {
+        profiles_dir: secretenv_core::profiles_dir_for(&config_path),
+    };
+
+    match pc {
+        ProfileCommand::Install { name, url } => {
+            crate::profile::install(name, url.as_deref(), &opts).await
+        }
+        ProfileCommand::List { json } => {
+            let installed = crate::profile::list(&opts)?;
+            render_profile_list(&installed, *json)
+        }
+        ProfileCommand::Update { name } => {
+            if let Some(n) = name {
+                let outcome = crate::profile::update_one(n, &opts).await?;
+                match outcome {
+                    crate::profile::UpdateOutcome::UpToDate => {
+                        println!("Profile '{n}' is already up to date.");
+                    }
+                    crate::profile::UpdateOutcome::Refreshed => {
+                        println!("Profile '{n}' refreshed.");
+                    }
+                }
+                Ok(())
+            } else {
+                let reports = crate::profile::update_all(&opts).await?;
+                render_profile_update_reports(&reports)
+            }
+        }
+        ProfileCommand::Uninstall { name } => crate::profile::uninstall(name, &opts),
+    }
+}
+
+fn render_profile_list(installed: &[crate::profile::InstalledProfile], json: bool) -> Result<()> {
+    if json {
+        let json =
+            serde_json::to_string_pretty(&installed).context("serializing profile list to JSON")?;
+        println!("{json}");
+        return Ok(());
+    }
+    if installed.is_empty() {
+        println!("No profiles installed.");
+        return Ok(());
+    }
+    println!("{:<24} {:<20} SOURCE", "NAME", "INSTALLED");
+    for p in installed {
+        println!("{:<24} {:<20} {}", p.name, p.installed_at, p.source_url);
+    }
+    Ok(())
+}
+
+fn render_profile_update_reports(reports: &[crate::profile::UpdateReport]) -> Result<()> {
+    if reports.is_empty() {
+        println!("No profiles installed.");
+        return Ok(());
+    }
+    let mut had_error = false;
+    for r in reports {
+        match &r.outcome {
+            Ok(crate::profile::UpdateOutcome::UpToDate) => {
+                println!("{:<24} up to date", r.name);
+            }
+            Ok(crate::profile::UpdateOutcome::Refreshed) => {
+                println!("{:<24} refreshed", r.name);
+            }
+            Err(e) => {
+                had_error = true;
+                println!("{:<24} ERROR: {e:#}", r.name);
+            }
+        }
+    }
+    if had_error {
+        anyhow::bail!("one or more profile updates failed");
+    }
+    Ok(())
 }
 
 // ---- completions --------------------------------------------------------

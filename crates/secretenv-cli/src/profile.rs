@@ -380,7 +380,12 @@ async fn fetch(url: &str, if_none_match: Option<&str>) -> Result<FetchOutcome> {
         .arg("-D")
         .arg(headers_tmp.path());
     if let Some(etag) = if_none_match {
-        cmd.arg("-H").arg(format!("If-None-Match: {etag}"));
+        // Re-wrap the opaque-tag in DQUOTEs per RFC 7232 §2.3. We
+        // strip the quotes during parse (see `parse_etag`) so the
+        // stored value is clean, and re-wrap at send time so origin
+        // servers (CloudFront / S3) match against their quoted form
+        // and actually return 304 Not Modified.
+        cmd.arg("-H").arg(format!("If-None-Match: \"{etag}\""));
     }
     cmd.arg(url);
     cmd.stdin(Stdio::null());

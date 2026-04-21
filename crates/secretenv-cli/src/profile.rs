@@ -42,6 +42,15 @@ pub const BASE_URL_ENV: &str = "SECRETENV_PROFILE_URL";
 /// `--timeout` if that ever becomes a knob users want.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Hard ceiling on profile body size (both on-network via `curl
+/// --max-filesize` and on-disk via the `merge_profiles_from` size gate
+/// in `secretenv-core::config`). Profiles are supposed to be short TOML
+/// fragments — 1 MiB is orders of magnitude more than any real profile
+/// would ever need and keeps a compromised host from OOM-ing the
+/// process. Keep this value coordinated with
+/// `secretenv_core::MAX_PROFILE_FILE_BYTES`.
+const MAX_PROFILE_BODY_BYTES: u64 = 1_048_576;
+
 /// Sidecar metadata written alongside each installed profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileMeta {
@@ -239,8 +248,13 @@ pub fn uninstall(name: &str, opts: &ProfileOpts) -> Result<()> {
 // ---------------------------------------------------------------------
 
 /// Outcome of a single `update_one` call.
+///
+/// Marked `#[non_exhaustive]` so v0.5+ variants (e.g. `SignatureError`,
+/// `Skipped`) can be added without forcing downstream match
+/// exhaustiveness to break at the `SemVer` boundary.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum UpdateOutcome {
     /// Server returned 304 Not Modified; local file unchanged.
     UpToDate,
@@ -249,7 +263,12 @@ pub enum UpdateOutcome {
 }
 
 /// One row from a `profile update` (no name) run.
+///
+/// Also marked `#[non_exhaustive]` so new per-row metadata (timing,
+/// bytes transferred, retry count) can be added without breaking
+/// field-init callers in v0.5+.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct UpdateReport {
     /// Profile name.
     pub name: String,
@@ -273,16 +292,56 @@ fn resolve_install_url(name: &str, explicit: Option<&str>) -> String {
     explicit.map_or_else(|| format!("{}/{name}.toml", base_url()), std::string::ToString::to_string)
 }
 
+/// Reserved device filenames on Windows. A profile named `con` would
+/// collide with these on NTFS regardless of extension (`con.toml` still
+/// hits the console device). Match case-insensitively against the bare
+/// profile name (the filename stem, no extension).
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+const MAX_PROFILE_NAME_LEN: usize = 64;
+
 fn validate_profile_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("profile name must not be empty");
     }
-    // Reject path-traversal attempts and characters that would break
-    // the filename-based storage model.
-    if name.chars().any(|c| c == '/' || c == '\\' || c == ':' || c == '.' || c.is_whitespace()) {
+    if name.len() > MAX_PROFILE_NAME_LEN {
         bail!(
-            "profile name '{name}' contains an illegal character — \
-             names must be non-empty and free of path separators, colons, dots, and whitespace"
+            "profile name '{name}' is {} characters; maximum is {MAX_PROFILE_NAME_LEN}",
+            name.len()
+        );
+    }
+    // Strict ASCII allowlist: must start with alphanumeric, then
+    // alphanumeric / hyphen / underscore only. Rejects control chars,
+    // NUL (POSIX filename truncation), path separators, RTL-override
+    // (U+202E) and other bidi tricks, emoji, dots (which prevent the
+    // ".toml" extension convention from being ambiguous), whitespace,
+    // and every non-ASCII codepoint.
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => bail!(
+            "profile name '{name}' must start with an ASCII letter or digit — \
+             allowed chars: [A-Za-z0-9][A-Za-z0-9_-]*"
+        ),
+    }
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            bail!(
+                "profile name '{name}' contains disallowed character {c:?} — \
+                 allowed chars: [A-Za-z0-9][A-Za-z0-9_-]*"
+            );
+        }
+    }
+    // Windows reserved device names — case-insensitive match on the
+    // bare name (NTFS ignores extension for these).
+    let upper = name.to_ascii_uppercase();
+    if WINDOWS_RESERVED_NAMES.iter().any(|&r| r == upper) {
+        bail!(
+            "profile name '{name}' is a reserved Windows device name ({upper}) — \
+             pick a different name to stay portable"
         );
     }
     Ok(())
@@ -371,8 +430,12 @@ async fn fetch(url: &str, if_none_match: Option<&str>) -> Result<FetchOutcome> {
     let mut cmd = Command::new("curl");
     cmd.arg("-sS") // quiet progress, still show errors
         .arg("-L") // follow redirects (CloudFront ↔ origin)
+        .arg("--proto") // pin scheme — don't follow a redirect that drops to plain HTTP
+        .arg("=https,file") // https for the real canonical host; file:// for offline testing
         .arg("--max-time")
         .arg(FETCH_TIMEOUT.as_secs().to_string())
+        .arg("--max-filesize") // cap the response body; profiles are tiny TOML fragments
+        .arg(MAX_PROFILE_BODY_BYTES.to_string())
         .arg("-w")
         .arg("%{http_code}") // write HTTP status to stdout after headers/body
         .arg("-o")
@@ -420,8 +483,15 @@ async fn fetch(url: &str, if_none_match: Option<&str>) -> Result<FetchOutcome> {
             let body = fs::read_to_string(body_tmp.path()).with_context(|| {
                 format!("reading curl body tempfile '{}'", body_tmp.path().display())
             })?;
-            let etag = parse_etag(&fs::read_to_string(headers_tmp.path()).unwrap_or_default());
-            Ok(FetchOutcome::Fresh { body, etag })
+            // Headers tempfile read: a missing ETag is fine (many
+            // origins omit it) but a permissions / IO failure on our
+            // own tmpfile should surface — otherwise `install` pretends
+            // the server returned no ETag and every subsequent `update`
+            // is forced to re-fetch. Propagate the error with context.
+            let headers = fs::read_to_string(headers_tmp.path()).with_context(|| {
+                format!("reading curl headers tempfile '{}'", headers_tmp.path().display())
+            })?;
+            Ok(FetchOutcome::Fresh { body, etag: parse_etag(&headers) })
         }
         other => bail!("unexpected HTTP {other} fetching '{url}'"),
     }
@@ -489,6 +559,52 @@ sources = ["team-ssm:///teams/acme/registry"]
         for ok in ["team-defaults", "team_a", "acme123", "a"] {
             assert!(validate_profile_name(ok).is_ok(), "expected '{ok}' to be accepted");
         }
+    }
+
+    #[test]
+    fn profile_name_rejects_control_chars_and_unicode() {
+        // Post-audit hardening: strict ASCII allowlist.
+        let bad = [
+            "evil\0nul",        // NUL truncation on POSIX
+            "team\u{202E}live", // RTL override — renders deceptively
+            "\u{200B}hidden",   // zero-width space
+            "emoji🔥name",      // emoji / non-ASCII
+            "team<bracket>",    // shell metacharacters
+            "team|pipe",
+            "team?wild",
+            "team*glob",
+            "_leading-underscore", // must start with alphanumeric
+            "-leading-hyphen",     // same
+        ];
+        for bad_name in bad {
+            assert!(
+                validate_profile_name(bad_name).is_err(),
+                "expected {bad_name:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_name_rejects_windows_reserved_names() {
+        // Post-audit hardening: case-insensitive Windows device-name check.
+        for reserved in ["con", "CON", "Con", "prn", "aux", "nul", "COM1", "lpt9"] {
+            assert!(
+                validate_profile_name(reserved).is_err(),
+                "expected Windows-reserved {reserved:?} to be rejected"
+            );
+        }
+        // Similar shapes but not reserved are fine.
+        for ok in ["console", "com0", "lpt10", "consul"] {
+            assert!(validate_profile_name(ok).is_ok(), "expected {ok:?} to be accepted");
+        }
+    }
+
+    #[test]
+    fn profile_name_rejects_over_length() {
+        let too_long = "a".repeat(MAX_PROFILE_NAME_LEN + 1);
+        assert!(validate_profile_name(&too_long).is_err());
+        let at_limit = "a".repeat(MAX_PROFILE_NAME_LEN);
+        assert!(validate_profile_name(&at_limit).is_ok());
     }
 
     #[test]
@@ -630,7 +746,7 @@ sources = ["team-ssm:///teams/acme/registry"]
         fs::write(&fx, updated).unwrap();
 
         let outcome = update_one("rot", &opts(&dir)).await.unwrap();
-        matches!(outcome, UpdateOutcome::Refreshed);
+        assert!(matches!(outcome, UpdateOutcome::Refreshed));
 
         let body = fs::read_to_string(dir.path().join("profiles/rot.toml")).unwrap();
         assert!(body.contains("team-ssm-updated"));

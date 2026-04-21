@@ -982,11 +982,29 @@ fn profile_install_rejects_path_traversal_name() {
     let config = dir.path().join("config.toml");
     write_file(&config, "");
 
+    // `../evil` is rejected by the stricter ASCII allowlist — specifically
+    // at the leading-char check (`.` is not alphanumeric). The error
+    // surfaces the allowed character class so users can see how to fix it.
     secretenv()
         .args(["--config", config.to_str().unwrap(), "profile", "install", "../evil"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("illegal character"));
+        .stderr(predicate::str::contains("allowed chars"));
+}
+
+#[test]
+fn profile_install_rejects_windows_reserved_name() {
+    // Post-audit hardening: Windows device names must be rejected
+    // case-insensitively so NTFS users don't write to `CON` the device.
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_file(&config, "");
+
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "install", "CON"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved Windows device name"));
 }
 
 #[test]

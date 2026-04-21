@@ -153,6 +153,13 @@ impl Config {
     /// fill in missing keys only — existing entries in `self` always win.
     /// Files are processed in alphabetical order so the merge is
     /// deterministic. A missing or empty `dir` is a no-op.
+    ///
+    /// A size gate rejects any profile file larger than
+    /// [`MAX_PROFILE_FILE_BYTES`] so a compromised `profiles/` directory
+    /// can't OOM the load path by dropping a giant TOML. The in-binary
+    /// `secretenv profile install` path also caps download size, so this
+    /// is defense-in-depth against manual/alternate writes to
+    /// `profiles/`.
     fn merge_profiles_from(&mut self, dir: &Path) -> Result<()> {
         if !dir.is_dir() {
             return Ok(());
@@ -166,6 +173,16 @@ impl Config {
         entries.sort();
 
         for path in entries {
+            let meta = fs::metadata(&path)
+                .with_context(|| format!("stat profile '{}'", path.display()))?;
+            if meta.len() > MAX_PROFILE_FILE_BYTES {
+                anyhow::bail!(
+                    "profile '{}' is {} bytes; refusing to load (cap is {MAX_PROFILE_FILE_BYTES}). \
+                     Profiles should be small TOML fragments.",
+                    path.display(),
+                    meta.len()
+                );
+            }
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("reading profile '{}'", path.display()))?;
             let profile: Self = toml::from_str(&contents)
@@ -198,6 +215,14 @@ impl Config {
     }
 }
 
+/// Hard ceiling on an individual profile file's on-disk size. Mirrors
+/// the `MAX_PROFILE_BODY_BYTES` wire cap in `secretenv-cli::profile`;
+/// keep them coordinated. Profiles are TOML fragments — 1 MiB is
+/// orders of magnitude more than any real profile needs and keeps a
+/// compromised `profiles/` directory from OOM-ing every `secretenv`
+/// invocation on load.
+const MAX_PROFILE_FILE_BYTES: u64 = 1_048_576;
+
 fn default_config_path() -> Result<PathBuf> {
     let base = directories::BaseDirs::new()
         .ok_or_else(|| anyhow!("could not determine a home directory for XDG config lookup"))?;
@@ -210,6 +235,7 @@ fn default_config_path() -> Result<PathBuf> {
 ///
 /// # Errors
 /// Returns an error if the XDG base directories cannot be determined.
+#[must_use = "profile subcommand needs this path to derive its profiles dir"]
 pub fn default_config_path_xdg() -> Result<PathBuf> {
     default_config_path()
 }

@@ -9,11 +9,16 @@
 #   curl -sfSL https://secretenv.io/install.sh | sh
 #   curl -sfSL https://secretenv.io/install.sh | sh -s -- --version v0.1.0
 #   curl -sfSL https://secretenv.io/install.sh | sh -s -- --prefix "$HOME/.local/bin"
-#   curl -sfSL https://secretenv.io/install.sh | sh -s -- --profile engineering
 #
-# Environment overrides:
-#   SECRETENV_PROFILE_URL   Base URL for --profile fetches
-#                           (default: https://secretenv.io/profiles)
+# Distribution profiles (the team-defaults config fragments served from
+# /profiles/*.toml) are installed AFTER the binary via the in-binary
+# `secretenv profile install <name>` subcommand, which parses + validates
+# each profile as a `Config` fragment before writing anything. That path
+# refuses malformed bodies and drops profiles into `<config>/profiles/`
+# as additive overlays rather than overwriting `config.toml`. The prior
+# shell-level `--profile` flag is removed in v0.4 — the unvalidated
+# direct write was a regression against the threat model documented in
+# docs/profiles.md.
 #
 # Exit codes: 0 on success, non-zero on any error with a clear message.
 
@@ -23,23 +28,21 @@ REPO="TechAlchemistX/secretenv"
 BINARY="secretenv"
 PREFIX="/usr/local/bin"
 VERSION=""
-PROFILE=""
-PROFILE_BASE_URL="${SECRETENV_PROFILE_URL:-https://secretenv.io/profiles}"
 
 usage() {
     cat <<'EOF'
 secretenv installer
 
 Usage:
-  install.sh [--version <v>] [--prefix <path>] [--profile <name>]
+  install.sh [--version <v>] [--prefix <path>]
 
 Options:
   --version <v>     Install a specific release (default: latest, e.g. v0.1.0).
   --prefix <path>   Directory to install the binary into (default: /usr/local/bin).
-  --profile <name>  After install, fetch a distribution profile config to
-                    $XDG_CONFIG_HOME/secretenv/config.toml (skipped if the file
-                    already exists).
   --help, -h        Show this help.
+
+After install, fetch a distribution profile via:
+  secretenv profile install <name>
 EOF
 }
 
@@ -78,7 +81,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION="$2"; shift 2 ;;
         --prefix)  [ $# -ge 2 ] || die "--prefix needs a value";  PREFIX="$2";  shift 2 ;;
-        --profile) [ $# -ge 2 ] || die "--profile needs a value"; PROFILE="$2"; shift 2 ;;
+        --profile)
+            die "--profile was removed in v0.4. After install, run: secretenv profile install <name>" ;;
         --help|-h) usage; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
@@ -136,18 +140,5 @@ else
 fi
 info "installed $VERSION -> $dest"
 
-# ---- optional distribution profile -----------------------------------
-
-if [ -n "$PROFILE" ]; then
-    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/secretenv/config.toml"
-    if [ -e "$cfg" ]; then
-        info "config already exists at $cfg — skipping profile '$PROFILE' (use 'secretenv setup --force' to overwrite)"
-    else
-        info "installing profile '$PROFILE' -> $cfg"
-        mkdir -p "$(dirname "$cfg")"
-        curl -sfSL -o "$cfg" "$PROFILE_BASE_URL/$PROFILE.toml" \
-            || die "failed to download profile '$PROFILE' from $PROFILE_BASE_URL/$PROFILE.toml"
-    fi
-fi
-
 info "done. try: $BINARY --version"
+info "install a team profile: $BINARY profile install <name>"

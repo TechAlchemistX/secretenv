@@ -318,8 +318,7 @@ fn write_meta(path: &Path, meta: &ProfileMeta) -> Result<()> {
 fn now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     // Format via a tiny conversion — second precision, UTC.
     // `date -u -d @<secs>` equivalent; we build the string manually so
     // we have zero extra deps.

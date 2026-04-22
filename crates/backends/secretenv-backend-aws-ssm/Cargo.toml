@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-aws-ssm"
-description = "AWS SSM Parameter Store backend for SecretEnv"
+description = "SecretEnv — AWS SSM Parameter Store backend"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

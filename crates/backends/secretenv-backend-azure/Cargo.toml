@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-azure"
-description = "Azure Key Vault backend for SecretEnv (supports #version=<hex> URI fragment directive)"
+description = "SecretEnv — Azure Key Vault backend (supports #version=<hex> URI fragment directive)"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

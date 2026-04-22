@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-vault"
-description = "HashiCorp Vault backend for SecretEnv (KV v1/v2 via the `vault` CLI)"
+description = "SecretEnv — HashiCorp Vault backend (KV v1/v2 via the `vault` CLI)"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

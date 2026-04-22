@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-local"
-description = "Local filesystem backend for SecretEnv"
+description = "SecretEnv — local filesystem backend"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

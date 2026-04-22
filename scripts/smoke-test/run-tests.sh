@@ -44,7 +44,15 @@ SECTIONS=(
     "17|v0.4 Phase 2a registry history|yes"
     "18|v0.4 Phase 2b registry invite (offline)|no"
     "19|v0.4 Phase 1 doctor --fix + --extensive|yes"
-    "20|v0.4 Phase 3 timeout_secs + op_unsafe_set|no"
+    # Section 20 is tagged cloud=yes because the op_unsafe_set safe-default
+    # test (268-270) does `registry set --registry op-reg`, which first
+    # READS the existing registry doc from 1Password — that requires `op`
+    # to be installed AND authenticated before the safe-default refusal
+    # in backend.set() ever fires. The timeout_secs tests in this section
+    # (259-267) ARE truly offline, but splitting them off would renumber
+    # the matrix; keeping the tag conservative here is simpler. The
+    # timeout_secs code paths are also locked by unit tests in core/cli.
+    "20|v0.4 Phase 3 timeout_secs + op_unsafe_set|yes"
 )
 
 print_section_inventory() {

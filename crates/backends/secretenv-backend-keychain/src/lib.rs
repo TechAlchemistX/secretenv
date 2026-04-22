@@ -173,9 +173,9 @@ impl KeychainBackend {
     }
 
     fn keychain_basename(&self) -> &str {
-        self.keychain_path.as_deref().map_or("login.keychain-db", |p| {
-            p.rsplit('/').next().unwrap_or(p)
-        })
+        self.keychain_path
+            .as_deref()
+            .map_or("login.keychain-db", |p| p.rsplit('/').next().unwrap_or(p))
     }
 
     fn unlock_hint_target(&self) -> &str {
@@ -473,11 +473,7 @@ mod tests {
 
     use super::*;
 
-    fn backend(
-        mock_path: &Path,
-        keychain_path: Option<&str>,
-        kind: Kind,
-    ) -> KeychainBackend {
+    fn backend(mock_path: &Path, keychain_path: Option<&str>, kind: Kind) -> KeychainBackend {
         KeychainBackend {
             backend_type: "keychain",
             instance_name: "keychain-default".to_owned(),
@@ -735,16 +731,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("security")
             .on(
-                &[
-                    "add-generic-password",
-                    "-s",
-                    "stripe",
-                    "-a",
-                    "prod",
-                    "-w",
-                    "sk_live_new",
-                    "-U",
-                ],
+                &["add-generic-password", "-s", "stripe", "-a", "prod", "-w", "sk_live_new", "-U"],
                 Response::success(""),
             )
             .install(dir.path());
@@ -781,16 +768,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("security")
             .on(
-                &[
-                    "add-generic-password",
-                    "-s",
-                    "stripe",
-                    "-a",
-                    "prod",
-                    "-w",
-                    "v",
-                    "-U",
-                ],
+                &["add-generic-password", "-s", "stripe", "-a", "prod", "-w", "v", "-U"],
                 Response::failure(1, "security: some write failure\n"),
             )
             .install(dir.path());
@@ -809,10 +787,7 @@ mod tests {
     async fn delete_happy_path_zero_exit() {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("security")
-            .on(
-                &["delete-generic-password", "-s", "stripe", "-a", "prod"],
-                Response::success(""),
-            )
+            .on(&["delete-generic-password", "-s", "stripe", "-a", "prod"], Response::success(""))
             .install(dir.path());
         let b = backend(&mock, None, Kind::GenericPassword);
         let uri = BackendUri::parse("keychain-default://stripe/prod").unwrap();

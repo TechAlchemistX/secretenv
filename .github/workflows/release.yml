@@ -176,6 +176,7 @@ jobs:
           cargo publish -p secretenv-backend-aws-secrets --locked
           cargo publish -p secretenv-backend-gcp --locked
           cargo publish -p secretenv-backend-azure --locked
+          cargo publish -p secretenv-backend-keychain --locked
 
       - name: Wait for crates.io to index backend crates
         run: sleep 45

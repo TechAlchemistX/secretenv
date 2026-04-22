@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! The [`Backend`] and [`BackendFactory`] traits — the two interfaces
 //! every plugin implements.
 //!

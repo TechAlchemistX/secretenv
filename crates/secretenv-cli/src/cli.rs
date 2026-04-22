@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! `secretenv` CLI — clap definitions and the per-subcommand dispatch.
 //!
 //! Keep each handler short and focused: the heavy lifting lives in
@@ -996,10 +999,10 @@ async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path
                 let outcome = crate::profile::update_one(n, &opts).await?;
                 match outcome {
                     crate::profile::UpdateOutcome::UpToDate => {
-                        println!("Profile '{n}' is already up to date.");
+                        eprintln!("Profile '{n}' is already up to date.");
                     }
                     crate::profile::UpdateOutcome::Refreshed => {
-                        println!("Profile '{n}' refreshed.");
+                        eprintln!("Profile '{n}' refreshed.");
                     }
                 }
                 Ok(())

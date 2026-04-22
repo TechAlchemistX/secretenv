@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! End-to-end integration tests — Phase 12.
 //!
 //! These tests drive the full `secretenv` binary through every

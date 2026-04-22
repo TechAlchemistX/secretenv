@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Backend health status reported by the `doctor` command.
 //!
 //! Every backend reports its Level 1 + Level 2 health via a

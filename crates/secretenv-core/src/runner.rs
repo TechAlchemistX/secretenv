@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! The runner — Phase 8's final piece of the resolution flow.
 //!
 //! Given a slice of [`ResolvedSecret`]s from

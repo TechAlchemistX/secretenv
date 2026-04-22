@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Azure Key Vault backend for SecretEnv.
 //!
 //! Wraps the `az` CLI — **never** an Azure SDK. Every auth mode

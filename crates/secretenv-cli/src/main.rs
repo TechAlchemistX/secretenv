@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! SecretEnv CLI entry point.
 //!
 //! Bootstrapping only — parse args, init tracing, wire the backend

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! `secretenv doctor` — health checks for every configured backend.
 //!
 //! - **Default (Level 1+2):** is the native CLI installed and is the

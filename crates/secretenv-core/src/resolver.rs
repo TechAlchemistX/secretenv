@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Registry resolution and manifest alias resolution.
 //!
 //! Two entry points:

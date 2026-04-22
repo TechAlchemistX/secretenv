@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! HashiCorp Vault backend for SecretEnv.
 //!
 //! Wraps the `vault` CLI — **never** a Vault HTTP SDK. This keeps

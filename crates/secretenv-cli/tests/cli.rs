@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Integration tests that invoke the `secretenv` binary as a subprocess.
 //!
 //! Each test builds a self-contained tempdir with a `config.toml`, a
@@ -915,7 +918,9 @@ fn profile_install_from_file_url_and_list_roundtrip() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Installed profile 'team-defaults'"));
+        // Status now lands on stderr — symmetric with `registry set/unset`,
+        // keeps stdout clean for callers piping `profile install` output.
+        .stderr(predicate::str::contains("Installed profile 'team-defaults'"));
 
     // Files land in the profiles/ dir next to config.toml.
     let profile_file = dir.path().join("profiles/team-defaults.toml");
@@ -943,7 +948,7 @@ fn profile_install_from_file_url_and_list_roundtrip() {
         .args(["--config", config.to_str().unwrap(), "profile", "uninstall", "team-defaults"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Uninstalled profile 'team-defaults'"));
+        .stderr(predicate::str::contains("Uninstalled profile 'team-defaults'"));
     assert!(!profile_file.exists());
     assert!(!meta_file.exists());
 }
@@ -1018,4 +1023,32 @@ fn profile_uninstall_of_missing_profile_errors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not installed"));
+}
+
+#[test]
+fn profile_help_lists_subcommands_and_flags() {
+    // Lock the user-visible profile surface — symmetric with the
+    // existing `registry_invite_help_lists_invitee_flag` and
+    // `doctor_help_lists_fix_and_extensive_flags` tests. Catches
+    // accidental flag renames or subcommand removals before they ship.
+    secretenv()
+        .args(["profile", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("install"))
+        .stdout(predicate::str::contains("list"))
+        .stdout(predicate::str::contains("update"))
+        .stdout(predicate::str::contains("uninstall"));
+
+    secretenv()
+        .args(["profile", "install", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--url"));
+
+    secretenv()
+        .args(["profile", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
 }

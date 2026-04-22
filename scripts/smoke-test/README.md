@@ -1,8 +1,9 @@
 # SecretEnv smoke-test harness
 
 Live-backend integration smoke for `secretenv`. Provisions cloud-side fixtures
-across all 7 supported backends, runs a 336-assertion validation matrix
-against a release binary, then tears down what it created.
+across all 7 cloud/team backends plus a self-contained test keychain on
+macOS hosts, runs a 347-assertion validation matrix against a release
+binary, then tears down what it created.
 
 This is the gate run before every tagged release.
 
@@ -119,6 +120,7 @@ release tag.
 | 18 | no     | v0.4 Phase 2b — `registry invite` (offline)               |
 | 19 | yes    | v0.4 Phase 1 — `doctor --fix` + `--extensive`             |
 | 20 | yes    | v0.4 Phase 3 — `timeout_secs` (offline) + `op_unsafe_set` (needs `op`) |
+| 21 | yes    | v0.5 — macOS Keychain backend (macOS hosts only; SKIP on Linux)         |
 
 Run `./run-tests.sh --list-sections` for the live inventory.
 

@@ -55,4 +55,14 @@ run "az keyvault secret delete --vault-name '$AZURE_VAULT' --name secretenv-vali
 # run "az keyvault secret purge --vault-name '$AZURE_VAULT' --name secretenv-validation-registry"
 # run "az keyvault secret purge --vault-name '$AZURE_VAULT' --name secretenv-validation-azure-secret"
 
+# macOS Keychain (v0.5) — delete the self-contained test keychain.
+# Skipped on non-macOS. `security delete-keychain` removes both the
+# list entry and the underlying file.
+if [[ "$OSTYPE" == darwin* ]]; then
+    TEST_KC="$RUNTIME_DIR/test.keychain-db"
+    if [ -f "$TEST_KC" ]; then
+        run "security delete-keychain '$TEST_KC'"
+    fi
+fi
+
 say "=== TEARDOWN_DONE ==="

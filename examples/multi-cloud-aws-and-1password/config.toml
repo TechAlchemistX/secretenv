@@ -1,0 +1,30 @@
+# examples/multi-cloud-aws-and-1password/config.toml
+# Real-team layout: infra in AWS SSM, human-managed secrets in 1Password.
+
+[registries.default]
+sources = ["1password-work://Engineering/SecretEnv Registry/notesPlain"]
+
+# ── AWS: one type, three named instances for three accounts ──
+[backends.aws-ssm-platform]
+type        = "aws-ssm"
+aws_profile = "platform"
+aws_region  = "us-east-2"
+
+[backends.aws-ssm-dev]
+type        = "aws-ssm"
+aws_profile = "dev"
+aws_region  = "us-east-1"
+
+[backends.aws-ssm-prod]
+type        = "aws-ssm"
+aws_profile = "prod"
+aws_region  = "us-east-1"
+
+# ── 1Password: work account for team secrets + personal for dotfiles ──
+[backends."1password-work"]
+type       = "1password"
+op_account = "company.1password.com"
+
+[backends."1password-personal"]
+type       = "1password"
+op_account = "personal.1password.com"

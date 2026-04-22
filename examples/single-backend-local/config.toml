@@ -1,0 +1,11 @@
+# examples/single-backend-local/config.toml
+# Simplest SecretEnv setup: one local backend, one registry pointing at
+# a local TOML file. Paths are RELATIVE to this example directory when
+# invoked with `--config examples/single-backend-local/config.toml`;
+# substitute absolute paths when installing into ~/.config/secretenv/.
+
+[registries.default]
+sources = ["local-main://./local-registry/registry.toml"]
+
+[backends.local-main]
+type = "local"

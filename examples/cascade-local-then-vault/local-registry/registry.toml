@@ -1,0 +1,8 @@
+# Personal dev overrides. In real use: .gitignore this, or store it
+# under ~/.config/secretenv-overrides/ and reference it via absolute
+# path in config.toml.
+#
+# Each entry here SHADOWS the team Vault registry for that alias.
+
+db-url    = "local-main://./local-secrets/db-url.txt"
+redis-url = "local-main://./local-secrets/redis-url.txt"

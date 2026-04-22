@@ -1,0 +1,15 @@
+# examples/single-backend-keychain/config.toml
+# macOS only. Keychain holds the secret values; a local TOML file holds
+# the alias registry (Keychain can't host a registry because list() is
+# unsupported — see docs/backends/keychain.md).
+
+[registries.default]
+sources = ["local-main://./local-registry/registry.toml"]
+
+[backends.local-main]
+type = "local"
+
+[backends.keychain-default]
+type = "keychain"
+# kind = "generic-password"    # default; uncomment to override to "internet-password"
+# keychain_path = "~/Library/Keychains/login.keychain-db"   # optional; default is login

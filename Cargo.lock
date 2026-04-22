@@ -656,6 +656,7 @@ dependencies = [
  "secretenv-backend-aws-ssm",
  "secretenv-backend-azure",
  "secretenv-backend-gcp",
+ "secretenv-backend-keychain",
  "secretenv-backend-local",
  "secretenv-backend-vault",
  "secretenv-core",
@@ -744,6 +745,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "secretenv-backend-keychain"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "secretenv-testing",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

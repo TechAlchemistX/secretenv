@@ -7,13 +7,19 @@
 //! Shared between `main.rs` (startup wiring) and `setup.rs` (post-write
 //! verification with the freshly-written config). Factored out so
 //! the factory-registration list is the single source of truth.
+//!
+//! **Keychain registration is unconditional across platforms.** The
+//! `KeychainFactory` compiles on every target; it bails at
+//! `create()` time on non-macOS with a clear error. This keeps the
+//! workspace buildable on Linux / Windows CI without cfg-gating the
+//! registration list.
 
 use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
 /// Register every compiled-in backend factory (`local`, `aws-ssm`,
-/// `1password`, `vault`, `aws-secrets`, `gcp`, `azure`) and
-/// instantiate the backends declared in `config`.
+/// `1password`, `vault`, `aws-secrets`, `gcp`, `azure`, `keychain`)
+/// and instantiate the backends declared in `config`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a
@@ -28,6 +34,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_aws_secrets::AwsSecretsFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_gcp::GcpFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_azure::AzureFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_keychain::KeychainFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

@@ -53,6 +53,13 @@ SECTIONS=(
     # the matrix; keeping the tag conservative here is simpler. The
     # timeout_secs code paths are also locked by unit tests in core/cli.
     "20|v0.4 Phase 3 timeout_secs + op_unsafe_set|yes"
+    # Section 21 is tagged cloud=yes because it requires macOS-specific
+    # state: a test keychain at $RUNTIME_DIR/test.keychain-db seeded by
+    # provision.sh. --local-only (the CI gate on Ubuntu runners) skips
+    # this section cleanly. Unit tests in the crate cover the Keychain
+    # code paths on every platform via strict-mock, so Linux coverage
+    # is not lost.
+    "21|v0.5 macOS Keychain backend|yes"
 )
 
 print_section_inventory() {
@@ -1249,6 +1256,86 @@ grep -qE 'argv|cmdline' "$RUNS/244-v04-op-refuse.log" \
 
 # 20f — clean up the throwaway alias if test 268 actually wrote.
 "$BIN" --config "$CFG" registry unset throwaway-op-set --registry op-reg >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------
+# 21 — v0.5: macOS Keychain backend
+# ---------------------------------------------------------------
+section_begin 21 "v0.5 macOS Keychain backend"
+# Fully self-contained: a dedicated tempdir config + mini-registry
+# point at the test keychain provision.sh created. Does NOT touch the
+# cross-backend shared fixtures, so adding this section doesn't affect
+# sections 3-8 (which list/get from every registry source).
+#
+# On non-macOS hosts the section short-circuits with a SKIP record —
+# keeps the matrix count consistent across platforms even when the
+# full --sections 21 selector is used.
+
+if [[ "$OSTYPE" != darwin* ]]; then
+    record "271 v0.5 keychain section skipped on non-macOS" "SKIP" "host is $OSTYPE"
+else
+    V05_KCREG="$RUNS/270-kc-registry.toml"
+    cat > "$V05_KCREG" <<EOF
+kc_secret = "keychain-test:///secretenv-v05-test/account1"
+EOF
+
+    V05_KCCFG="$RUNS/270-kc-config.toml"
+    cat > "$V05_KCCFG" <<EOF
+[registries.default]
+sources = ["local-main://${V05_KCREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.keychain-test]
+type = "keychain"
+keychain_path = "${RUNTIME_DIR}/test.keychain-db"
+EOF
+
+    # Stage a mini project manifest so `run` exercises the end-to-end
+    # alias → keychain → child-env injection path. run_test cd's into
+    # $PROJ by default, so we wrap the invocation in a subshell that
+    # cd's into V05_KCPROJ instead.
+    V05_KCPROJ="$RUNS/270-kc-project"
+    mkdir -p "$V05_KCPROJ"
+    cat > "$V05_KCPROJ/secretenv.toml" <<EOF
+[secrets]
+KC_SECRET = { from = "secretenv://kc_secret" }
+EOF
+
+    # 21a — doctor sees the keychain backend at the configured path.
+    run_test "271 v0.5 keychain doctor sees backend" 0 "$RUNS/271-v05-kc-doctor.log" \
+      "$BIN" --config "$V05_KCCFG" doctor
+    assert_contains "272 keychain doctor lists instance"  "$RUNS/271-v05-kc-doctor.log" 'keychain-test'
+    assert_contains "273 keychain doctor shows identity"  "$RUNS/271-v05-kc-doctor.log" 'keychain=test.keychain-db'
+
+    # 21b — round-trip get: alias in local registry resolves to keychain URI,
+    # backend.get() runs `security find-generic-password -w ...` and returns
+    # the seeded value.
+    run_test "274 v0.5 keychain get round-trip" 0 "$RUNS/274-v05-kc-get.log" \
+      "$BIN" --config "$V05_KCCFG" get kc_secret --yes
+    assert_contains "275 keychain round-trip returns seeded value" "$RUNS/274-v05-kc-get.log" 'kc_ring_77777'
+
+    # 21c — end-to-end `run` injects the keychain-backed alias as an env var.
+    # `secretenv run` discovers secretenv.toml in CWD, so cd into the mini
+    # project dir via a bash -c wrapper (overrides run_test's default
+    # cd $PROJ).
+    run_test "276 v0.5 keychain run injects env var" 0 "$RUNS/276-v05-kc-run.log" \
+      bash -c "cd '$V05_KCPROJ' && '$BIN' --config '$V05_KCCFG' run -- sh -c 'echo kc=\$KC_SECRET'"
+    assert_contains "277 keychain run renders KC_SECRET" "$RUNS/276-v05-kc-run.log" 'kc=kc_ring_77777'
+
+    # 21d — list is unsupported. Using --registry <direct URI> routes the
+    # command straight into backend.list(), bypassing the cascade.
+    run_test "278 v0.5 keychain list bails unsupported" 1 "$RUNS/278-v05-kc-list.log" \
+      "$BIN" --config "$V05_KCCFG" registry list --registry 'keychain-test:///unused/path'
+    assert_contains "279 keychain list error names 'not supported'" "$RUNS/278-v05-kc-list.log" 'list is not supported'
+
+    # 21e — history falls through to the trait default. The alias resolves
+    # to a keychain URI, then backend.history() returns the default
+    # "not implemented for backend type 'keychain'" error.
+    run_test "280 v0.5 keychain history bails unsupported" 1 "$RUNS/280-v05-kc-history.log" \
+      "$BIN" --config "$V05_KCCFG" registry history kc_secret
+    assert_contains "281 keychain history names backend type" "$RUNS/280-v05-kc-history.log" 'keychain'
+fi
 
 # ---------------------------------------------------------------
 # Summary

@@ -22,8 +22,10 @@
 //! # Config fields
 //!
 //! - `keychain_path` (optional) — absolute path to the keychain file.
-//!   Default: user's login keychain. Passed as `-k <path>` to every
-//!   `security` invocation.
+//!   Default: user's login keychain. Appended as a trailing positional
+//!   argument to every `security` invocation (the `-k` flag is NOT
+//!   accepted by these subcommands — the manpage synopses list the
+//!   keychain as a bare positional).
 //! - `kind` (optional) — `"generic-password"` (default) or
 //!   `"internet-password"`. Selects which `security` subcommand
 //!   family wraps `get` / `set` / `delete`.
@@ -163,12 +165,19 @@ impl KeychainBackend {
         cmd
     }
 
-    /// Append `-k <keychain_path>` if one is configured. Call AFTER
-    /// the subcommand-specific args so the flag lands at the tail of
-    /// the argv — matching the strict-mock patterns and spec examples.
+    /// Append the keychain path as a trailing POSITIONAL argument if
+    /// one is configured. Every `security` subcommand this backend
+    /// uses — `show-keychain-info`, `find-generic-password`,
+    /// `find-internet-password`, `add-generic-password`,
+    /// `add-internet-password`, `delete-generic-password`,
+    /// `delete-internet-password` — accepts the keychain as a bare
+    /// positional at the end (e.g. `[keychain]` in the man-page
+    /// synopsis). The `-k` flag is NOT accepted by these subcommands —
+    /// passing `-k` produces `illegal option -- k`. Call AFTER the
+    /// other args so the positional lands last.
     fn append_keychain(&self, cmd: &mut Command) {
         if let Some(p) = &self.keychain_path {
-            cmd.args(["-k", p]);
+            cmd.arg(p);
         }
     }
 
@@ -642,12 +651,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_passes_k_flag_when_keychain_path_configured() {
+    async fn get_appends_keychain_path_as_positional_when_configured() {
         let dir = TempDir::new().unwrap();
         let path = "/tmp/custom.keychain-db";
         let mock = StrictMock::new("security")
             .on(
-                &["find-generic-password", "-s", "stripe", "-a", "prod", "-w", "-k", path],
+                &["find-generic-password", "-s", "stripe", "-a", "prod", "-w", path],
                 Response::success("value\n"),
             )
             .install(dir.path());
@@ -891,7 +900,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = "/Users/x/Library/Keychains/team.keychain-db";
         let mock = StrictMock::new("security")
-            .on(&["show-keychain-info", "-k", path], Response::success(""))
+            .on(&["show-keychain-info", path], Response::success(""))
             .install(dir.path());
         let b = backend(&mock, Some(path), Kind::GenericPassword);
         match b.check().await {

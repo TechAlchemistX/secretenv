@@ -161,6 +161,32 @@ printf '%s' "sk_az_66666" | az keyvault secret set \
   -o none 2>&1 | tee -a "$LOG"
 printf 'exit=%d\n' "${PIPESTATUS[1]}" | tee -a "$LOG"
 
+# ---------- macOS Keychain (v0.5) ----------
+# Self-contained test keychain at $RUNTIME_DIR/test.keychain-db — not
+# the user's login keychain. Skipped on non-macOS; Section 21 records
+# a SKIP on non-Darwin hosts.
+if [[ "$OSTYPE" == darwin* ]]; then
+    TEST_KC="$RUNTIME_DIR/test.keychain-db"
+    say "[Keychain] test keychain at $TEST_KC"
+    # Idempotent: wipe any previous run's file. `security delete-keychain`
+    # removes both the list entry and the file, then we recreate fresh.
+    if [ -f "$TEST_KC" ]; then
+        run "security delete-keychain '$TEST_KC'"
+    fi
+    # Non-interactive password + long auto-lock window (10h) so the
+    # matrix can span multi-minute runs without hitting the default
+    # 5-minute timeout and relocking mid-run.
+    run "security create-keychain -p 'secretenv-smoke' '$TEST_KC'"
+    run "security set-keychain-settings -lut 36000 '$TEST_KC'"
+    run "security unlock-keychain -p 'secretenv-smoke' '$TEST_KC'"
+    # Keychain path is a trailing POSITIONAL arg for security
+    # subcommands — `-k` is not accepted. `-U` before the positional
+    # so upsert semantics apply to the preceding option list.
+    run "security add-generic-password -s secretenv-v05-test -a account1 -w 'kc_ring_77777' -U '$TEST_KC'"
+else
+    say "[Keychain] skipped (non-macOS host: $OSTYPE)"
+fi
+
 # ---------- Verification ----------
 say "=== Verification read-back ==="
 run "aws ssm get-parameter --name /secretenv-validation/registry --with-decryption --region '$AWS_REGION' --query Parameter.Value --output text | head -c 200; echo"

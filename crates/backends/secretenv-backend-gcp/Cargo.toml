@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-gcp"
-description = "Google Cloud Secret Manager backend for SecretEnv (supports #version=<n> URI fragment directive)"
+description = "SecretEnv — Google Cloud Secret Manager backend (supports #version=<n> URI fragment directive)"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

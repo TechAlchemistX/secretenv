@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-backend-1password"
-description = "1Password backend for SecretEnv"
+description = "SecretEnv — 1Password backend"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

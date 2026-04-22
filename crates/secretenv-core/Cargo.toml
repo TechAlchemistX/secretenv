@@ -1,6 +1,6 @@
 [package]
 name        = "secretenv-core"
-description = "Core types, traits, and plugin registry for SecretEnv"
+description = "SecretEnv — core types, traits, and plugin registry"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Build a [`BackendRegistry`] pre-populated with every shipped backend
 //! factory + instances loaded from `config`.
 //!

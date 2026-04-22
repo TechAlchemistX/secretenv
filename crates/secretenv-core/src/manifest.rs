@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! The `secretenv.toml` project manifest.
 //!
 //! `secretenv.toml` is the *only* file a project commits to declare

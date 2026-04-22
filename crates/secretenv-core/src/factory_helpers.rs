@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Shared config-extraction helpers for backend factories.
 //!
 //! v0.2 had `required_string` / `optional_string` duplicated verbatim

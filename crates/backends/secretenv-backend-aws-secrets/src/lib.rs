@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! AWS Secrets Manager backend for SecretEnv.
 //!
 //! Wraps the `aws` CLI (v2 recommended) — **never** the AWS SDK.

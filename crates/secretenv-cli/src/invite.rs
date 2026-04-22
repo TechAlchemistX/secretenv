@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! `secretenv registry invite` — onboarding output for sharing a
 //! registry with a new collaborator.
 //!

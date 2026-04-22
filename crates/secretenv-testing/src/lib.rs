@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Shared test harness for SecretEnv backend crates.
 //!
 //! Two mock-CLI building blocks ship today:

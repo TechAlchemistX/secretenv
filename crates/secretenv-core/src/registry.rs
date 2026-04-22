@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! The [`BackendRegistry`] — the process-wide dispatcher that maps
 //! instance names (URI schemes) to live [`Backend`] instances.
 //!

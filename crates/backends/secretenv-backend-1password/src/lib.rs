@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! 1Password backend for SecretEnv.
 //!
 //! Wraps the `op` CLI — never 1Password's Connect Server SDK. The CLI

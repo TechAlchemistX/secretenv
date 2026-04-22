@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! `secretenv setup <registry-uri>` — bootstrap a fresh `config.toml`
 //! pointing at a given registry, with the right backend block wired up
 //! based on the URI scheme.

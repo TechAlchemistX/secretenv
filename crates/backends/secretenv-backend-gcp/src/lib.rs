@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Google Cloud Secret Manager backend for SecretEnv.
 //!
 //! Wraps the `gcloud` CLI — **never** a GCP SDK. Every credential

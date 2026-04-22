@@ -118,7 +118,7 @@ release tag.
 | 17 | yes    | v0.4 Phase 2a — `registry history`                        |
 | 18 | no     | v0.4 Phase 2b — `registry invite` (offline)               |
 | 19 | yes    | v0.4 Phase 1 — `doctor --fix` + `--extensive`             |
-| 20 | no     | v0.4 Phase 3 — `timeout_secs` + `op_unsafe_set`           |
+| 20 | yes    | v0.4 Phase 3 — `timeout_secs` (offline) + `op_unsafe_set` (needs `op`) |
 
 Run `./run-tests.sh --list-sections` for the live inventory.
 

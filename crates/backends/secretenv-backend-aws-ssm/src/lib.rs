@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! AWS SSM Parameter Store backend for SecretEnv.
 //!
 //! Wraps the `aws` CLI — **never** the AWS SDK. This keeps credentials

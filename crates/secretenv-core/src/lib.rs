@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Core types, traits, and plugin registry for SecretEnv.
 //!
 //! This crate defines the abstractions every backend implements: the

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Per-operation timeout wrappers for backend calls.
 //!
 //! Every backend op (`get`, `list`, `check`, `set`, `delete`) shells out

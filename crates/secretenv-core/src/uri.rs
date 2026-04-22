@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! URI parsing for backend references.
 //!
 //! A backend URI is the string form `<scheme>://<path>[#<fragment>]` used

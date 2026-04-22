@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Distribution profile system — `secretenv profile {install,list,update,uninstall}`.
 //!
 //! A "profile" is a TOML document hosted over HTTPS (default base URL
@@ -127,7 +130,9 @@ pub async fn install(name: &str, url: Option<&str>, opts: &ProfileOpts) -> Resul
         &ProfileMeta { source_url: resolved_url, etag, installed_at: now_rfc3339() },
     )?;
 
-    println!("Installed profile '{name}' → {}", profile_path.display());
+    // Status to stderr — symmetric with `registry set/unset` and keeps
+    // stdout clean for callers that pipe profile install into a script.
+    eprintln!("Installed profile '{name}' → {}", profile_path.display());
     Ok(())
 }
 
@@ -239,7 +244,7 @@ pub fn uninstall(name: &str, opts: &ProfileOpts) -> Result<()> {
         fs::remove_file(&meta_path)
             .with_context(|| format!("removing '{}'", meta_path.display()))?;
     }
-    println!("Uninstalled profile '{name}'");
+    eprintln!("Uninstalled profile '{name}'");
     Ok(())
 }
 

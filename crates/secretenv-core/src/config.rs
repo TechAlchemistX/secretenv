@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Configuration types for `~/.config/secretenv/config.toml`.
 //!
 //! The machine-level config has two tables:

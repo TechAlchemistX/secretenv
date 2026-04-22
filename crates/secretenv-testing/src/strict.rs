@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Strict-mode mock CLI harness (v0.2.1+ / v0.2.2 `install_mock_strict`).
 //!
 //! The existing [`super::install_mock`] API takes a raw POSIX shell body and

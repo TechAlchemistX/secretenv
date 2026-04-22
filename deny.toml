@@ -9,12 +9,13 @@ ignore  = []
 [licenses]
 version              = 2
 confidence-threshold = 0.93
+# Third-party permissive / weak-copyleft licenses we accept anywhere
+# in the dep graph. Strong copyleft (AGPL, GPL, etc.) is intentionally
+# omitted from this allowlist — first-party AGPL is admitted only via
+# the per-crate exceptions below, so any new transitive AGPL dep
+# surfaces as a deny error and forces an explicit review before it
+# lands.
 allow = [
-    # First-party (the workspace crates themselves ship under AGPL).
-    "AGPL-3.0-only",
-    # Third-party permissive/weak-copyleft deps. Kept intentionally
-    # curated — copy-left-strong licenses like GPL are NOT listed;
-    # any transitive dep that newly introduces them must be reviewed.
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -26,6 +27,24 @@ allow = [
     "CC0-1.0",
     "Zlib",
     "MPL-2.0",
+]
+
+# Per-crate AGPL allowance — the workspace's own crates ship under
+# AGPL-3.0-only and need an explicit exception now that the global
+# allowlist no longer admits AGPL globally. Each first-party crate is
+# listed by its published name; adding a new workspace crate requires
+# one line here, which mirrors the explicit-review intent.
+exceptions = [
+    { allow = ["AGPL-3.0-only"], crate = "secretenv" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-core" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-testing" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-local" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-aws-ssm" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-aws-secrets" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-1password" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-vault" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-gcp" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-azure" },
 ]
 
 [bans]

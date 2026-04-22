@@ -130,8 +130,8 @@ For high-security environments:
 
 ```bash
 # Verify checksum before installing
-curl -sfS https://secretenv.dev/secretenv-linux-amd64.tar.gz -o secretenv.tar.gz
-curl -sfS https://secretenv.dev/checksums.txt | grep secretenv-linux-amd64 | sha256sum -c
+curl -sfS https://secretenv.io/secretenv-linux-amd64.tar.gz -o secretenv.tar.gz
+curl -sfS https://secretenv.io/checksums.txt | grep secretenv-linux-amd64 | sha256sum -c
 
 # Or build from source
 cargo install secretenv
@@ -141,4 +141,4 @@ cargo install secretenv
 
 ## Responsible Disclosure
 
-Security vulnerabilities can be reported to security@secretenv.dev. Please do not open public GitHub issues for security vulnerabilities.
+Security vulnerabilities can be reported to security@secretenv.io. Please do not open public GitHub issues for security vulnerabilities.

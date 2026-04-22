@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities privately to **security@secretenv.dev**. Do not open public GitHub issues for security vulnerabilities.
+Please report security vulnerabilities privately to **security@secretenv.io**. Do not open public GitHub issues for security vulnerabilities.
 
 We aim to acknowledge reports within 48 hours and provide an initial assessment within 5 business days. Researchers who follow responsible disclosure will be credited in release notes.
 

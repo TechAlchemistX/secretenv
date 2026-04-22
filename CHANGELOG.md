@@ -10,7 +10,7 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [0.4.0-alpha.0]
 
-**Headline:** v0.4 preflight. Workspace version bumped to `0.4.0-alpha.0`; build-plan at [`kb/wiki/build-plan-v0.4.md`](../kb/wiki/build-plan-v0.4.md). Functionality-only release — no new backends. Scope: `doctor --fix/--extensive`, `registry history/invite`, distribution profile system served from `secretenv.dev`, per-instance `timeout_secs`, 1Password `set` stdin-path version-gating polish, harness promotion to `scripts/smoke-test/`, Node.js 24 bump, `deny.toml` AGPL exception tightening, and a decision on publishing `secretenv-testing`.
+**Headline:** v0.4 preflight. Workspace version bumped to `0.4.0-alpha.0`; build-plan at [`kb/wiki/build-plan-v0.4.md`](../kb/wiki/build-plan-v0.4.md). Functionality-only release — no new backends. Scope: `doctor --fix/--extensive`, `registry history/invite`, distribution profile system served from `secretenv.io`, per-instance `timeout_secs`, 1Password `set` stdin-path version-gating polish, harness promotion to `scripts/smoke-test/`, Node.js 24 bump, `deny.toml` AGPL exception tightening, and a decision on publishing `secretenv-testing`.
 
 ### Added
 
@@ -496,7 +496,7 @@ First public release of SecretEnv.
 - `secretenv setup <registry-uri>` bootstrap with `--force`, `--skip-doctor`,
   and backend-specific flags (`--region`, `--profile`, `--account`).
 - `install.sh` POSIX installer with `--profile <name>` distribution-profile
-  support (downloads config from `https://secretenv.dev/profiles/<name>.toml`
+  support (downloads config from `https://secretenv.io/profiles/<name>.toml`
   by default; override via `SECRETENV_PROFILE_URL`).
 - Homebrew tap at `TechAlchemistX/homebrew-secretenv`.
 - Release workflow builds and publishes for `x86_64-unknown-linux-gnu`,

@@ -876,3 +876,146 @@ fn completions_rejects_unknown_shell() {
         .code(2)
         .stderr(predicate::str::contains("invalid value"));
 }
+
+// ---- profile subcommand -------------------------------------------------
+
+#[test]
+fn profile_install_from_file_url_and_list_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_file(
+        &config,
+        "[backends.local]\n\
+         type = \"local\"\n",
+    );
+
+    // The "remote" profile source is a tempdir file served via file://.
+    let remote = dir.path().join("remote.toml");
+    write_file(
+        &remote,
+        "[backends.team-ssm]\n\
+         type = \"aws-ssm\"\n\
+         aws_region = \"us-east-1\"\n\
+         \n\
+         [registries.team]\n\
+         sources = [\"team-ssm:///teams/acme/registry\"]\n",
+    );
+    let url = format!("file://{}", remote.to_str().unwrap());
+
+    // Install.
+    secretenv()
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "profile",
+            "install",
+            "team-defaults",
+            "--url",
+            &url,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed profile 'team-defaults'"));
+
+    // Files land in the profiles/ dir next to config.toml.
+    let profile_file = dir.path().join("profiles/team-defaults.toml");
+    let meta_file = dir.path().join("profiles/team-defaults.meta.json");
+    assert!(profile_file.is_file(), "profile file should exist");
+    assert!(meta_file.is_file(), "meta sidecar should exist");
+
+    // List shows the installed profile.
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("team-defaults"))
+        .stdout(predicate::str::contains(&url));
+
+    // The profile now auto-merges at load time — doctor should see the
+    // team-ssm backend even though config.toml only declares `local`.
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "doctor"])
+        .assert()
+        .stdout(predicate::str::contains("team-ssm"));
+
+    // Uninstall removes both files.
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "uninstall", "team-defaults"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Uninstalled profile 'team-defaults'"));
+    assert!(!profile_file.exists());
+    assert!(!meta_file.exists());
+}
+
+#[test]
+fn profile_list_json_is_parseable() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_file(&config, "");
+
+    // Install via file:// so no network.
+    let remote = dir.path().join("remote.toml");
+    write_file(&remote, "[backends.x]\ntype = \"local\"\n");
+    let url = format!("file://{}", remote.to_str().unwrap());
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "install", "demo", "--url", &url])
+        .assert()
+        .success();
+
+    let out = secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).expect("JSON should parse");
+    assert!(v.is_array(), "list --json should emit a JSON array");
+    assert_eq!(v[0]["name"], "demo");
+}
+
+#[test]
+fn profile_install_rejects_path_traversal_name() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_file(&config, "");
+
+    // `../evil` is rejected by the stricter ASCII allowlist — specifically
+    // at the leading-char check (`.` is not alphanumeric). The error
+    // surfaces the allowed character class so users can see how to fix it.
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "install", "../evil"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("allowed chars"));
+}
+
+#[test]
+fn profile_install_rejects_windows_reserved_name() {
+    // Post-audit hardening: Windows device names must be rejected
+    // case-insensitively so NTFS users don't write to `CON` the device.
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_file(&config, "");
+
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "install", "CON"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved Windows device name"));
+}
+
+#[test]
+fn profile_uninstall_of_missing_profile_errors() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_file(&config, "");
+
+    secretenv()
+        .args(["--config", config.to_str().unwrap(), "profile", "uninstall", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not installed"));
+}

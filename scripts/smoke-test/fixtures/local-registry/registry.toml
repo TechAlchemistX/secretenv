@@ -1,0 +1,7 @@
+api_key = "aws-secrets-prod:///secretenv-validation/api-key"
+azure_secret = "azure-prod:///secretenv-validation-azure-secret"
+db_url = "aws-ssm-prod:///secretenv-validation/db-url"
+gcp_secret = "gcp-prod:///secretenv_validation_gcp_secret"
+oauth_token = "vault-dev:///secret/secretenv-validation/oauth-token"
+op_pat = "1password-private://Private/secretenv-validation-token/password"
+stripe_key = "local-main://@@RUNTIME_DIR@@/local-secrets/stripe-key.txt"

@@ -1,0 +1,57 @@
+# SecretEnv smoke-test config template.
+# Seeded into $RUNTIME_DIR/config/secretenv/config.toml by provision.sh.
+# Sentinels (@@RUNTIME_DIR@@, @@GCP_PROJECT@@, @@AZURE_VAULT@@) are substituted
+# on seed. Do NOT use this as a production config template.
+
+[registries.default]
+sources = ["local-main://@@RUNTIME_DIR@@/local-registry/registry.toml"]
+
+[registries.aws-ssm-reg]
+sources = ["aws-ssm-prod:///secretenv-validation/registry"]
+
+[registries.aws-secrets-reg]
+sources = ["aws-secrets-prod:///secretenv-validation/registry"]
+
+[registries.op-reg]
+sources = ["1password-private://Private/secretenv-validation-registry/notesPlain"]
+
+[registries.vault-reg]
+sources = ["vault-dev:///secret/secretenv-validation/registry"]
+
+[registries.gcp-reg]
+sources = ["gcp-prod:///secretenv_validation_registry"]
+
+[registries.azure-reg]
+sources = ["azure-prod:///secretenv-validation-registry"]
+
+[registries.cascade-test]
+sources = [
+    "local-main://@@RUNTIME_DIR@@/local-registry/registry.toml",
+    "aws-ssm-prod:///secretenv-validation/registry",
+]
+
+[backends.local-main]
+type = "local"
+
+[backends.aws-ssm-prod]
+type = "aws-ssm"
+aws_region = "us-east-1"
+
+[backends.aws-secrets-prod]
+type = "aws-secrets"
+aws_region = "us-east-1"
+
+[backends.1password-private]
+type = "1password"
+
+[backends.vault-dev]
+type = "vault"
+vault_address = "http://127.0.0.1:8200"
+
+[backends.gcp-prod]
+type = "gcp"
+gcp_project = "@@GCP_PROJECT@@"
+
+[backends.azure-prod]
+type = "azure"
+azure_vault_url = "https://@@AZURE_VAULT@@.vault.azure.net/"

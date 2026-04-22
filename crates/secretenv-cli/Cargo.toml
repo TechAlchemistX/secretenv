@@ -25,6 +25,7 @@ secretenv-backend-vault.workspace     = true
 secretenv-backend-aws-secrets.workspace = true
 secretenv-backend-gcp.workspace       = true
 secretenv-backend-azure.workspace     = true
+secretenv-backend-keychain.workspace  = true
 anyhow.workspace              = true
 clap.workspace                = true
 clap_complete.workspace       = true

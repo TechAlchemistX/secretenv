@@ -16,8 +16,18 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ### Tests
 
-- Workspace unit tests **536 → 568** (+32): all in the new `secretenv-backend-keychain` crate (URI parsing, factory validation including the cross-platform cfg-gated tests, get/set/delete strict-mock coverage, the list/check_extensive/history unsupported-error messages, check ok/locked/cli-missing, and two drift-catch regression locks).
+- Workspace unit tests **536 → 575** (+39): all in the new `secretenv-backend-keychain` crate. Covers URI parsing (including `%2F` slash-escape); factory validation (kind enum, timeout_secs, `keychain_path` flag-injection rejection, cross-platform cfg-gated tests); get/set/delete strict-mock argv coverage; list / check_extensive / history backend-specific unsupported-error messages; check() paths (Ok, Locked/NotAuthenticated, CliMissing, missing keychain file → Error, wrong stdout shape → Error); and drift-catch regression locks for every argv invariant (missing `-U` upsert, `-k`-vs-positional on get/delete/check).
 - Live smoke matrix **336 → 347** (+11): Section 21 Keychain.
+
+### Internal — closing audit (2026-04-22)
+
+Three-agent audit (`security-engineer` + `code-reviewer` + `rust-engineer`) ran in parallel against the merged v0.5 backend + smoke + docs. Five BLOCKING findings landed in an audit-polish PR; all DEFER items captured in `kb/wiki/build-log.md`:
+
+- `keychain_path` values starting with `-` rejected at factory time (would be parsed as a flag by `security` once appended to argv).
+- `check()` distinguishes `"No such keychain"` (missing file → `Error`, no fix available) from "locked keychain" (`NotAuthenticated`, `security unlock-keychain` hint).
+- `check()` validates that `show-keychain-info` output contains a `Keychain` sentinel (in stdout or stderr — the real binary writes to stderr) before returning `Ok`, guarding against a shadowing PATH binary.
+- Three drift-catch tests added — declaring `-k <path>` argv on get / delete / check and asserting no-match, locking the trailing-positional convention against future reintroduction.
+- `history()` overridden to call `reject_any_fragment("keychain")` before bailing, so a `#version=2`-carrying URI surfaces the unsupported-directive mistake rather than silently dropping the fragment.
 
 ## [0.4.0] - 2026-04-22
 

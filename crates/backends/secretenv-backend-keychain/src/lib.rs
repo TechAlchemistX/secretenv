@@ -35,12 +35,11 @@
 //! # List / history / extensive-check limitations
 //!
 //! The `security` CLI offers no safe list-by-prefix or
-//! version-history operation. [`Backend::list`] and
-//! [`Backend::check_extensive`] therefore bail with a clear message,
-//! and [`Backend::history`] falls through to the trait default's
-//! "unsupported" error. The keychain backend is a get/set/delete
-//! target only — host your alias registry on a different backend
-//! type.
+//! version-history operation. [`Backend::list`],
+//! [`Backend::check_extensive`], and [`Backend::history`] therefore
+//! bail with clear backend-specific error messages. The keychain
+//! backend is a get/set/delete target only — host your alias registry
+//! on a different backend type.
 //!
 //! # Safety notes
 //!
@@ -214,13 +213,18 @@ impl Backend for KeychainBackend {
     }
 
     async fn check(&self) -> BackendStatus {
-        // Single invocation does double duty:
+        // Single invocation does triple duty:
         //   - Spawn-time ENOENT → CliMissing (the `security` binary is
         //     absent — only plausible on non-macOS or a broken system).
-        //   - Non-zero exit → NotAuthenticated (typically
-        //     errSecAuthFailed / 25 when the keychain is locked; also
-        //     covers "no such keychain" if keychain_path is wrong).
-        //   - Zero exit → Ok.
+        //   - Non-zero exit + "No such keychain" stderr → Error (the
+        //     configured keychain_path doesn't exist; telling the user
+        //     to unlock a missing file would be misleading).
+        //   - Other non-zero exit → NotAuthenticated (typically
+        //     errSecAuthFailed / 25 when the keychain is locked).
+        //   - Zero exit + stdout contains "Keychain" sentinel → Ok.
+        //   - Zero exit + wrong stdout shape → Error (the binary is
+        //     named `security` but doesn't look like macOS's
+        //     `security`; guards against a shadowing PATH binary).
         let mut cmd = self.security_command("show-keychain-info");
         self.append_keychain(&mut cmd);
 
@@ -244,10 +248,56 @@ impl Backend for KeychainBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            // Distinguish "the keychain file does not exist" from "the
+            // keychain exists but is locked" — the latter has a fix
+            // (`security unlock-keychain`), the former does not. macOS
+            // reports the first as "unable to open ... No such keychain"
+            // or similar wording (sometimes via errSecNoSuchKeychain).
+            if stderr.contains("No such keychain") || stderr.contains("does not exist") {
+                return BackendStatus::Error {
+                    message: format!(
+                        "keychain backend '{}': configured keychain_path '{}' does not exist \
+                         — create it with `security create-keychain` or fix the config \
+                         (stderr: {stderr})",
+                        self.instance_name,
+                        self.unlock_hint_target(),
+                    ),
+                };
+            }
             return BackendStatus::NotAuthenticated {
                 hint: format!(
                     "run: security unlock-keychain {}  (stderr: {stderr})",
                     self.unlock_hint_target()
+                ),
+            };
+        }
+
+        // Shape-verify the output — `security show-keychain-info` on
+        // macOS always emits a line like
+        // `Keychain "<path>" lock-on-sleep ...` on every version since
+        // Big Sur. The real binary writes this to STDERR (verified on
+        // macOS 25 / Darwin 25.4), while mocks via StrictMock route
+        // `Response::success(...)` into stdout — check both streams so
+        // the shape-check is true for the real tool AND reasonable for
+        // tests that use the success() helper. Guards against a
+        // shadowing PATH binary named `security` that exits 0 without
+        // this sentinel.
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        let looks_like_security = stdout_str.contains("Keychain")
+            || stderr_str.contains("Keychain")
+            || stdout_str.contains("keychain")
+            || stderr_str.contains("keychain");
+        if !looks_like_security {
+            return BackendStatus::Error {
+                message: format!(
+                    "keychain backend '{}': `security show-keychain-info` exited 0 but output \
+                     doesn't match the expected shape — is '{}' the real macOS `security` \
+                     binary? (stdout prefix: {}; stderr prefix: {})",
+                    self.instance_name,
+                    self.security_bin,
+                    stdout_str.chars().take(40).collect::<String>(),
+                    stderr_str.chars().take(40).collect::<String>(),
                 ),
             };
         }
@@ -400,9 +450,20 @@ impl Backend for KeychainBackend {
         )
     }
 
-    // history() uses the trait default — keychain has no native
-    // version-history API. The trait default's "unsupported for this
-    // backend type" message already names `keychain`, so no override.
+    async fn history(&self, uri: &BackendUri) -> Result<Vec<secretenv_core::HistoryEntry>> {
+        // Keychain has no native version-history API, so history is
+        // structurally unsupported. We override the trait default so we
+        // can call `reject_any_fragment` first — otherwise a
+        // `keychain-default:///s/a#version=2` URI would fall through to
+        // the trait default's "unsupported" error silently dropping the
+        // fragment. Rejecting surfaces the mistake.
+        uri.reject_any_fragment("keychain")?;
+        bail!(
+            "keychain backend '{}': history is not supported — the Keychain has no native \
+             version-history API and items are overwritten in place on `set`",
+            self.instance_name
+        )
+    }
 }
 
 /// Factory for the macOS Keychain backend.
@@ -448,6 +509,21 @@ impl BackendFactory for KeychainFactory {
         }
 
         let keychain_path = optional_string(config, "keychain_path", "keychain", instance_name)?;
+        // Reject values that would be parsed as a flag by `security` once
+        // appended to argv. Without this a config like
+        // `keychain_path = "-h"` would turn every invocation into a help
+        // probe; a `"--debug"` or `"-k"` would be worse. Absolute paths
+        // (or any path not starting with `-`) are fine; the bail text
+        // names the offending value so the fix is obvious.
+        if let Some(p) = &keychain_path {
+            if p.starts_with('-') {
+                bail!(
+                    "keychain instance '{instance_name}': field 'keychain_path' must not start \
+                     with '-' (would be parsed as a flag by the `security` CLI); got '{p}' — \
+                     use an absolute path instead",
+                );
+            }
+        }
 
         let kind = match optional_string(config, "kind", "keychain", instance_name)?.as_deref() {
             None | Some("generic-password") => Kind::GenericPassword,
@@ -569,6 +645,30 @@ mod tests {
         );
         cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(5));
         assert!(factory.create("keychain-default", &cfg).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn factory_rejects_keychain_path_starting_with_dash() {
+        // v0.5 audit B-1: a `keychain_path = "-h"` would be appended to
+        // argv and parsed as a flag by `security`, turning every
+        // invocation into a usage probe. The factory rejects any
+        // `-`-led value before the backend ever runs.
+        let factory = KeychainFactory::new();
+        for bad in ["-h", "-k", "--debug", "-something-that-looks-like-a-flag"] {
+            let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+            cfg.insert("keychain_path".to_owned(), toml::Value::String(bad.to_owned()));
+            let Err(err) = factory.create("keychain-default", &cfg) else {
+                panic!("expected error for keychain_path={bad:?}");
+            };
+            let msg = format!("{err:#}");
+            assert!(msg.contains("'keychain_path'"), "names field: {msg} (value={bad:?})");
+            assert!(
+                msg.contains("must not start with '-'"),
+                "explains reason: {msg} (value={bad:?})"
+            );
+            assert!(msg.contains(bad), "quotes offending value: {msg}");
+        }
     }
 
     // ---- URI parsing ----
@@ -851,15 +951,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn history_uses_trait_default_unsupported_error() {
+    async fn history_bails_with_backend_specific_unsupported_error() {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("security").install(dir.path());
         let b = backend(&mock, None, Kind::GenericPassword);
         let uri = BackendUri::parse("keychain-default://any/place").unwrap();
         let err = b.history(&uri).await.unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("not implemented"), "trait default wording: {msg}");
-        assert!(msg.contains("keychain"), "names backend type: {msg}");
+        assert!(msg.contains("history is not supported"), "specific wording: {msg}");
+        assert!(msg.contains("keychain"), "names backend label: {msg}");
+    }
+
+    #[tokio::test]
+    async fn history_rejects_fragments_instead_of_silently_dropping_them() {
+        // v0.5 audit B4: the trait-default history() doesn't call
+        // reject_any_fragment, so a URI like `#version=2` would silently
+        // fall through. Our override rejects the fragment first, making
+        // the unsupported-directive mistake visible to the user.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("security").install(dir.path());
+        let b = backend(&mock, None, Kind::GenericPassword);
+        let uri = BackendUri::parse("keychain-default://any/place#version=2").unwrap();
+        let err = b.history(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("keychain"), "names backend: {msg}");
     }
 
     // ---- check ----
@@ -900,7 +1015,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = "/Users/x/Library/Keychains/team.keychain-db";
         let mock = StrictMock::new("security")
-            .on(&["show-keychain-info", path], Response::success(""))
+            .on(
+                &["show-keychain-info", path],
+                Response::success("Keychain \"team.keychain-db\" settings: unlocked\n"),
+            )
             .install(dir.path());
         let b = backend(&mock, Some(path), Kind::GenericPassword);
         match b.check().await {
@@ -937,6 +1055,123 @@ mod tests {
     }
 
     // ---- drift-catch regression lock ----
+
+    // v0.5 audit B2 drift-catch locks: the `-k` vs trailing-positional
+    // regression was caught in the v0.5-smoke integration run, not by
+    // unit tests, because the unit tests mocked the wrong argv shape
+    // and matched. The three tests below declare the BROKEN form
+    // (`-k <path>`) and assert a no-match diagnostic, locking the
+    // positional convention against future reintroduction.
+
+    #[tokio::test]
+    async fn get_drift_catch_rejects_keychain_path_passed_as_dash_k_flag() {
+        let dir = TempDir::new().unwrap();
+        let path = "/tmp/custom.keychain-db";
+        // Declared argv uses `-k path` (the old-and-wrong form).
+        // Real backend emits a trailing positional, so the mock should
+        // not match and produce the strict-mock-no-match diagnostic.
+        let mock = StrictMock::new("security")
+            .on(
+                &["find-generic-password", "-s", "stripe", "-a", "prod", "-w", "-k", path],
+                Response::success("never-matches\n"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, Some(path), Kind::GenericPassword);
+        let uri = BackendUri::parse("keychain-default://stripe/prod").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        assert!(format!("{err:#}").contains("strict-mock-no-match"));
+    }
+
+    #[tokio::test]
+    async fn delete_drift_catch_rejects_keychain_path_passed_as_dash_k_flag() {
+        let dir = TempDir::new().unwrap();
+        let path = "/tmp/custom.keychain-db";
+        let mock = StrictMock::new("security")
+            .on(
+                &["delete-generic-password", "-s", "stripe", "-a", "prod", "-k", path],
+                Response::success(""),
+            )
+            .install(dir.path());
+        let b = backend(&mock, Some(path), Kind::GenericPassword);
+        let uri = BackendUri::parse("keychain-default://stripe/prod").unwrap();
+        let err = b.delete(&uri).await.unwrap_err();
+        assert!(format!("{err:#}").contains("strict-mock-no-match"));
+    }
+
+    #[tokio::test]
+    async fn check_drift_catch_rejects_keychain_path_passed_as_dash_k_flag() {
+        let dir = TempDir::new().unwrap();
+        let path = "/tmp/custom.keychain-db";
+        let mock = StrictMock::new("security")
+            .on(
+                &["show-keychain-info", "-k", path],
+                Response::success("Keychain \"custom.keychain-db\" ...\n"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, Some(path), Kind::GenericPassword);
+        // check() doesn't propagate a Result; the strict-mock no-match
+        // path produces exit code 97, which our check() maps to
+        // NotAuthenticated (non-zero exit). That's indistinguishable
+        // from the locked case by enum, so we assert on the stderr
+        // payload that reaches the hint field.
+        match b.check().await {
+            BackendStatus::NotAuthenticated { hint } => {
+                assert!(
+                    hint.contains("strict-mock-no-match"),
+                    "mock-level divergence confirms -k was sent instead of positional: {hint}"
+                );
+            }
+            other => panic!("expected NotAuthenticated on no-match, got {other:?}"),
+        }
+    }
+
+    // v0.5 audit B1: `check()` distinguishes "keychain file missing"
+    // from "keychain locked" — the latter has a fix
+    // (`security unlock-keychain`), the former does not.
+    #[tokio::test]
+    async fn check_returns_error_when_keychain_file_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = "/tmp/this-keychain-does-not-exist.keychain-db";
+        let mock = StrictMock::new("security")
+            .on(
+                &["show-keychain-info", path],
+                Response::failure(
+                    1,
+                    "security: SecKeychainOpen default.keychain-db: No such keychain\n",
+                ),
+            )
+            .install(dir.path());
+        let b = backend(&mock, Some(path), Kind::GenericPassword);
+        match b.check().await {
+            BackendStatus::Error { message } => {
+                assert!(message.contains("does not exist"), "names missing-file cause: {message}");
+                assert!(message.contains(path), "names the bad path: {message}");
+            }
+            other => panic!("expected Error for missing keychain file, got {other:?}"),
+        }
+    }
+
+    // v0.5 audit B3: `check()` refuses to report Ok when
+    // `show-keychain-info` stdout doesn't match the canonical
+    // `Keychain "..."` shape — guards against a shadowing PATH binary
+    // named `security` that exits 0 but isn't macOS's real tool.
+    #[tokio::test]
+    async fn check_returns_error_when_stdout_shape_is_wrong() {
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("security")
+            .on(&["show-keychain-info"], Response::success("this is not a security output\n"))
+            .install(dir.path());
+        let b = backend(&mock, None, Kind::GenericPassword);
+        match b.check().await {
+            BackendStatus::Error { message } => {
+                assert!(
+                    message.contains("doesn't match the expected shape"),
+                    "names the shape mismatch: {message}"
+                );
+            }
+            other => panic!("expected Error on wrong stdout shape, got {other:?}"),
+        }
+    }
 
     // Guard against a regression that drops the `-U` flag from set()'s
     // argv — without `-U`, `security` errors errSecDuplicateItem on an

@@ -1,0 +1,17 @@
+# examples/cascade-local-then-vault/config.toml
+# Dev-override-first registry: local source shadows the Vault baseline.
+
+[registries.dev]
+sources = [
+    "local-main://./local-registry/registry.toml",   # personal overrides
+    "vault-team:///secret/secretenv/registry",       # team baseline
+]
+
+[backends.local-main]
+type = "local"
+
+[backends.vault-team]
+type          = "vault"
+vault_address = "https://vault.team.internal:8200"
+# vault_mount = "secret"       # default KV mount
+# kind        = "v2"           # or "v1" for legacy KV

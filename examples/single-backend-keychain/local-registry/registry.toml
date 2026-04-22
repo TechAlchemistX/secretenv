@@ -1,0 +1,6 @@
+# Registry mapping aliases to keychain URIs.
+# URI shape: keychain-<instance>:///<service>/<account>
+# Matches `security add-generic-password -s <service> -a <account>`.
+
+stripe-key   = "keychain-default:///myapp/stripe-key"
+database-url = "keychain-default:///myapp/database-url"

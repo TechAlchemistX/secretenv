@@ -1,0 +1,10 @@
+# examples/single-backend-aws-ssm/config.toml
+# All-AWS team: registry + secrets both live in SSM Parameter Store.
+
+[registries.default]
+sources = ["aws-ssm-main:///secretenv/registry"]
+
+[backends.aws-ssm-main]
+type        = "aws-ssm"
+aws_profile = "my-team"        # replace with your real AWS CLI profile
+aws_region  = "us-east-1"      # replace with your registry's region

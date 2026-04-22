@@ -1,0 +1,38 @@
+# .github/workflows/deploy.yml
+# SecretEnv-driven deploy job using OIDC-assumed AWS credentials.
+# Copy to your repo's .github/workflows/ and adjust role-to-assume.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # OIDC for AWS STS AssumeRoleWithWebIdentity
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-deploy
+          aws-region: us-east-1
+
+      - name: Install secretenv
+        run: curl -sfS https://secretenv.io/install.sh | sh
+
+      - name: Verify secretenv setup
+        env:
+          SECRETENV_REGISTRY: aws-ssm:///secretenv/registry
+        run: secretenv doctor
+
+      - name: Deploy with injected secrets
+        env:
+          SECRETENV_REGISTRY: aws-ssm:///secretenv/registry
+        run: secretenv run -- ./deploy.sh

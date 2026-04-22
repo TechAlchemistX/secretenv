@@ -1,0 +1,2 @@
+api-key = "local-main://./local-secrets/api-key.txt"
+db-url  = "local-main://./local-secrets/db-url.txt"

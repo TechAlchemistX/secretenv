@@ -174,7 +174,18 @@ infisical_token  = "st.xxx.yyy.YOUR_SERVICE_TOKEN"       # or export INFISICAL_T
 
 ### Self-hosted domain trust
 
-`infisical_domain` accepts any URL — including ones that look legitimate but aren't. Double-check the domain before committing it to `config.toml` or sharing a registry that references it; a malicious domain receives every token and URI your backend routes through. Pin to an HTTPS URL with a cert you trust.
+`infisical_domain` accepts any URL — including ones that look legitimate but aren't. A hostile domain receives every token and URI your backend routes through it, which includes your service-token in `$INFISICAL_TOKEN` on every CLI invocation. Treat the domain as a trust boundary.
+
+Before committing a self-hosted domain to `config.toml` (or to a registry that downstreams will consume):
+
+- **Verify the domain matches your org's canonical Infisical install.** A typo (`infisical.acne.com` vs. `infisical.acme.com`) + an attacker-controlled lookalike registration routes every probe, get, set, and list to them.
+- **Pin HTTPS with a cert you trust.** `http://` URLs are accepted by the CLI but leak your token to anyone on-path. Only use `http://` against a loopback dev instance.
+- **Confirm the TLS cert belongs to your org.** For BYO-CA / internal-PKI setups, make sure the issuing CA is in the system trust store of every machine running `secretenv`. Inspect with `openssl s_client -connect infisical.your-org.com:443 -servername infisical.your-org.com </dev/null`.
+- **Avoid registries that carry a `infisical_domain` they don't control.** A compromised registry pointing at a lookalike domain silently drains credentials until someone notices.
+
+When in doubt, omit `infisical_domain` and use the Infisical Cloud default (`app.infisical.com`) — that host's certificate is managed by the Infisical team and rotates automatically.
+
+See also [security.md#self-hosted-domains](../security.md#self-hosted-domains) for the cross-backend discipline (same concerns apply to Vault's `vault_address`).
 
 ---
 
@@ -191,6 +202,8 @@ There is no stdin form. The backend:
 2. Writes `NAME=VALUE\n` to it and `fsync`s.
 3. Spawns `infisical secrets set --file <tempfile> --type shared …`.
 4. On return (success OR failure), explicitly drops the `NamedTempFile` handle, which auto-unlinks the file.
+
+`NamedTempFile`'s `Drop` is panic-safe: even if the calling task panics between steps 2 and 4 (or the `infisical` subprocess segfaults, or the async runtime is cancelled mid-spawn), the temp file is removed as the handle's drop runs during unwind. There is no "orphaned secret-bearing file under `$TMPDIR`" failure mode — every successful `NamedTempFile::new()` on Unix creates the file via `O_CREAT|O_EXCL` with mode 0600, and its destructor always unlinks.
 
 The value never appears on argv. A unit canary test confirms this: it installs a strict mock with no rules, calls `set()` with a recognizable canary string, and asserts the canary is absent from the mock's observed-argv diagnostic.
 

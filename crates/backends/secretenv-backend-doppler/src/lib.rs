@@ -101,6 +101,14 @@ const INSTALL_HINT: &str =
 /// user "secret" with this shape is system-generated.
 const SYNTHETIC_KEY_PREFIX: &str = "DOPPLER_";
 
+/// Payload-size cutover above which `list()` runs `serde_json` on a
+/// tokio `spawn_blocking` worker thread instead of inline. Below it,
+/// the thread-pool dispatch cost exceeds the parse cost for a typical
+/// small registry; above it, a multi-MB payload would otherwise stall
+/// the tokio executor. 256 KiB is a crude threshold but correct
+/// directionally; see v0.7.1 build-plan Phase 3.
+const LIST_SPAWN_BLOCKING_THRESHOLD: usize = 256 * 1024;
+
 /// A live instance of the Doppler backend.
 pub struct DopplerBackend {
     backend_type: &'static str,
@@ -182,15 +190,15 @@ impl DopplerBackend {
         cmd
     }
 
-    /// Resolve `(project, config, secret_name)` from the URI + instance
-    /// config. Two shapes accepted:
+    /// Resolve a [`ResolvedTarget`] from the URI + instance config.
+    /// Two shapes accepted:
     ///
     /// - 3 non-empty segments → `<project>/<config>/<secret>`.
     /// - 1 non-empty segment → `<secret>`; requires BOTH
     ///   `doppler_project` AND `doppler_config` in instance config.
     ///
     /// Any other segment count errors locally before shelling out.
-    fn resolve_target<'a>(&'a self, uri: &'a BackendUri) -> Result<(&'a str, &'a str, &'a str)> {
+    fn resolve_target<'a>(&'a self, uri: &'a BackendUri) -> Result<ResolvedTarget<'a>> {
         let path = uri.path.strip_prefix('/').unwrap_or(&uri.path);
         let parts: Vec<&str> = path.split('/').collect();
         match parts.as_slice() {
@@ -218,24 +226,41 @@ impl DopplerBackend {
                         self.instance_name
                     )
                 })?;
-                Ok((project, config, secret))
+                Ok(ResolvedTarget { project, config, secret })
             }
             [project, config, secret]
                 if !project.is_empty() && !config.is_empty() && !secret.is_empty() =>
             {
-                Ok((project, config, secret))
+                Ok(ResolvedTarget { project, config, secret })
             }
-            _ => bail!(
-                "doppler backend '{}': URI '{}' must have either 1 segment \
-                 (short form, requires both 'doppler_project' and \
-                 'doppler_config' in instance config) or 3 segments \
-                 (full form: <project>/<config>/<secret>); got {} segment(s)",
-                self.instance_name,
-                uri.raw,
-                parts.iter().filter(|s| !s.is_empty()).count()
-            ),
+            _ => {
+                let non_empty: Vec<&str> =
+                    parts.iter().copied().filter(|s| !s.is_empty()).collect();
+                bail!(
+                    "doppler backend '{}': URI '{}' must have either 1 segment \
+                     (short form, requires both 'doppler_project' and \
+                     'doppler_config' in instance config) or 3 segments \
+                     (full form: <project>/<config>/<secret>); got {} segment(s): [{}]",
+                    self.instance_name,
+                    uri.raw,
+                    non_empty.len(),
+                    non_empty.join(", ")
+                )
+            }
         }
     }
+}
+
+/// Output of [`DopplerBackend::resolve_target`]. Mirrors the Infisical
+/// backend's `ResolvedTarget` shape (struct-return replaces the earlier
+/// positional tuple). All three fields are `&str`: either borrowed from
+/// URI segments (full form) or from the backend's instance-config
+/// defaults (short form), unified under the single lifetime that covers
+/// both sources.
+struct ResolvedTarget<'a> {
+    project: &'a str,
+    config: &'a str,
+    secret: &'a str,
 }
 
 #[async_trait]
@@ -353,9 +378,10 @@ impl Backend for DopplerBackend {
 
     async fn get(&self, uri: &BackendUri) -> Result<String> {
         uri.reject_any_fragment("doppler")?;
-        let (project, config, secret) = self.resolve_target(uri)?;
+        let t = self.resolve_target(uri)?;
 
-        let mut cmd = self.doppler_command(&["secrets", "get", secret, "--plain"], project, config);
+        let mut cmd =
+            self.doppler_command(&["secrets", "get", t.secret, "--plain"], t.project, t.config);
         let output = cmd.output().await.with_context(|| {
             format!(
                 "doppler backend '{}': failed to invoke 'doppler secrets get' for URI '{}'",
@@ -365,11 +391,18 @@ impl Backend for DopplerBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Could not find requested secret") || stderr.contains("not found") {
+            // Tightened to Doppler's canonical prefix so stderr
+            // substrings like "token not found" (Doppler's auth-error
+            // phrasing) do NOT false-positive into the not-found bail
+            // arm and mask the real auth failure.
+            if stderr.contains("Could not find requested secret") {
                 bail!(
-                    "doppler backend '{}': secret '{secret}' not found in \
-                     project='{project}' config='{config}' (URI '{}')",
+                    "doppler backend '{}': secret '{}' not found in \
+                     project='{}' config='{}' (URI '{}')",
                     self.instance_name,
+                    t.secret,
+                    t.project,
+                    t.config,
                     uri.raw
                 );
             }
@@ -388,14 +421,17 @@ impl Backend for DopplerBackend {
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
         uri.reject_any_fragment("doppler")?;
-        let (project, config, secret) = self.resolve_target(uri)?;
+        let t = self.resolve_target(uri)?;
 
         // `--no-interactive` tells Doppler to read the value from
         // stdin instead of prompting. Child stdin is piped; value is
         // written + stdin closed. argv carries ONLY the secret NAME,
         // NEVER the value.
-        let mut cmd =
-            self.doppler_command(&["secrets", "set", secret, "--no-interactive"], project, config);
+        let mut cmd = self.doppler_command(
+            &["secrets", "set", t.secret, "--no-interactive"],
+            t.project,
+            t.config,
+        );
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -429,15 +465,24 @@ impl Backend for DopplerBackend {
         if !output.status.success() {
             bail!(self.operation_failure_message(uri, "set", &output.stderr));
         }
+        tracing::debug!(
+            backend = "doppler",
+            instance = %self.instance_name,
+            op = "set",
+            project = %t.project,
+            config = %t.config,
+            secret = %t.secret,
+            "secret set"
+        );
         Ok(())
     }
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("doppler")?;
-        let (project, config, secret) = self.resolve_target(uri)?;
+        let t = self.resolve_target(uri)?;
 
         let mut cmd =
-            self.doppler_command(&["secrets", "delete", secret, "--yes"], project, config);
+            self.doppler_command(&["secrets", "delete", t.secret, "--yes"], t.project, t.config);
         let output = cmd.output().await.with_context(|| {
             format!(
                 "doppler backend '{}': failed to invoke 'doppler secrets delete' for URI '{}'",
@@ -446,16 +491,28 @@ impl Backend for DopplerBackend {
         })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Could not find requested secret") || stderr.contains("not found") {
+            // Tightened to Doppler's canonical prefix (see `get()`);
+            // `"token not found"` must NOT match this arm.
+            if stderr.contains("Could not find requested secret") {
                 bail!(
-                    "doppler backend '{}': secret '{secret}' not found at URI '{}' \
+                    "doppler backend '{}': secret '{}' not found at URI '{}' \
                      (delete is not idempotent — matches aws-secrets precedent)",
                     self.instance_name,
+                    t.secret,
                     uri.raw
                 );
             }
             bail!(self.operation_failure_message(uri, "delete", &output.stderr));
         }
+        tracing::debug!(
+            backend = "doppler",
+            instance = %self.instance_name,
+            op = "delete",
+            project = %t.project,
+            config = %t.config,
+            secret = %t.secret,
+            "secret deleted"
+        );
         Ok(())
     }
 
@@ -468,12 +525,14 @@ impl Backend for DopplerBackend {
         // IS the whole Doppler config. A fully-scoped URI like
         // `doppler:///acme/prd/REGISTRY_MARKER` is valid: we use acme
         // + prd and ignore the marker.
-        let (project, config, _secret_ignored) = self.resolve_target(uri)?;
+        let t = self.resolve_target(uri)?;
+        // `t.secret` is intentionally ignored here — see the
+        // paragraph above. `list()` scopes to project+config.
 
         let mut cmd = self.doppler_command(
             &["secrets", "download", "--format", "json", "--no-file"],
-            project,
-            config,
+            t.project,
+            t.config,
         );
         let output = cmd.output().await.with_context(|| {
             format!(
@@ -490,14 +549,39 @@ impl Backend for DopplerBackend {
         // CLI path that returns every value in the config. Parse
         // directly from bytes so the body never flows through a
         // lossy conversion or a default-Debug print.
-        let map: HashMap<String, String> =
+        //
+        // Parse on a blocking worker thread when the payload is large
+        // enough (>= 256 KiB) that serde_json's work becomes meaningful
+        // vs. the thread-pool dispatch cost. Small registries take the
+        // zero-overhead inline path.
+        let map: HashMap<String, String> = if output.stdout.len() >= LIST_SPAWN_BLOCKING_THRESHOLD {
+            let bytes = output.stdout;
+            tokio::task::spawn_blocking(move || {
+                serde_json::from_slice::<HashMap<String, String>>(&bytes)
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "doppler backend '{}': list JSON-parse worker panicked for URI '{}'",
+                    self.instance_name, uri.raw
+                )
+            })?
+            .with_context(|| {
+                format!(
+                    "doppler backend '{}': 'doppler secrets download' returned \
+                     JSON that is not a {{string: string}} map (URI '{}')",
+                    self.instance_name, uri.raw
+                )
+            })?
+        } else {
             serde_json::from_slice(&output.stdout).with_context(|| {
                 format!(
                     "doppler backend '{}': 'doppler secrets download' returned \
                      JSON that is not a {{string: string}} map (URI '{}')",
                     self.instance_name, uri.raw
                 )
-            })?;
+            })?
+        };
 
         // Filter synthetic `DOPPLER_*` keys. Doppler reserves this
         // prefix so user secrets cannot collide with the three
@@ -927,6 +1011,68 @@ mod tests {
         assert!(msg.contains("not found"), "friendly text: {msg}");
         assert!(msg.contains("project='acme'"), "names project: {msg}");
         assert!(msg.contains("config='prd'"), "names config: {msg}");
+    }
+
+    #[tokio::test]
+    async fn get_not_found_heuristic_does_not_match_token_not_found() {
+        // Regression lock for the v0.7.1 tightened heuristic.
+        // Previously both "Could not find requested secret" AND a bare
+        // "not found" substring would route into the friendly "secret
+        // not found" bail. Doppler's auth-error stderr shape
+        // ("Doppler Error: Unauthorized: token not found") then
+        // false-positived into that arm and hid the real failure.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("doppler")
+            .on(
+                &get_argv("STRIPE_KEY"),
+                Response::failure(1, "Doppler Error: Unauthorized: token not found\n"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("doppler-prod:///acme/prd/STRIPE_KEY").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("token not found"), "auth stderr surfaced: {msg}");
+        assert!(
+            !msg.contains("secret 'STRIPE_KEY' not found"),
+            "must NOT route to secret-not-found arm: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_not_found_heuristic_does_not_match_token_not_found() {
+        // Symmetric regression lock for delete().
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("doppler")
+            .on(
+                &delete_argv("STRIPE_KEY"),
+                Response::failure(1, "Doppler Error: Unauthorized: token not found\n"),
+            )
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("doppler-prod:///acme/prd/STRIPE_KEY").unwrap();
+        let err = b.delete(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("token not found"), "auth stderr surfaced: {msg}");
+        assert!(
+            !msg.contains("secret 'STRIPE_KEY' not found"),
+            "must NOT route to secret-not-found arm: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_target_error_includes_parsed_segments() {
+        // Regression lock for the Phase 2 segment-count error UX
+        // improvement. A 2-segment URI should surface the offending
+        // parse in the error so the user can see what was rejected.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("doppler").install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("doppler-prod:///acme/prd").unwrap();
+        let err = b.get(&uri).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("2 segment(s)"), "names segment count: {msg}");
+        assert!(msg.contains("acme") && msg.contains("prd"), "lists parsed segments: {msg}");
     }
 
     #[tokio::test]

@@ -77,6 +77,12 @@ fi
 # `--type shared` is mandatory — CLI default is `personal` which would
 # silently no-op against the project-shared secret we seeded.
 # Project ID is overridable; default matches the CI smoke account.
+#
+# SECURITY NOTE — fixture cleanup only. This is a teardown hook over
+# a known-fixed fixture value, not the code path end-users invoke.
+# SecretEnv's own `delete()` still goes through the backend's
+# argv-only-by-name discipline (the value was never on argv to begin
+# with, since delete doesn't take one). No regression risk.
 INFISICAL_PROJECT_ID="${SECRETENV_INFISICAL_PROJECT_ID:-46302876-3c2f-4349-9376-f8a8228bdb1e}"
 if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/dev/null 2>&1; then
     run "infisical secrets delete SMOKE_TEST_VALUE --projectId '$INFISICAL_PROJECT_ID' --env dev --path / --type shared"

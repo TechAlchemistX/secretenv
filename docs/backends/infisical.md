@@ -230,10 +230,10 @@ type = "infisical"
 
 The URI's secret segment (`UNUSED_MARKER`) is **ignored by `list()`** — a list targets the whole project+env+path scope, not a single secret. Using a recognizable placeholder makes the intent obvious in your config.
 
-### Defense-in-depth on response body
+### Response-body handling
 
 `infisical secrets --output json` returns an array shaped
-`[{"secretKey":"NAME","secretValue":"VAL", …}, …]` covering every secret in the scope. The backend parses via a Rust struct that declares only the `secretKey` field — serde silently drops `secretValue` and every other field. The parsed `Vec` carries names only; values never materialize in our types and cannot accidentally land in log/error/Debug output. Defense-in-depth on top of the "return names only" contract.
+`[{"secretKey":"NAME","secretValue":"URI", …}, …]` covering every secret in the scope. The backend parses via a Rust struct that declares only the `secretKey` and `secretValue` fields — every other field (`type`, `version`, `createdAt`, `updatedAt`, …) is dropped silently by serde. Values leave the backend only as the second element of the returned `(alias, target_uri)` tuples; the raw stdout bytes and the parsed `Vec` are never logged, `Debug`-dumped, or interpolated into errors. If a misconfigured env+path holds non-URI secret values, they surface as "not a valid URI" errors when the resolver tries to parse them — not in log output.
 
 ---
 
@@ -266,7 +266,7 @@ If a future Infisical CLI release adds `infisical secrets versions`, the backend
 - **`set()` via `--file` temp-file.** Mode 0600 under `$TMPDIR`, unlinked on drop (RAII guard, regardless of spawn exit code). Value never on argv. See [`set()` discipline](#set-discipline--temp-file-not-argv).
 - **Token via env, never argv.** `INFISICAL_TOKEN` is set on the subprocess environment — never passed as `--token <value>`. A unit canary test (`token_travels_via_env_not_argv`) locks this: if a regression adds `--token` to argv, the strict-mock's declared argv shape diverges and the test fails with `strict-mock-no-match`.
 - **Domain via env, never argv.** `infisical_domain` travels via `INFISICAL_API_URL`, not `--domain` on argv. Symmetric to the token discipline — keeps the `infisical` subprocess command-line shape uniform across self-hosted and SaaS deployments.
-- **`list()` response is secret-bearing.** `infisical secrets --output json` returns every value in the scope. The struct we parse into declares only the `secretKey` field — serde drops `secretValue` silently. Values leave the backend only as alias targets (URIs), not credential bodies. Do not configure an Infisical env+path as a registry source unless every entry's value is a URI.
+- **`list()` response is secret-bearing.** `infisical secrets --output json` returns every value in the scope. The backend uses the Doppler-style bulk model — each Infisical secret value is treated as the alias's target URI. Values leave the backend only as alias targets in the returned `(name, uri)` tuples; raw stdout + the parsed `Vec` are never logged/Debug-dumped/error-interpolated. **Do not configure an Infisical env+path as a registry source unless every entry's value is a URI.** Mixed content (URIs alongside real credentials) would surface real credentials as alias targets.
 - **`--type shared` on set + delete.** Locked by drift-catch tests to prevent silent scope corruption under the CLI's `personal` default.
 - **Error messages never quote secret bodies.** Every `bail!` includes instance name + URI.raw + the CLI's stderr, never the body of the secret being read.
 

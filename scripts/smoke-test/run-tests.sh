@@ -1644,40 +1644,16 @@ EOF
       "$BIN" --config "$V07_IFCFG_FRAG" get if_frag --yes
     assert_contains "311 infisical fragment-reject names backend" "$RUNS/310-v07-if-frag.log" 'infisical'
 
-    # 23g — live-smoke backend.set() via `registry set` through an
-    # Infisical-backed registry source. This exercises the --file
-    # temp-file discipline end-to-end: `registry set` serializes the
-    # updated registry doc to TOML and calls backend.set() with the
-    # Infisical URI as target. The --type shared flag is implicit
-    # (unit test `delete_happy_uses_type_shared` locks the argv
-    # shape on the mock side; here we verify the real CLI accepts
-    # the call).
-    #
-    # Setup: point a registry source directly at an Infisical secret
-    # slot. First `registry set` creates the slot (backend.set on a
-    # not-yet-existing key); second round reads it back.
-    V07_IFCFG_WRITE="$RUNS/297-if-config-write.toml"
-    cat > "$V07_IFCFG_WRITE" <<EOF
-[registries.default]
-sources = ["infisical-test:///${IF_PROJECT_ID}/dev/SMOKE_SECTION_23_REGISTRY"]
-
-[backends.infisical-test]
-type = "infisical"
-EOF
-    # First write: creates the SMOKE_SECTION_23_REGISTRY secret via
-    # backend.set().
-    run_test "312 v0.7 infisical registry set writes via backend.set" 0 "$RUNS/312-v07-if-regset.log" \
-      "$BIN" --config "$V07_IFCFG_WRITE" registry set if_canary 'local:///tmp/nonexistent'
-    # Read back: proves the write landed and the --file temp-file
-    # round-tripped the value correctly.
-    run_test "313 v0.7 infisical registry list reads back via backend.get" 0 "$RUNS/313-v07-if-reglist.log" \
-      "$BIN" --config "$V07_IFCFG_WRITE" registry list
-    assert_contains "314 infisical registry list shows written alias"         "$RUNS/313-v07-if-reglist.log" 'if_canary'
-    assert_contains "314a infisical registry list shows URI round-tripped"    "$RUNS/313-v07-if-reglist.log" 'local:///tmp/nonexistent'
-    # Clean up the dedicated test slot via direct CLI call (teardown
-    # also cleans SMOKE_TEST_VALUE; this one is per-section).
-    run_test "315 v0.7 infisical cleanup registry slot" 0 "$RUNS/315-v07-if-cleanup.log" \
-      infisical secrets delete SMOKE_SECTION_23_REGISTRY --projectId "${IF_PROJECT_ID}" --env dev --path / --type shared
+    # Note: live-smoke of backend.set() is deliberately omitted.
+    # `registry set` at v0.7 only supports "Pattern B" backends
+    # (single-doc registries over local / 1password / aws-ssm /
+    # vault / aws-secrets / gcp / azure — see cli.rs:
+    # serialize_registry). Infisical uses "Pattern A" — each
+    # backend secret IS one alias — so it cannot use the registry-
+    # doc serializer. Unit tests `set_value_never_appears_on_argv`
+    # + `delete_without_type_shared_flag_would_fail_strict_mock`
+    # cover set() argv discipline; Section 23's get/run/history
+    # surface covers every other trait method live.
 fi
 
 # ---------------------------------------------------------------

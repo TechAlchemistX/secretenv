@@ -2,7 +2,7 @@
 
 Live-backend integration smoke for `secretenv`. Provisions cloud-side fixtures
 across all 9 cloud/team backends plus a self-contained test keychain on
-macOS hosts, runs a 381-assertion validation matrix against a release
+macOS hosts, runs a 373-assertion validation matrix against a release
 binary, then tears down what it created.
 
 This is the gate run before every tagged release.

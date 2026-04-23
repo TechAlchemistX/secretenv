@@ -81,14 +81,20 @@
 //!
 //! # `list()` semantics
 //!
-//! `infisical secrets --output json` returns
-//! `[{"secretKey":"NAME","secretValue":"VAL"}, …]` for the scoped
-//! project + env + path. [`Backend::list`] parses via a struct that
-//! deserializes ONLY `secretKey` — `secretValue` is not in the struct,
-//! so serde drops it silently. Defense in depth: the parsed `Vec` only
-//! carries names; if a refactor wires the raw JSON into a log/error,
-//! clippy's unused-field warnings would surface and the canary test
-//! asserts values never reach debug output.
+//! Follows the **Doppler-style bulk model**: the entire Infisical
+//! env + path IS the alias map. Each secret's name = one alias, each
+//! secret's value = the alias's target URI (user stored URIs as
+//! values). `infisical secrets --output json` returns
+//! `[{"secretKey":"NAME","secretValue":"URI"}, …]`; [`Backend::list`]
+//! parses into `(secretKey, secretValue)` tuples. Do NOT configure an
+//! Infisical env+path as a registry source unless every entry's value
+//! is a URI — mixed content leaks secret values as alias targets.
+//!
+//! The response body is secret-bearing. Errors/traces in this crate
+//! NEVER interpolate the raw stdout or the parsed `Vec`; values leave
+//! the backend only through the return of this method as alias-target
+//! URIs — never via `Debug`, `tracing`, or error-message
+//! interpolation.
 //!
 //! The `--plain` flag on `secrets` (list) is deprecated at v0.43.77;
 //! `--output json` is the forward-compatible form.
@@ -170,15 +176,24 @@ pub struct InfisicalBackend {
 
 /// A single entry returned by `infisical secrets --output json`.
 ///
-/// **Only `secretKey` is deserialized.** The CLI also emits
-/// `secretValue`, `type`, `version`, and a handful of other fields —
-/// serde drops every field we don't name, so the raw values never
-/// materialize in our Rust types. This is defense-in-depth on top of
-/// [`Backend::list`]'s "return names only" contract.
+/// `secretKey` is the alias name; `secretValue` is the alias target URI
+/// when this backend is configured as a registry source — **this
+/// follows the Doppler-style bulk model** where each backend secret IS
+/// one alias (rather than a single backend secret storing a serialized
+/// alias map). Other fields the CLI emits (`type`, `version`,
+/// `createdAt`, `updatedAt`, …) are dropped silently by serde.
+///
+/// **The response body is secret-bearing.** `secrets --output json`
+/// returns every value in the scoped env + path. Errors + traces in
+/// this file NEVER interpolate the raw stdout or the parsed `Vec`; the
+/// values leave the backend only as alias-target URIs through
+/// [`Backend::list`]. Do not configure an Infisical env+path as a
+/// registry source unless every entry's value is a URI.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InfisicalListEntry {
     secret_key: String,
+    secret_value: String,
 }
 
 /// Parsed URI target.
@@ -617,19 +632,13 @@ impl Backend for InfisicalBackend {
                 )
             })?;
 
-        // list() returns (alias, URI) pairs for the registry alias map.
-        // Each secret name maps to itself here — callers build real
-        // URIs by templating the alias back into a backend URI when
-        // needed. Matches the Doppler convention. Explicit binding
-        // keeps the intent unambiguous: one clone for the first slot,
-        // the original moves into the second.
-        Ok(entries
-            .into_iter()
-            .map(|e| {
-                let name = e.secret_key;
-                (name.clone(), name)
-            })
-            .collect())
+        // list() returns (alias, target-uri) pairs. The Doppler-style
+        // bulk model: each Infisical secret name = one alias, each
+        // Infisical secret value = the alias's target URI (user stored
+        // URI strings as values). The resolver parses the target URI
+        // and validates its backend scheme; a non-URI value surfaces
+        // as a clean "not a valid URI" error upstream.
+        Ok(entries.into_iter().map(|e| (e.secret_key, e.secret_value)).collect())
     }
 
     async fn history(&self, uri: &BackendUri) -> Result<Vec<secretenv_core::HistoryEntry>> {
@@ -1286,11 +1295,15 @@ mod tests {
     // ---- list ----
 
     #[tokio::test]
-    async fn list_returns_names_only() {
+    async fn list_returns_name_value_pairs() {
+        // Doppler-style bulk model: each Infisical secret name = one
+        // alias, each secret value = alias target URI. The resolver
+        // downstream of this call parses the value as a BackendUri, so
+        // the test values here are shaped like real URIs.
         let dir = TempDir::new().unwrap();
         let body = r#"[
-            {"secretKey":"STRIPE_KEY","secretValue":"sk_live_abc"},
-            {"secretKey":"DB_URL","secretValue":"postgres://..."}
+            {"secretKey":"STRIPE_KEY","secretValue":"aws-ssm-prod:///stripe/api-key"},
+            {"secretKey":"DB_URL","secretValue":"vault-dev:///secret/db"}
         ]"#;
         let mock =
             StrictMock::new("infisical").on(LIST_ARGV, Response::success(body)).install(dir.path());
@@ -1301,8 +1314,8 @@ mod tests {
         assert_eq!(
             out,
             vec![
-                ("DB_URL".to_owned(), "DB_URL".to_owned()),
-                ("STRIPE_KEY".to_owned(), "STRIPE_KEY".to_owned()),
+                ("DB_URL".to_owned(), "vault-dev:///secret/db".to_owned()),
+                ("STRIPE_KEY".to_owned(), "aws-ssm-prod:///stripe/api-key".to_owned()),
             ]
         );
     }
@@ -1311,18 +1324,22 @@ mod tests {
     async fn list_ignores_unknown_fields() {
         // CLI payload may grow new fields in future versions (type,
         // version, createdAt, updatedAt, environment, etc.). Our
-        // struct names only `secretKey`; serde drops every other
-        // field silently. Locks forward compatibility.
+        // struct names only `secretKey` and `secretValue`; serde
+        // drops every other field silently. Locks forward
+        // compatibility.
         let dir = TempDir::new().unwrap();
         let body = r#"[
-            {"secretKey":"STRIPE_KEY","secretValue":"sk","type":"shared","version":3,"createdAt":"2026-01-01"}
+            {"secretKey":"STRIPE_KEY","secretValue":"aws-ssm-prod:///stripe","type":"shared","version":3,"createdAt":"2026-01-01"}
         ]"#;
         let mock =
             StrictMock::new("infisical").on(LIST_ARGV, Response::success(body)).install(dir.path());
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("infisical-prod:///abc-123/prod/REG").unwrap();
         let out = b.list(&uri).await.unwrap();
-        assert_eq!(out, vec![("STRIPE_KEY".to_owned(), "STRIPE_KEY".to_owned())]);
+        assert_eq!(
+            out,
+            vec![("STRIPE_KEY".to_owned(), "aws-ssm-prod:///stripe".to_owned())]
+        );
     }
 
     #[tokio::test]

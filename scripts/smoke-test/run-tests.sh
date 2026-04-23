@@ -1506,6 +1506,157 @@ EOF
 fi
 
 # ---------------------------------------------------------------
+# 23 — v0.7: Infisical backend
+# ---------------------------------------------------------------
+section_begin 23 "v0.7 Infisical backend"
+# Self-contained like Section 22: a dedicated mini-config + mini-registry
+# point at the Infisical `secretenv-validation` project (env `dev`)
+# that provision.sh seeded. Does NOT touch cross-backend shared
+# fixtures, so earlier sections stay at their backend scope.
+#
+# Project ID is overridable via $SECRETENV_INFISICAL_PROJECT_ID;
+# default matches TechAlchemistX's CI smoke account. Other accounts
+# running the harness need to override to their own validation
+# project.
+#
+# Pre-req: `infisical` CLI installed AND authenticated (`infisical
+# login` or $INFISICAL_TOKEN). Non-authenticated runs record SKIPs
+# and move on — same discipline as Doppler's SKIP path.
+
+IF_PROJECT_ID="${SECRETENV_INFISICAL_PROJECT_ID:-46302876-3c2f-4349-9376-f8a8228bdb1e}"
+
+if ! command -v infisical >/dev/null 2>&1; then
+    record "297 v0.7 infisical section skipped — infisical CLI not installed" "SKIP" \
+           "install: brew install infisical/get-cli/infisical"
+elif ! infisical user get token --plain >/dev/null 2>&1 && [ -z "${INFISICAL_TOKEN:-}" ]; then
+    record "297 v0.7 infisical section skipped — infisical CLI not authenticated" "SKIP" \
+           "run 'infisical login' or export INFISICAL_TOKEN=<token>"
+else
+    V07_IFREG="$RUNS/297-if-registry.toml"
+    cat > "$V07_IFREG" <<EOF
+if_secret = "infisical-test:///${IF_PROJECT_ID}/dev/SMOKE_TEST_VALUE"
+EOF
+
+    # infisical-test keeps the full-form shape (URI supplies
+    # project+env). infisical-test-short sets defaults so short-form
+    # URIs work — exercised by assertion 308 below.
+    V07_IFCFG="$RUNS/297-if-config.toml"
+    cat > "$V07_IFCFG" <<EOF
+[registries.default]
+sources = ["local-main://${V07_IFREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.infisical-test]
+type = "infisical"
+
+[backends.infisical-test-short]
+type = "infisical"
+infisical_project_id = "${IF_PROJECT_ID}"
+infisical_environment = "dev"
+EOF
+
+    # Short-form registry: one alias pointing at a short-form URI
+    # that relies on backend-level project+env defaults.
+    V07_IFREG_SHORT="$RUNS/297-if-registry-short.toml"
+    cat > "$V07_IFREG_SHORT" <<EOF
+if_secret_short = "infisical-test-short:///SMOKE_TEST_VALUE"
+EOF
+
+    # Mini project manifest for the end-to-end `run` test.
+    V07_IFPROJ="$RUNS/297-if-project"
+    mkdir -p "$V07_IFPROJ"
+    cat > "$V07_IFPROJ/secretenv.toml" <<EOF
+[secrets]
+IF_SECRET = { from = "secretenv://if_secret" }
+EOF
+
+    # 23a — doctor sees the infisical backend authenticated.
+    run_test "297 v0.7 infisical doctor sees backend" 0 "$RUNS/297-v07-if-doctor.log" \
+      "$BIN" --config "$V07_IFCFG" doctor
+    assert_contains "298 infisical doctor lists instance"         "$RUNS/297-v07-if-doctor.log" 'infisical-test'
+    assert_contains "299 infisical doctor identity names auth mode" "$RUNS/297-v07-if-doctor.log" 'auth='
+    assert_contains "300 infisical doctor identity names domain"    "$RUNS/297-v07-if-doctor.log" 'domain='
+
+    # 23b — round-trip get: alias in local registry resolves to
+    # infisical URI, backend.get() runs
+    # `infisical secrets get … --plain` and returns the seeded value.
+    run_test "301 v0.7 infisical get round-trip" 0 "$RUNS/301-v07-if-get.log" \
+      "$BIN" --config "$V07_IFCFG" get if_secret --yes
+    assert_contains "302 infisical round-trip returns seeded value" "$RUNS/301-v07-if-get.log" 'sk_test_infisical_55555'
+
+    # 23c — end-to-end `run` injects the infisical-backed alias as env.
+    run_test "303 v0.7 infisical run injects env var" 0 "$RUNS/303-v07-if-run.log" \
+      bash -c "cd '$V07_IFPROJ' && '$BIN' --config '$V07_IFCFG' run -- sh -c 'echo if=\$IF_SECRET'"
+    assert_contains "304 infisical run renders IF_SECRET" "$RUNS/303-v07-if-run.log" 'if=sk_test_infisical_55555'
+
+    # 23d — history surfaces the "unsupported" message. CLI v0.43.77
+    # has no `secrets versions` subcommand; backend bails locally
+    # with a Dashboard-pointer message per the override.
+    run_test "305 v0.7 infisical history bails unsupported" 1 "$RUNS/305-v07-if-history.log" \
+      "$BIN" --config "$V07_IFCFG" registry history if_secret
+    assert_contains "306 infisical history names 'not supported'" "$RUNS/305-v07-if-history.log" 'history is not supported'
+    assert_contains "307 infisical history points at Dashboard"   "$RUNS/305-v07-if-history.log" 'Dashboard'
+
+    # 23e — short-form URI round-trip via backend defaults. A regression
+    # that broke the both-or-neither defaults wiring or ignored
+    # infisical_project_id/infisical_environment would surface here
+    # with a "URI short form"-style error rather than a successful
+    # fetch.
+    V07_IFCFG_SHORT="$RUNS/297-if-config-short.toml"
+    cat > "$V07_IFCFG_SHORT" <<EOF
+[registries.default]
+sources = ["local-main://${V07_IFREG_SHORT}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.infisical-test-short]
+type = "infisical"
+infisical_project_id = "${IF_PROJECT_ID}"
+infisical_environment = "dev"
+EOF
+    run_test "308 v0.7 infisical short-form URI uses backend defaults" 0 "$RUNS/308-v07-if-short.log" \
+      "$BIN" --config "$V07_IFCFG_SHORT" get if_secret_short --yes
+    assert_contains "309 infisical short-form returns seeded value" "$RUNS/308-v07-if-short.log" 'sk_test_infisical_55555'
+
+    # 23f — fragment on get is rejected before subprocess. A
+    # regression that stripped the fragment-reject would either
+    # succeed silently (worse) or fail with a subprocess stderr
+    # message (misleading).
+    V07_IFREG_FRAG="$RUNS/297-if-registry-frag.toml"
+    cat > "$V07_IFREG_FRAG" <<EOF
+if_frag = "infisical-test:///${IF_PROJECT_ID}/dev/SMOKE_TEST_VALUE#version=5"
+EOF
+    V07_IFCFG_FRAG="$RUNS/297-if-config-frag.toml"
+    cat > "$V07_IFCFG_FRAG" <<EOF
+[registries.default]
+sources = ["local-main://${V07_IFREG_FRAG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.infisical-test]
+type = "infisical"
+EOF
+    run_test "310 v0.7 infisical rejects fragment on get" 1 "$RUNS/310-v07-if-frag.log" \
+      "$BIN" --config "$V07_IFCFG_FRAG" get if_frag --yes
+    assert_contains "311 infisical fragment-reject names backend" "$RUNS/310-v07-if-frag.log" 'infisical'
+
+    # Note: live-smoke of backend.set() is deliberately omitted.
+    # `registry set` at v0.7 only supports "Pattern B" backends
+    # (single-doc registries over local / 1password / aws-ssm /
+    # vault / aws-secrets / gcp / azure — see cli.rs:
+    # serialize_registry). Infisical uses "Pattern A" — each
+    # backend secret IS one alias — so it cannot use the registry-
+    # doc serializer. Unit tests `set_value_never_appears_on_argv`
+    # + `delete_without_type_shared_flag_would_fail_strict_mock`
+    # cover set() argv discipline; Section 23's get/run/history
+    # surface covers every other trait method live.
+fi
+
+# ---------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------
 {

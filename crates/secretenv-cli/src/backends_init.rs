@@ -15,13 +15,14 @@
 //! registration list.
 //!
 //! v0.6 adds `doppler` (Doppler secrets-manager CLI wrapper).
+//! v0.7 adds `infisical` (Infisical `SaaS` + self-hostable CLI wrapper).
 
 use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
 /// Register every compiled-in backend factory (`local`, `aws-ssm`,
 /// `1password`, `vault`, `aws-secrets`, `gcp`, `azure`, `keychain`,
-/// `doppler`) and instantiate the backends declared in `config`.
+/// `doppler`, `infisical`) and instantiate the backends declared in `config`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a
@@ -38,6 +39,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_azure::AzureFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_keychain::KeychainFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_doppler::DopplerFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_infisical::InfisicalFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

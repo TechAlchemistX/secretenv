@@ -1,8 +1,8 @@
 # SecretEnv smoke-test harness
 
 Live-backend integration smoke for `secretenv`. Provisions cloud-side fixtures
-across all 7 cloud/team backends plus a self-contained test keychain on
-macOS hosts, runs a 347-assertion validation matrix against a release
+across all 9 cloud/team backends plus a self-contained test keychain on
+macOS hosts, runs a 373-assertion validation matrix against a release
 binary, then tears down what it created.
 
 This is the gate run before every tagged release.
@@ -36,6 +36,9 @@ You need authenticated CLIs for every backend the matrix touches:
 | Vault           | `vault`   | Dev-mode server: `vault server -dev` (KV v2 mounted at `secret/`) |
 | GCP Secret Mgr  | `gcloud`  | `gcloud auth application-default login`                  |
 | Azure Key Vault | `az`      | `az login` + Key Vault Secrets Officer role on the vault |
+| macOS Keychain  | `security`| macOS only; test keychain created per-run under `$RUNTIME_DIR` |
+| Doppler         | `doppler` | `doppler login` — project `secretenv-validation` / config `dev` (provisioned) |
+| Infisical       | `infisical`| `infisical login` — account-specific project UUID in `$SECRETENV_INFISICAL_PROJECT_ID` (default: CI smoke account) |
 
 Plus a Rust toolchain to build the release binary.
 
@@ -52,6 +55,7 @@ Optional overrides:
 export SECRETENV_TEST_AWS_REGION=us-east-1          # default
 export SECRETENV_SMOKE_RUNTIME=/tmp/secretenv-test  # default
 export SECRETENV_BIN=/path/to/secretenv             # default: <repo>/target/release/secretenv
+export SECRETENV_INFISICAL_PROJECT_ID=<uuid>        # override the Infisical project UUID (default: TechAlchemistX CI smoke project)
 ```
 
 ## Quick start

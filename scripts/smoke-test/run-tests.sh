@@ -60,6 +60,12 @@ SECTIONS=(
     # code paths on every platform via strict-mock, so Linux coverage
     # is not lost.
     "21|v0.5 macOS Keychain backend|yes"
+    # Section 22 needs a Doppler CLI + an authenticated session (or a
+    # DOPPLER_TOKEN env var). Same pattern as 1Password section: truly
+    # offline in unit tests, but the live smoke assumes `doppler me`
+    # works against the workplace `secretenv-validation` project seeded
+    # by provision.sh.
+    "22|v0.6 Doppler backend|yes"
 )
 
 print_section_inventory() {
@@ -254,6 +260,19 @@ assert_contains() {
         record "$name" "PASS" "found '$pattern' in $(basename "$log")"
     else
         record "$name" "FAIL" "missing '$pattern' in $(basename "$log")"
+    fi
+}
+
+# Negative assertion — passes when the pattern is ABSENT. Used in
+# Section 22 to lock the `list()` filter (synthetic DOPPLER_* keys
+# must never appear in the rendered registry listing).
+assert_not_contains() {
+    if [ "$SECTION_ACTIVE" = "0" ]; then return 0; fi
+    local name="$1" log="$2" pattern="$3"
+    if grep -q -- "$pattern" "$log" 2>/dev/null; then
+        record "$name" "FAIL" "unexpected '$pattern' in $(basename "$log")"
+    else
+        record "$name" "PASS" "pattern '$pattern' absent from $(basename "$log")"
     fi
 }
 
@@ -1335,6 +1354,155 @@ EOF
     run_test "280 v0.5 keychain history bails unsupported" 1 "$RUNS/280-v05-kc-history.log" \
       "$BIN" --config "$V05_KCCFG" registry history kc_secret
     assert_contains "281 keychain history names backend type" "$RUNS/280-v05-kc-history.log" 'keychain'
+fi
+
+# ---------------------------------------------------------------
+# 22 — v0.6: Doppler backend
+# ---------------------------------------------------------------
+section_begin 22 "v0.6 Doppler backend"
+# Self-contained like Section 21: a dedicated mini-config + mini-registry
+# point at the `secretenv-validation` Doppler project (config `dev`)
+# provision.sh seeded. Does NOT touch the cross-backend shared fixtures,
+# so sections 3-8 stay at 8-backend scope.
+#
+# Pre-req: `doppler` CLI installed AND authenticated (via `doppler login`
+# or $DOPPLER_TOKEN). Non-authenticated runs record a SKIP and move on —
+# same discipline as Keychain's non-macOS SKIP, keeping section-count
+# consistent across hosts where the CLI is missing or logged out.
+
+if ! command -v doppler >/dev/null 2>&1; then
+    record "282 v0.6 doppler section skipped — doppler CLI not installed" "SKIP" \
+           "install: brew install dopplerhq/cli/doppler"
+elif ! doppler me --json >/dev/null 2>&1; then
+    record "282 v0.6 doppler section skipped — doppler CLI not authenticated" "SKIP" \
+           "run 'doppler login' or export DOPPLER_TOKEN=<token>"
+else
+    V06_DPREG="$RUNS/282-dp-registry.toml"
+    cat > "$V06_DPREG" <<EOF
+dp_secret = "doppler-test:///secretenv-validation/dev/SMOKE_TEST_VALUE"
+EOF
+
+    # doppler-test keeps the full-form shape (URI supplies project+config).
+    # doppler-test-short sets defaults so short-form URIs work —
+    # exercised by assertion 295 below.
+    V06_DPCFG="$RUNS/282-dp-config.toml"
+    cat > "$V06_DPCFG" <<EOF
+[registries.default]
+sources = ["local-main://${V06_DPREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.doppler-test]
+type = "doppler"
+
+[backends.doppler-test-short]
+type = "doppler"
+doppler_project = "secretenv-validation"
+doppler_config = "dev"
+EOF
+
+    # Short-form registry: one alias pointing at a short-form URI that
+    # relies on backend-level project+config defaults. Sharing the
+    # runtime with V06_DPREG would muddle the test surface; a second
+    # registry file keeps each shape isolated.
+    V06_DPREG_SHORT="$RUNS/282-dp-registry-short.toml"
+    cat > "$V06_DPREG_SHORT" <<EOF
+dp_secret_short = "doppler-test-short:///SMOKE_TEST_VALUE"
+EOF
+
+    # Mini project manifest for the end-to-end `run` test.
+    V06_DPPROJ="$RUNS/282-dp-project"
+    mkdir -p "$V06_DPPROJ"
+    cat > "$V06_DPPROJ/secretenv.toml" <<EOF
+[secrets]
+DP_SECRET = { from = "secretenv://dp_secret" }
+EOF
+
+    # 22a — doctor sees the doppler backend authenticated.
+    run_test "282 v0.6 doppler doctor sees backend" 0 "$RUNS/282-v06-dp-doctor.log" \
+      "$BIN" --config "$V06_DPCFG" doctor
+    assert_contains "283 doppler doctor lists instance"         "$RUNS/282-v06-dp-doctor.log" 'doppler-test'
+    assert_contains "284 doppler doctor identity shows account" "$RUNS/282-v06-dp-doctor.log" 'account='
+    assert_contains "285 doppler doctor identity shows token"   "$RUNS/282-v06-dp-doctor.log" 'token-type='
+
+    # 22b — round-trip get: alias in local registry resolves to doppler
+    # URI, backend.get() runs `doppler secrets get ... --plain` and
+    # returns the seeded value from provision.sh.
+    run_test "286 v0.6 doppler get round-trip" 0 "$RUNS/286-v06-dp-get.log" \
+      "$BIN" --config "$V06_DPCFG" get dp_secret --yes
+    assert_contains "287 doppler round-trip returns seeded value" "$RUNS/286-v06-dp-get.log" 'sk_test_doppler_44444'
+
+    # 22c — end-to-end `run` injects the doppler-backed alias as env var.
+    run_test "288 v0.6 doppler run injects env var" 0 "$RUNS/288-v06-dp-run.log" \
+      bash -c "cd '$V06_DPPROJ' && '$BIN' --config '$V06_DPCFG' run -- sh -c 'echo dp=\$DP_SECRET'"
+    assert_contains "289 doppler run renders DP_SECRET" "$RUNS/288-v06-dp-run.log" 'dp=sk_test_doppler_44444'
+
+    # 22d — history surfaces the "unsupported" message (CLI v3.76.0 has
+    # no `doppler secrets versions` subcommand; backend returns a
+    # Doppler-specific bail per the override).
+    #
+    # NOTE: a live list() assertion would need a dedicated Doppler
+    # config seeded with URI-valued secrets (registry-source shape).
+    # The `dev` config used here holds a scalar value for the get/run
+    # round-trip, so routing it through `registry list --registry
+    # <doppler-URI>` would bail on URI-parse of the scalar value.
+    # The synthetic-DOPPLER_* key filter + basic list decoding are
+    # locked by unit tests `list_returns_filtered_map` and
+    # `list_filters_every_doppler_prefixed_key` in the backend crate.
+    run_test "290 v0.6 doppler history bails unsupported" 1 "$RUNS/290-v06-dp-history.log" \
+      "$BIN" --config "$V06_DPCFG" registry history dp_secret
+    assert_contains "291 doppler history names 'not supported'" "$RUNS/290-v06-dp-history.log" 'history is not supported'
+    assert_contains "292 doppler history points at Dashboard"   "$RUNS/290-v06-dp-history.log" 'Dashboard'
+
+    # 22e — short-form URI round-trip via backend defaults. Points the
+    # config at V06_DPREG_SHORT (single alias on doppler-test-short)
+    # via $SECRETENV_REGISTRY override, exercising the short-form
+    # resolve path end-to-end. A regression that broke the
+    # both-or-neither defaults wiring or ignored doppler_project/
+    # doppler_config would surface here with a "URI short form"-style
+    # error, not a successful fetch.
+    V06_DPCFG_SHORT="$RUNS/282-dp-config-short.toml"
+    cat > "$V06_DPCFG_SHORT" <<EOF
+[registries.default]
+sources = ["local-main://${V06_DPREG_SHORT}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.doppler-test-short]
+type = "doppler"
+doppler_project = "secretenv-validation"
+doppler_config = "dev"
+EOF
+    run_test "293 v0.6 doppler short-form URI uses backend defaults" 0 "$RUNS/293-v06-dp-short.log" \
+      "$BIN" --config "$V06_DPCFG_SHORT" get dp_secret_short --yes
+    assert_contains "294 doppler short-form returns seeded value" "$RUNS/293-v06-dp-short.log" 'sk_test_doppler_44444'
+
+    # 22f — fragment on get is rejected before subprocess. Uses a
+    # direct-URI registry so the fragment surfaces through backend.get()
+    # NOT through the URI-parser at config-load time. A regression that
+    # stripped the fragment-reject or moved it after the subprocess
+    # would either succeed silently (worse) or fail with a subprocess
+    # stderr message (misleading).
+    V06_DPREG_FRAG="$RUNS/282-dp-registry-frag.toml"
+    cat > "$V06_DPREG_FRAG" <<EOF
+dp_frag = "doppler-test:///secretenv-validation/dev/SMOKE_TEST_VALUE#version=5"
+EOF
+    V06_DPCFG_FRAG="$RUNS/282-dp-config-frag.toml"
+    cat > "$V06_DPCFG_FRAG" <<EOF
+[registries.default]
+sources = ["local-main://${V06_DPREG_FRAG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.doppler-test]
+type = "doppler"
+EOF
+    run_test "295 v0.6 doppler rejects fragment on get" 1 "$RUNS/295-v06-dp-frag.log" \
+      "$BIN" --config "$V06_DPCFG_FRAG" get dp_frag --yes
+    assert_contains "296 doppler fragment-reject names backend" "$RUNS/295-v06-dp-frag.log" 'doppler'
 fi
 
 # ---------------------------------------------------------------

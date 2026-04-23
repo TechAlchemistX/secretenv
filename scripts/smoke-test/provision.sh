@@ -141,10 +141,34 @@ printf 'exit=%d\n' "${PIPESTATUS[1]}" | tee -a "$LOG"
 # `az keyvault secret set` uses `--file /dev/stdin --encoding utf-8` —
 # mirrors the backend's CV-1 path exactly. Vault pre-created manually
 # in subscription (RBAC + Secrets Officer role granted to signed-in
-# user). Soft-delete is Azure's default; secrets get restored-on-set
-# if they already exist in soft-deleted state. Skip the restore dance
-# here — the fixtures below create-or-update idempotently via `set`.
+# user).
+#
+# Soft-delete gotcha (caught during v0.6 smoke, 2026-04-22): Azure's
+# default soft-delete policy keeps deleted secrets recoverable for 90
+# days. teardown.sh `delete` soft-deletes without purging, which means
+# a subsequent provision run hits ERROR 409 Conflict:
+#   "Secret is currently in a deleted but recoverable state, and its
+#    name cannot be reused; in this state, the secret can only be
+#    recovered or purged."
+# The helper below pre-recovers any soft-deleted fixture before `set`
+# so provision is fully idempotent across teardown/provision cycles.
 
+# az_ensure_available <secret-name> — if the secret is in
+# soft-deleted state, recover it so the subsequent `set` can proceed.
+# Propagation takes a few seconds; the sleep after `recover` is the
+# documented wait Azure recommends before re-accessing the recovered
+# secret.
+az_ensure_available() {
+    local name="$1"
+    if az keyvault secret show-deleted --vault-name "$AZURE_VAULT" --name "$name" -o none >/dev/null 2>&1; then
+        say "[Azure] recovering soft-deleted secret '$name' before set"
+        run "az keyvault secret recover --vault-name '$AZURE_VAULT' --name '$name' -o none"
+        # Propagation — recover returns before the secret is writable
+        sleep 8
+    fi
+}
+
+az_ensure_available secretenv-validation-registry
 say "[Azure] registry (secretenv-validation-registry)"
 printf '%s' "$REG_JSON" | az keyvault secret set \
   --vault-name "$AZURE_VAULT" \
@@ -153,6 +177,7 @@ printf '%s' "$REG_JSON" | az keyvault secret set \
   -o none 2>&1 | tee -a "$LOG"
 printf 'exit=%d\n' "${PIPESTATUS[1]}" | tee -a "$LOG"
 
+az_ensure_available secretenv-validation-azure-secret
 say "[Azure] secret (secretenv-validation-azure-secret)"
 printf '%s' "sk_az_66666" | az keyvault secret set \
   --vault-name "$AZURE_VAULT" \
@@ -185,6 +210,32 @@ if [[ "$OSTYPE" == darwin* ]]; then
     run "security add-generic-password -s secretenv-v05-test -a account1 -w 'kc_ring_77777' -U '$TEST_KC'"
 else
     say "[Keychain] skipped (non-macOS host: $OSTYPE)"
+fi
+
+# ---------- Doppler (v0.6) ----------
+# Doppler project `secretenv-validation` with config `dev` is the
+# fixture target for Section 22. `doppler projects create` errors on
+# re-run, so gate with a name-probe. The test secret shape matches
+# the backend's name-validation (ALL_CAPS_WITH_UNDERSCORES).
+#
+# Skipped entirely if the CLI is missing OR not authenticated —
+# run-tests.sh's Section 22 records a SKIP in either case, so the
+# asymmetry is acceptable.
+if command -v doppler >/dev/null 2>&1 && doppler me --json >/dev/null 2>&1; then
+    say "[Doppler] project secretenv-validation (idempotent)"
+    if ! doppler projects get secretenv-validation --json >/dev/null 2>&1; then
+        run "doppler projects create secretenv-validation --description 'SecretEnv integration smoke fixtures'"
+    else
+        say "[Doppler] project already exists — reusing"
+    fi
+
+    say "[Doppler] secret SMOKE_TEST_VALUE in config dev"
+    # `secrets set` is idempotent (upsert). No stdin piping here in the
+    # provisioner — this is a fixture hook, not the code-under-test;
+    # the backend's CV-1 discipline is locked by strict-mock tests.
+    run "doppler secrets set SMOKE_TEST_VALUE='sk_test_doppler_44444' --project secretenv-validation --config dev --no-interactive"
+else
+    say "[Doppler] skipped (CLI missing or not authenticated)"
 fi
 
 # ---------- Verification ----------

@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -655,6 +655,7 @@ dependencies = [
  "secretenv-backend-aws-secrets",
  "secretenv-backend-aws-ssm",
  "secretenv-backend-azure",
+ "secretenv-backend-doppler",
  "secretenv-backend-gcp",
  "secretenv-backend-keychain",
  "secretenv-backend-local",
@@ -672,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-1password"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -688,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-aws-secrets"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -703,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-aws-ssm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -718,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-azure"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -733,8 +734,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretenv-backend-doppler"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "secretenv-testing",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "secretenv-backend-gcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -749,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-keychain"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -763,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-local"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -775,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-vault"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -790,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -808,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-testing"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "tempfile",
 ]

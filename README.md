@@ -9,7 +9,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
 [![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
-[![Backends](https://img.shields.io/badge/backends-8-green)](#supported-backends)
+[![Backends](https://img.shields.io/badge/backends-9-green)](#supported-backends)
 
 *No SaaS. No re-encryption. No lock-in. No .env files.*
 
@@ -440,9 +440,9 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | GCP Secret Manager | `gcp` | `gcp-<instance>:///<secret-name>[#version=<n>]` | `gcloud` | Available |
 | Azure Key Vault | `azure` | `azure-<instance>:///<secret-name>[#version=<32-hex>]` | `az` | Available |
 | macOS Keychain | `keychain` | `keychain-<instance>:///service/account` | `security` | Available (macOS only) |
+| Doppler | `doppler` | `doppler-<instance>:///<project>/<config>/<secret>` | `doppler` | Available |
 | Linux Secret Service | `secret-service` | `secret-service-<instance>://collection/label` | `secret-tool` | Coming Soon |
 | Keeper | `keeper` | `keeper-<instance>://folder/item/field` | `keeper` | Coming Soon |
-| Doppler | `doppler` | `doppler-<instance>://project/config/secret` | `doppler` | Coming Soon |
 | Infisical | `infisical` | `infisical-<instance>://project/env/path` | `infisical` | Coming Soon |
 | Bitwarden Secrets Manager | `bitwarden` | `bitwarden-<instance>://organization/secret` | `bws` | Coming Soon |
 | OpenBao | `openbao` | `openbao-<instance>://mount/path` | `bao` | Coming Soon |

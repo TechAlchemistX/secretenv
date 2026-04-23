@@ -65,4 +65,12 @@ if [[ "$OSTYPE" == darwin* ]]; then
     fi
 fi
 
+# Doppler (v0.6) — delete the test secret. The project is left in
+# place (re-creation is cheap, and matches the "dev vault stays live"
+# pattern from 1Password/Vault teardown). Skipped on hosts without
+# the CLI or without an authenticated session.
+if command -v doppler >/dev/null 2>&1 && doppler me --json >/dev/null 2>&1; then
+    run "doppler secrets delete SMOKE_TEST_VALUE --project secretenv-validation --config dev --yes"
+fi
+
 say "=== TEARDOWN_DONE ==="

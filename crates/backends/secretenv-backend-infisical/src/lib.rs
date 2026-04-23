@@ -119,9 +119,11 @@
 //!   never via argv. Canary tests lock this.
 //! - `infisical_domain` travels via `Command::env("INFISICAL_API_URL", …)`,
 //!   never via argv. Matches the token discipline.
-//! - `list()` response body is secret-bearing. `secretValue` is never
-//!   deserialized into our types; stderr/error messages never
-//!   interpolate the body.
+//! - `list()` response body is secret-bearing. Values are returned as
+//!   the second element of `(alias, target_uri)` tuples — do NOT use
+//!   an Infisical env+path as a registry source unless every entry's
+//!   value is a URI. Raw stdout bytes and the parsed `Vec` are never
+//!   logged, `Debug`-dumped, or interpolated into errors.
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions)]
 
@@ -1336,10 +1338,7 @@ mod tests {
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("infisical-prod:///abc-123/prod/REG").unwrap();
         let out = b.list(&uri).await.unwrap();
-        assert_eq!(
-            out,
-            vec![("STRIPE_KEY".to_owned(), "aws-ssm-prod:///stripe".to_owned())]
-        );
+        assert_eq!(out, vec![("STRIPE_KEY".to_owned(), "aws-ssm-prod:///stripe".to_owned())]);
     }
 
     #[tokio::test]

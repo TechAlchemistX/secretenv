@@ -47,6 +47,7 @@ exceptions = [
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-azure" },
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-keychain" },
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-doppler" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-infisical" },
 ]
 
 [bans]

@@ -73,4 +73,13 @@ if command -v doppler >/dev/null 2>&1 && doppler me --json >/dev/null 2>&1; then
     run "doppler secrets delete SMOKE_TEST_VALUE --project secretenv-validation --config dev --yes"
 fi
 
+# Infisical (v0.7) — delete the test secret (project left in place).
+# `--type shared` is mandatory — CLI default is `personal` which would
+# silently no-op against the project-shared secret we seeded.
+# Project ID is overridable; default matches the CI smoke account.
+INFISICAL_PROJECT_ID="${SECRETENV_INFISICAL_PROJECT_ID:-46302876-3c2f-4349-9376-f8a8228bdb1e}"
+if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/dev/null 2>&1; then
+    run "infisical secrets delete SMOKE_TEST_VALUE --projectId '$INFISICAL_PROJECT_ID' --env dev --path / --type shared"
+fi
+
 say "=== TEARDOWN_DONE ==="

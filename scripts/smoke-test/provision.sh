@@ -238,6 +238,32 @@ else
     say "[Doppler] skipped (CLI missing or not authenticated)"
 fi
 
+# ---------- Infisical (v0.7) ----------
+# Infisical project `secretenv-validation` is NOT creatable via the
+# `infisical` CLI (v0.43.77) — `infisical init` only *connects* a local
+# dir to an existing project. Project setup happens out-of-band via
+# the dashboard; only the secret-seeding is automatable here.
+#
+# The project ID is account-specific. Override via
+# $SECRETENV_INFISICAL_PROJECT_ID when running against a different
+# account/org. Default matches the TechAlchemistX org's
+# `secretenv-validation` project used for CI smoke.
+#
+# Skipped entirely if the CLI is missing OR not authenticated —
+# run-tests.sh's Section 23 records a SKIP in either case.
+INFISICAL_PROJECT_ID="${SECRETENV_INFISICAL_PROJECT_ID:-46302876-3c2f-4349-9376-f8a8228bdb1e}"
+if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/dev/null 2>&1; then
+    say "[Infisical] secret SMOKE_TEST_VALUE in project $INFISICAL_PROJECT_ID env=dev path=/"
+    # `secrets set` is idempotent (upsert). Provisioner uses the CLI's
+    # native positional argv form (value on argv) because this is a
+    # fixture hook, NOT the code-under-test — the backend's temp-file
+    # discipline is locked by strict-mock tests + Section 23's set/
+    # delete round-trip.
+    run "infisical secrets set SMOKE_TEST_VALUE=sk_test_infisical_55555 --projectId '$INFISICAL_PROJECT_ID' --env dev --path / --type shared"
+else
+    say "[Infisical] skipped (CLI missing or not authenticated)"
+fi
+
 # ---------- Verification ----------
 say "=== Verification read-back ==="
 run "aws ssm get-parameter --name /secretenv-validation/registry --with-decryption --region '$AWS_REGION' --query Parameter.Value --output text | head -c 200; echo"

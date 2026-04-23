@@ -190,10 +190,7 @@ impl DopplerBackend {
     ///   `doppler_project` AND `doppler_config` in instance config.
     ///
     /// Any other segment count errors locally before shelling out.
-    fn resolve_target<'a>(
-        &'a self,
-        uri: &'a BackendUri,
-    ) -> Result<(&'a str, &'a str, &'a str)> {
+    fn resolve_target<'a>(&'a self, uri: &'a BackendUri) -> Result<(&'a str, &'a str, &'a str)> {
         let path = uri.path.strip_prefix('/').unwrap_or(&uri.path);
         let parts: Vec<&str> = path.split('/').collect();
         match parts.as_slice() {
@@ -348,11 +345,8 @@ impl Backend for DopplerBackend {
         };
         let token_type = me.r#type.as_deref().unwrap_or("unknown");
         let account = me.name.as_deref().unwrap_or("unknown");
-        let workplace =
-            me.workplace.as_ref().and_then(|w| w.name.as_deref()).unwrap_or("unknown");
-        let identity = format!(
-            "account={account} token-type={token_type} workplace={workplace}"
-        );
+        let workplace = me.workplace.as_ref().and_then(|w| w.name.as_deref()).unwrap_or("unknown");
+        let identity = format!("account={account} token-type={token_type} workplace={workplace}");
 
         BackendStatus::Ok { cli_version, identity }
     }
@@ -361,8 +355,7 @@ impl Backend for DopplerBackend {
         uri.reject_any_fragment("doppler")?;
         let (project, config, secret) = self.resolve_target(uri)?;
 
-        let mut cmd =
-            self.doppler_command(&["secrets", "get", secret, "--plain"], project, config);
+        let mut cmd = self.doppler_command(&["secrets", "get", secret, "--plain"], project, config);
         let output = cmd.output().await.with_context(|| {
             format!(
                 "doppler backend '{}': failed to invoke 'doppler secrets get' for URI '{}'",
@@ -372,9 +365,7 @@ impl Backend for DopplerBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Could not find requested secret")
-                || stderr.contains("not found")
-            {
+            if stderr.contains("Could not find requested secret") || stderr.contains("not found") {
                 bail!(
                     "doppler backend '{}': secret '{secret}' not found in \
                      project='{project}' config='{config}' (URI '{}')",
@@ -403,11 +394,8 @@ impl Backend for DopplerBackend {
         // stdin instead of prompting. Child stdin is piped; value is
         // written + stdin closed. argv carries ONLY the secret NAME,
         // NEVER the value.
-        let mut cmd = self.doppler_command(
-            &["secrets", "set", secret, "--no-interactive"],
-            project,
-            config,
-        );
+        let mut cmd =
+            self.doppler_command(&["secrets", "set", secret, "--no-interactive"], project, config);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -448,11 +436,8 @@ impl Backend for DopplerBackend {
         uri.reject_any_fragment("doppler")?;
         let (project, config, secret) = self.resolve_target(uri)?;
 
-        let mut cmd = self.doppler_command(
-            &["secrets", "delete", secret, "--yes"],
-            project,
-            config,
-        );
+        let mut cmd =
+            self.doppler_command(&["secrets", "delete", secret, "--yes"], project, config);
         let output = cmd.output().await.with_context(|| {
             format!(
                 "doppler backend '{}': failed to invoke 'doppler secrets delete' for URI '{}'",
@@ -461,9 +446,7 @@ impl Backend for DopplerBackend {
         })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Could not find requested secret")
-                || stderr.contains("not found")
-            {
+            if stderr.contains("Could not find requested secret") || stderr.contains("not found") {
                 bail!(
                     "doppler backend '{}': secret '{secret}' not found at URI '{}' \
                      (delete is not idempotent — matches aws-secrets precedent)",
@@ -522,16 +505,10 @@ impl Backend for DopplerBackend {
         // `DOPPLER_ENVIRONMENT`). A regression would pollute every
         // registry caller with three meaningless aliases —
         // `synthetic_keys_are_filtered` locks this.
-        Ok(map
-            .into_iter()
-            .filter(|(k, _)| !k.starts_with(SYNTHETIC_KEY_PREFIX))
-            .collect())
+        Ok(map.into_iter().filter(|(k, _)| !k.starts_with(SYNTHETIC_KEY_PREFIX)).collect())
     }
 
-    async fn history(
-        &self,
-        uri: &BackendUri,
-    ) -> Result<Vec<secretenv_core::HistoryEntry>> {
+    async fn history(&self, uri: &BackendUri) -> Result<Vec<secretenv_core::HistoryEntry>> {
         // Override the trait default so we can reject fragments and
         // surface a Doppler-specific explanation. Per-secret version
         // history exists in the Doppler Dashboard + REST API but the
@@ -584,10 +561,8 @@ impl BackendFactory for DopplerFactory {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let doppler_project =
-            optional_string(config, "doppler_project", "doppler", instance_name)?;
-        let doppler_config =
-            optional_string(config, "doppler_config", "doppler", instance_name)?;
+        let doppler_project = optional_string(config, "doppler_project", "doppler", instance_name)?;
+        let doppler_config = optional_string(config, "doppler_config", "doppler", instance_name)?;
 
         // Both-or-neither rule. A user setting just one of the two
         // would get a confusing "missing doppler_config" error at
@@ -608,8 +583,7 @@ impl BackendFactory for DopplerFactory {
             _ => {}
         }
 
-        let doppler_token =
-            optional_string(config, "doppler_token", "doppler", instance_name)?;
+        let doppler_token = optional_string(config, "doppler_token", "doppler", instance_name)?;
         let doppler_bin = optional_string(config, "doppler_bin", "doppler", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
         let timeout = optional_duration_secs(config, "timeout_secs", "doppler", instance_name)?
@@ -688,16 +662,7 @@ mod tests {
     }
 
     fn set_argv(secret: &str) -> [&str; 8] {
-        [
-            "secrets",
-            "set",
-            secret,
-            "--no-interactive",
-            "--project",
-            PROJECT,
-            "--config",
-            CONFIG,
-        ]
+        ["secrets", "set", secret, "--no-interactive", "--project", PROJECT, "--config", CONFIG]
     }
 
     fn delete_argv(secret: &str) -> [&str; 8] {
@@ -952,10 +917,7 @@ mod tests {
         let mock = StrictMock::new("doppler")
             .on(
                 &get_argv("MISSING"),
-                Response::failure(
-                    1,
-                    "Doppler Error: Could not find requested secret: MISSING\n",
-                ),
+                Response::failure(1, "Doppler Error: Could not find requested secret: MISSING\n"),
             )
             .install(dir.path());
         let b = backend(&mock, None);
@@ -990,10 +952,7 @@ mod tests {
         let mock = StrictMock::new("doppler")
             .on(
                 &set_argv("STRIPE_KEY"),
-                Response::success_with_stdin(
-                    "Updated secrets: 1\n",
-                    vec![canary.to_owned()],
-                ),
+                Response::success_with_stdin("Updated secrets: 1\n", vec![canary.to_owned()]),
             )
             .install(dir.path());
         let b = backend(&mock, None);
@@ -1018,10 +977,7 @@ mod tests {
     async fn set_propagates_upstream_failure() {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("doppler")
-            .on(
-                &set_argv("STRIPE_KEY"),
-                Response::failure(1, "Doppler Error: project not found\n"),
-            )
+            .on(&set_argv("STRIPE_KEY"), Response::failure(1, "Doppler Error: project not found\n"))
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("doppler-prod:///acme/prd/STRIPE_KEY").unwrap();
@@ -1048,10 +1004,7 @@ mod tests {
         let mock = StrictMock::new("doppler")
             .on(
                 &delete_argv("MISSING"),
-                Response::failure(
-                    1,
-                    "Doppler Error: Could not find requested secret: MISSING\n",
-                ),
+                Response::failure(1, "Doppler Error: Could not find requested secret: MISSING\n"),
             )
             .install(dir.path());
         let b = backend(&mock, None);
@@ -1139,10 +1092,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("history is not supported"), "{msg}");
         assert!(msg.contains("Dashboard"), "{msg}");
-        assert!(
-            !msg.contains("strict-mock-no-match"),
-            "unsupported error must precede subprocess"
-        );
+        assert!(!msg.contains("strict-mock-no-match"), "unsupported error must precede subprocess");
     }
 
     #[tokio::test]

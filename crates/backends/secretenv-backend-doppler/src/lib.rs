@@ -103,10 +103,17 @@ const SYNTHETIC_KEY_PREFIX: &str = "DOPPLER_";
 
 /// Payload-size cutover above which `list()` runs `serde_json` on a
 /// tokio `spawn_blocking` worker thread instead of inline. Below it,
-/// the thread-pool dispatch cost exceeds the parse cost for a typical
-/// small registry; above it, a multi-MB payload would otherwise stall
-/// the tokio executor. 256 KiB is a crude threshold but correct
-/// directionally; see v0.7.1 build-plan Phase 3.
+/// the thread-pool dispatch cost is believed to exceed the parse cost
+/// for a typical small registry; above it, a multi-MB payload would
+/// otherwise stall the tokio executor.
+///
+/// PROVISIONAL: the 256 KiB cutover is a reasoned guess, not a
+/// measured breakpoint. The v0.7.1 build-plan called for a 10K-secret
+/// benchmark that has not yet been run — deferred to v0.7.2+ where it
+/// can be captured under the same smoke-harness report that exercises
+/// `list()` against real Doppler. If the measured crossover is
+/// meaningfully different (either direction), adjust this constant
+/// rather than the surrounding branching.
 const LIST_SPAWN_BLOCKING_THRESHOLD: usize = 256 * 1024;
 
 /// A live instance of the Doppler backend.

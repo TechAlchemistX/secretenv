@@ -146,10 +146,17 @@ const CLI_NAME: &str = "infisical";
 
 /// Payload-size cutover above which `list()` runs `serde_json` on a
 /// tokio `spawn_blocking` worker thread instead of inline. Below it,
-/// the thread-pool dispatch cost exceeds the parse cost for a typical
-/// small registry; above it, a multi-MB payload would otherwise stall
-/// the tokio executor. 256 KiB is a crude threshold but correct
-/// directionally; see v0.7.1 build-plan Phase 3.
+/// the thread-pool dispatch cost is believed to exceed the parse cost
+/// for a typical small registry; above it, a multi-MB payload would
+/// otherwise stall the tokio executor.
+///
+/// PROVISIONAL: the 256 KiB cutover is a reasoned guess, not a
+/// measured breakpoint. The v0.7.1 build-plan called for a 10K-secret
+/// benchmark that has not yet been run — deferred to v0.7.2+ where it
+/// can be captured under the same smoke-harness report that exercises
+/// `list()` against real Infisical. If the measured crossover is
+/// meaningfully different (either direction), adjust this constant
+/// rather than the surrounding branching.
 const LIST_SPAWN_BLOCKING_THRESHOLD: usize = 256 * 1024;
 const INSTALL_HINT: &str =
     "brew install infisical/get-cli/infisical  OR  https://infisical.com/docs/cli/overview";
@@ -850,6 +857,13 @@ mod tests {
 
     /// Serialize every test that mutates `INFISICAL_TOKEN` so parallel
     /// cargo-test threads don't race on the process-global env table.
+    ///
+    /// INVARIANT: every test in this module that reads, sets, or
+    /// removes `INFISICAL_TOKEN` MUST go through [`EnvVarGuard`] (or an
+    /// equivalent guard that acquires `ENV_LOCK`). A test that mutates
+    /// the env directly without holding the lock reintroduces the
+    /// race the guard exists to eliminate — the current-run green
+    /// status is not a safe indicator that a new test is safe.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII guard: unset a single env var for the duration of a test

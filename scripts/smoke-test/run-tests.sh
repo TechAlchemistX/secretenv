@@ -1503,6 +1503,27 @@ EOF
     run_test "295 v0.6 doppler rejects fragment on get" 1 "$RUNS/295-v06-dp-frag.log" \
       "$BIN" --config "$V06_DPCFG_FRAG" get dp_frag --yes
     assert_contains "296 doppler fragment-reject names backend" "$RUNS/295-v06-dp-frag.log" 'doppler'
+
+    # 22g — v0.7.2 registry-source coverage. provision.sh seeded a
+    # separate config `dev_registry` under `secretenv-validation`
+    # holding URI-valued entries. `registry list --registry <URI>`
+    # invokes backend.list() on Doppler and expects every returned
+    # value to parse as a BackendUri — the dedicated config keeps
+    # URI-valued entries separate from the scalar round-trip config.
+    V06_DPCFG_REG="$RUNS/282-dp-config-regsrc.toml"
+    cat > "$V06_DPCFG_REG" <<EOF
+[registries.default]
+sources = ["doppler-registry:///secretenv-validation/dev_registry/UNUSED_MARKER"]
+
+[backends.doppler-registry]
+type = "doppler"
+EOF
+    run_test "312 v0.7.2 doppler registry-source list" 0 "$RUNS/312-v072-dp-reglist.log" \
+      "$BIN" --config "$V06_DPCFG_REG" registry list --registry default
+    assert_contains "313 doppler registry-source names alias" \
+      "$RUNS/312-v072-dp-reglist.log" 'SMOKE_REGISTRY_ALIAS'
+    assert_contains "314 doppler registry-source names target URI" \
+      "$RUNS/312-v072-dp-reglist.log" 'local-main://'
 fi
 
 # ---------------------------------------------------------------
@@ -1654,6 +1675,28 @@ EOF
     # + `delete_without_type_shared_flag_would_fail_strict_mock`
     # cover set() argv discipline; Section 23's get/run/history
     # surface covers every other trait method live.
+
+    # 23g — v0.7.2 registry-source coverage. provision.sh seeded a
+    # URI-valued SMOKE_REGISTRY_ALIAS at env=dev path=/registry.
+    # `registry list --registry <URI>` invokes backend.list() on
+    # Infisical, which returns every secret in the scoped env+path as
+    # an alias → target-URI pair (Pattern A bulk model). The separate
+    # path keeps URI-valued entries away from the scalar SMOKE_TEST_
+    # VALUE at root that sections 23b/23c/23e depend on.
+    V07_IFCFG_REG="$RUNS/297-if-config-regsrc.toml"
+    cat > "$V07_IFCFG_REG" <<EOF
+[registries.default]
+sources = ["infisical-registry:///${IF_PROJECT_ID}/dev/registry/UNUSED_MARKER"]
+
+[backends.infisical-registry]
+type = "infisical"
+EOF
+    run_test "315 v0.7.2 infisical registry-source list" 0 "$RUNS/315-v072-if-reglist.log" \
+      "$BIN" --config "$V07_IFCFG_REG" registry list --registry default
+    assert_contains "316 infisical registry-source names alias" \
+      "$RUNS/315-v072-if-reglist.log" 'SMOKE_REGISTRY_ALIAS'
+    assert_contains "317 infisical registry-source names target URI" \
+      "$RUNS/315-v072-if-reglist.log" 'local-main://'
 fi
 
 # ---------------------------------------------------------------

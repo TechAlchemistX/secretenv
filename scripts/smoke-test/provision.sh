@@ -234,6 +234,23 @@ if command -v doppler >/dev/null 2>&1 && doppler me --json >/dev/null 2>&1; then
     # provisioner — this is a fixture hook, not the code-under-test;
     # the backend's CV-1 discipline is locked by strict-mock tests.
     run "doppler secrets set SMOKE_TEST_VALUE='sk_test_doppler_44444' --project secretenv-validation --config dev --no-interactive"
+
+    # v0.7.2 — registry-source config: a separate Doppler config whose
+    # secrets are URI-valued, exercising backend.list() as a registry
+    # source. The `dev` config holds scalars for the round-trip tests
+    # in Section 22; mixing URI-valued entries there would break them.
+    # Config name `dev_registry` branches from `dev` — Doppler requires
+    # non-root config names to match `<root>_<suffix>` shape.
+    say "[Doppler] registry config dev_registry (idempotent)"
+    if ! doppler configs get --project secretenv-validation --config dev_registry --json >/dev/null 2>&1; then
+        run "doppler configs create dev_registry --project secretenv-validation --environment dev"
+    else
+        say "[Doppler] config dev_registry already exists — reusing"
+    fi
+    # URI-valued entry. `registry list --registry <doppler-URI>` will
+    # parse the value as a BackendUri — pointing at the local-main
+    # fixture already seeded above keeps the assertion self-contained.
+    run "doppler secrets set SMOKE_REGISTRY_ALIAS='local-main://${RUNTIME_DIR}/local-secrets/stripe-key.txt' --project secretenv-validation --config dev_registry --no-interactive"
 else
     say "[Doppler] skipped (CLI missing or not authenticated)"
 fi
@@ -267,6 +284,14 @@ if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/de
     # use — SecretEnv's own code path writes values via `--file`
     # NamedTempFile + mode 0600 to keep the value off argv.
     run "infisical secrets set SMOKE_TEST_VALUE=sk_test_infisical_55555 --projectId '$INFISICAL_PROJECT_ID' --env dev --path / --type shared"
+
+    # v0.7.2 — registry-source path: URI-valued entries under
+    # /registry/ so backend.list() can be exercised as a registry
+    # source. Root path (/) holds the scalar SMOKE_TEST_VALUE for the
+    # round-trip tests in Section 23; mixing URI-valued entries there
+    # would break them.
+    say "[Infisical] registry path /registry (URI-valued alias)"
+    run "infisical secrets set SMOKE_REGISTRY_ALIAS=local-main://${RUNTIME_DIR}/local-secrets/stripe-key.txt --projectId '$INFISICAL_PROJECT_ID' --env dev --path /registry --type shared"
 else
     say "[Infisical] skipped (CLI missing or not authenticated)"
 fi

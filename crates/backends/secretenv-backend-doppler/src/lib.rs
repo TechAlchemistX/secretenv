@@ -160,6 +160,18 @@ struct DopplerMeWorkplace {
     name: Option<String>,
 }
 
+/// Output of [`DopplerBackend::resolve_target`]. Mirrors the Infisical
+/// backend's `ResolvedTarget` shape (struct-return replaces the earlier
+/// positional tuple). All three fields are `&str`: either borrowed from
+/// URI segments (full form) or from the backend's instance-config
+/// defaults (short form), unified under the single lifetime that covers
+/// both sources.
+struct ResolvedTarget<'a> {
+    project: &'a str,
+    config: &'a str,
+    secret: &'a str,
+}
+
 impl DopplerBackend {
     #[must_use]
     fn cli_missing() -> BackendStatus {
@@ -256,18 +268,6 @@ impl DopplerBackend {
             }
         }
     }
-}
-
-/// Output of [`DopplerBackend::resolve_target`]. Mirrors the Infisical
-/// backend's `ResolvedTarget` shape (struct-return replaces the earlier
-/// positional tuple). All three fields are `&str`: either borrowed from
-/// URI segments (full form) or from the backend's instance-config
-/// defaults (short form), unified under the single lifetime that covers
-/// both sources.
-struct ResolvedTarget<'a> {
-    project: &'a str,
-    config: &'a str,
-    secret: &'a str,
 }
 
 #[async_trait]
@@ -1218,6 +1218,52 @@ mod tests {
         let out = b.list(&uri).await.unwrap();
         assert_eq!(out.len(), 1, "only non-DOPPLER_ keys survive: {out:?}");
         assert_eq!(out[0].0, "USER_SECRET");
+    }
+
+    #[tokio::test]
+    async fn list_large_payload_exercises_spawn_blocking_branch() {
+        // Locks the ≥LIST_SPAWN_BLOCKING_THRESHOLD (256 KiB) branch in
+        // list(). Without this test, the nested
+        // Result<Result<T, serde_json::Error>, JoinError> unwrap at the
+        // spawn_blocking site is never exercised — all other list()
+        // tests stay under threshold. Doppler's list uses `doppler
+        // secrets download --format json` which returns a flat object;
+        // the synthetic 3 DOPPLER_* keys are filtered post-parse so
+        // they show up in the payload but not in the output.
+        //
+        // Payload construction: ~7000 entries → ~290 KiB, safely above
+        // threshold. DOPPLER_* keys included to also exercise the
+        // post-parse filter through the spawn_blocking path.
+        use std::fmt::Write;
+        let mut body = String::from(
+            r#"{"DOPPLER_PROJECT":"acme","DOPPLER_CONFIG":"prd","DOPPLER_ENVIRONMENT":"prd""#,
+        );
+        for i in 0..7000 {
+            write!(body, r#","KEY_{i:04}":"aws-ssm-prod:///secret/{i:04}""#).unwrap();
+        }
+        body.push('}');
+        assert!(
+            body.len() >= super::LIST_SPAWN_BLOCKING_THRESHOLD,
+            "payload {} bytes must exceed threshold {} to exercise the spawn_blocking branch",
+            body.len(),
+            super::LIST_SPAWN_BLOCKING_THRESHOLD
+        );
+
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("doppler")
+            .on(DOWNLOAD_ARGV, Response::success(body))
+            .install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse("doppler-prod:///acme/prd/REGISTRY").unwrap();
+        let mut out = b.list(&uri).await.unwrap();
+        out.sort();
+        assert_eq!(
+            out.len(),
+            7000,
+            "every non-DOPPLER_ entry decoded through spawn_blocking + filtered cleanly"
+        );
+        assert_eq!(out[0].0, "KEY_0000");
+        assert_eq!(out[0].1, "aws-ssm-prod:///secret/0000");
     }
 
     #[tokio::test]

@@ -251,6 +251,15 @@ if command -v doppler >/dev/null 2>&1 && doppler me --json >/dev/null 2>&1; then
     # parse the value as a BackendUri — pointing at the local-main
     # fixture already seeded above keeps the assertion self-contained.
     run "doppler secrets set SMOKE_REGISTRY_ALIAS='local-main://${RUNTIME_DIR}/local-secrets/stripe-key.txt' --project secretenv-validation --config dev_registry --no-interactive"
+    # Doppler branch configs INHERIT parent secrets. `dev_registry`
+    # branches from `dev` which holds the scalar SMOKE_TEST_VALUE;
+    # inherited into the registry config, that scalar would break
+    # the URI-parse every entry in backend.list() is subjected to.
+    # Override the inherited name with a URI-shaped value so every
+    # entry the registry-list sees parses cleanly. The override is
+    # scoped to dev_registry only — dev still has the scalar for the
+    # round-trip tests.
+    run "doppler secrets set SMOKE_TEST_VALUE='local-main://${RUNTIME_DIR}/local-secrets/stripe-key.txt' --project secretenv-validation --config dev_registry --no-interactive"
 else
     say "[Doppler] skipped (CLI missing or not authenticated)"
 fi
@@ -290,6 +299,14 @@ if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/de
     # source. Root path (/) holds the scalar SMOKE_TEST_VALUE for the
     # round-trip tests in Section 23; mixing URI-valued entries there
     # would break them.
+    #
+    # Infisical CLI (v0.43.77) does NOT auto-create folders on
+    # `secrets set --path /x`; the `/x` folder must exist first.
+    # `secrets folders create` is the subcommand; it exits non-zero on
+    # "folder already exists" so tolerate that via `|| true` for
+    # idempotency.
+    say "[Infisical] registry folder /registry (idempotent)"
+    run "infisical secrets folders create --name registry --projectId '$INFISICAL_PROJECT_ID' --env dev --path / || true"
     say "[Infisical] registry path /registry (URI-valued alias)"
     run "infisical secrets set SMOKE_REGISTRY_ALIAS=local-main://${RUNTIME_DIR}/local-secrets/stripe-key.txt --projectId '$INFISICAL_PROJECT_ID' --env dev --path /registry --type shared"
 else

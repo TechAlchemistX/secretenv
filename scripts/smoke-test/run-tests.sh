@@ -1517,6 +1517,13 @@ sources = ["doppler-registry:///secretenv-validation/dev_registry/UNUSED_MARKER"
 
 [backends.doppler-registry]
 type = "doppler"
+
+# Declared so the alias's target URI ('local-main://...') resolves
+# cleanly. `registry list` validates every returned target against
+# the configured backends; without this the alias is listed but the
+# CLI exits 1 on the unconfigured-backend check.
+[backends.local-main]
+type = "local"
 EOF
     run_test "312 v0.7.2 doppler registry-source list" 0 "$RUNS/312-v072-dp-reglist.log" \
       "$BIN" --config "$V06_DPCFG_REG" registry list --registry default
@@ -1690,6 +1697,11 @@ sources = ["infisical-registry:///${IF_PROJECT_ID}/dev/registry/UNUSED_MARKER"]
 
 [backends.infisical-registry]
 type = "infisical"
+
+# Declared so the alias's target URI ('local-main://...') resolves
+# cleanly. Same pattern as the Doppler registry-source config.
+[backends.local-main]
+type = "local"
 EOF
     run_test "315 v0.7.2 infisical registry-source list" 0 "$RUNS/315-v072-if-reglist.log" \
       "$BIN" --config "$V07_IFCFG_REG" registry list --registry default

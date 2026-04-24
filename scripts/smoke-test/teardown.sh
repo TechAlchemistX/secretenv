@@ -71,6 +71,9 @@ fi
 # the CLI or without an authenticated session.
 if command -v doppler >/dev/null 2>&1 && doppler me --json >/dev/null 2>&1; then
     run "doppler secrets delete SMOKE_TEST_VALUE --project secretenv-validation --config dev --yes"
+    # v0.7.2 registry-source fixtures. Config `dev_registry` is left in
+    # place (matches the project-stays, fixture-goes pattern).
+    run "doppler secrets delete SMOKE_REGISTRY_ALIAS --project secretenv-validation --config dev_registry --yes"
 fi
 
 # Infisical (v0.7) — delete the test secret (project left in place).
@@ -86,6 +89,8 @@ fi
 INFISICAL_PROJECT_ID="${SECRETENV_INFISICAL_PROJECT_ID:-46302876-3c2f-4349-9376-f8a8228bdb1e}"
 if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/dev/null 2>&1; then
     run "infisical secrets delete SMOKE_TEST_VALUE --projectId '$INFISICAL_PROJECT_ID' --env dev --path / --type shared"
+    # v0.7.2 registry-source fixture at /registry/.
+    run "infisical secrets delete SMOKE_REGISTRY_ALIAS --projectId '$INFISICAL_PROJECT_ID' --env dev --path /registry --type shared"
 fi
 
 say "=== TEARDOWN_DONE ==="

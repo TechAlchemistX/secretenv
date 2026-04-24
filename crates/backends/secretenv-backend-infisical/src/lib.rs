@@ -317,6 +317,12 @@ impl InfisicalBackend {
     /// worse than a clear bail.
     fn resolve_target<'s, 'u>(&'s self, uri: &'u BackendUri) -> Result<ResolvedTarget<'u>>
     where
+        // Load-bearing, NOT cosmetic. The short-form arm reads
+        // `project_id` / `environment` out of `self.infisical_*`
+        // (lifetime `'s`) and returns them in `ResolvedTarget<'u>`.
+        // Without `'s: 'u`, `as_deref()` produces `&'s str` which will
+        // not coerce into the struct's `&'u str` field. Removing this
+        // bound fails to compile — do not "simplify" it away.
         's: 'u,
     {
         let path = uri.path.strip_prefix('/').unwrap_or(&uri.path);
@@ -1399,6 +1405,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_failure_message_passthrough_when_value_too_short() {
+        // Short values (<4 chars) are collision-prone — e.g. value "no"
+        // would spuriously match the "not found" substring in stderr
+        // and replace text that had nothing to do with the secret. The
+        // scrub guard skips those; this test locks that behavior so a
+        // future "make it stricter" refactor doesn't silently start
+        // corrupting diagnostic text. High-entropy values (the
+        // realistic exfil regression target) are always >= 4 chars.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("infisical").install(dir.path());
+        let b = backend(&mock, None, None);
+        let uri = BackendUri::parse("infisical-prod:///abc-123/prod/STRIPE_KEY").unwrap();
+        let short_value = "no";
+        let msg = b.set_failure_message(&uri, b"error: 404 not found (wrong path)\n", short_value);
+        assert!(msg.contains("not found"), "diagnostic preserved verbatim: {msg}");
+        assert!(!msg.contains("<REDACTED>"), "no scrub for short values: {msg}");
+    }
+
+    #[tokio::test]
     async fn set_rejects_fragment() {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("infisical").install(dir.path());
@@ -1522,6 +1547,52 @@ mod tests {
         let uri = BackendUri::parse("infisical-prod:///abc-123/prod/REG").unwrap();
         let out = b.list(&uri).await.unwrap();
         assert_eq!(out, vec![("STRIPE_KEY".to_owned(), "aws-ssm-prod:///stripe".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn list_large_payload_exercises_spawn_blocking_branch() {
+        // Locks the ≥LIST_SPAWN_BLOCKING_THRESHOLD (256 KiB) branch in
+        // list(). Without this test, the nested
+        // Result<Result<T, serde_json::Error>, JoinError> unwrap at the
+        // spawn_blocking site is never exercised — all other list()
+        // tests stay under threshold and take the inline path. Regression
+        // targets: (a) the .await ?? chain order, (b) JoinError vs
+        // serde_json::Error context labelling, (c) accidental .await
+        // removal that'd silently turn the branch into a panic.
+        //
+        // Payload construction: generate N entries large enough that
+        // serialized bytes exceed the threshold. Each entry is ~90
+        // bytes; 4000 entries → ~360 KiB, comfortably above 256 KiB.
+        use std::fmt::Write;
+        let mut body = String::from("[");
+        for i in 0..4000 {
+            if i > 0 {
+                body.push(',');
+            }
+            write!(
+                body,
+                "{{\"secretKey\":\"KEY_{i:04}\",\"secretValue\":\"aws-ssm-prod:///secret/{i:04}\"}}"
+            )
+            .unwrap();
+        }
+        body.push(']');
+        assert!(
+            body.len() >= super::LIST_SPAWN_BLOCKING_THRESHOLD,
+            "payload {} bytes must exceed threshold {} to exercise the spawn_blocking branch",
+            body.len(),
+            super::LIST_SPAWN_BLOCKING_THRESHOLD
+        );
+
+        let dir = TempDir::new().unwrap();
+        let mock =
+            StrictMock::new("infisical").on(LIST_ARGV, Response::success(body)).install(dir.path());
+        let b = backend(&mock, None, None);
+        let uri = BackendUri::parse("infisical-prod:///abc-123/prod/REGISTRY").unwrap();
+        let out = b.list(&uri).await.unwrap();
+        assert_eq!(out.len(), 4000, "every entry decoded through spawn_blocking");
+        assert_eq!(out[0].0, "KEY_0000");
+        assert_eq!(out[0].1, "aws-ssm-prod:///secret/0000");
+        assert_eq!(out[3999].0, "KEY_3999");
     }
 
     #[tokio::test]

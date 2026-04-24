@@ -148,6 +148,47 @@ Doppler Error: Unexpected HTTP response 401 Unauthorized
 
 The backend surfaces the Doppler CLI's stderr verbatim. Double-check your token's scope matches the URI you're reading.
 
+**Symptoms that look like scope mismatch but aren't:**
+
+- `Doppler Error: Unauthorized: token not found` — the CLI rejected the token shape itself (typo, truncation, or the token was revoked). The v0.7.1 "not found" heuristic is tightened so this phrasing no longer false-positives as a missing-secret error; you'll see the raw stderr surfaced via `operation_failure_message`. Check `doppler me --json` against the token you're using.
+- `Doppler Error: Could not find requested secret: NAME` — the token IS valid and authorized, but the secret does not exist in the scoped project+config. This is a real not-found case; the backend routes it into the friendly "secret '<NAME>' not found in project='<p>' config='<c>'" arm.
+
+### Service accounts (Workplace-scoped)
+
+Service accounts (`dp.sa.*` tokens) are workplace-scoped but need **project-level** access grants before they can read secrets:
+
+1. Doppler dashboard → Workplace → "Service Accounts" → "Create Service Account".
+2. On the created account, "Project Access" → add each project you want it to see. Set per-project role (typically "Viewer" for read-only automation).
+3. Mint a token under that service account; use it as `$DOPPLER_TOKEN` or `doppler_token`.
+
+A service account without any project grants produces `401 Unauthorized` for every secret read — not a scope mismatch, but an empty ACL. Inspect "Project Access" in the dashboard when a newly-created service account fails every get.
+
+### Multi-workplace setups
+
+A single machine routing to multiple Doppler workplaces needs per-instance tokens; the CLI's keychain stores **one** active workplace, so `doppler login`-based auth cannot route across workplaces without logging out/in between calls. Use explicit `doppler_token` per `[backends.<instance>]`:
+
+```toml
+[backends.doppler-acme]
+type           = "doppler"
+doppler_token  = "dp.st.prd.ACME_TOKEN"        # Workplace: acme
+
+[backends.doppler-consulting]
+type           = "doppler"
+doppler_token  = "dp.st.prd.CONSULTING_TOKEN"  # Workplace: consulting-llc
+```
+
+`doppler me --json` can confirm which workplace a token belongs to without mutating state.
+
+### `doppler_token` file-permissions advisory
+
+If you do store `doppler_token` in `config.toml` (having weighed the risk of "credential in a file anyone can read" against the operational need for per-instance routing that env vars can't express), protect the file:
+
+```bash
+chmod 600 ~/.config/secretenv/config.toml
+```
+
+Follows the same discipline the 1Password backend's docs spell out for `op_service_account_token` in config. Consider a user-only directory (`~/.config/secretenv` with `700`) so neither the file nor its parent can be enumerated by same-UID processes running under different accounts.
+
 ---
 
 ## `list()` — registry-source semantics

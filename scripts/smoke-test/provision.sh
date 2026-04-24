@@ -259,6 +259,13 @@ if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/de
     # fixture hook, NOT the code-under-test — the backend's temp-file
     # discipline is locked by strict-mock tests + Section 23's set/
     # delete round-trip.
+    #
+    # SECURITY NOTE — fixtures only, never use for a real secret.
+    # Value is on argv here; `ps -ww` will see it mid-run. The value
+    # (`sk_test_infisical_55555`) is a fixed fixture string, not a
+    # real credential. NEVER pattern-match this block for production
+    # use — SecretEnv's own code path writes values via `--file`
+    # NamedTempFile + mode 0600 to keep the value off argv.
     run "infisical secrets set SMOKE_TEST_VALUE=sk_test_infisical_55555 --projectId '$INFISICAL_PROJECT_ID' --env dev --path / --type shared"
 else
     say "[Infisical] skipped (CLI missing or not authenticated)"

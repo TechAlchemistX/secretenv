@@ -122,6 +122,30 @@ For organizations that need to answer "who fetched the production database passw
 
 ---
 
+## Self-hosted Domains
+
+Two backends accept a user-supplied HTTPS endpoint:
+
+- **Infisical** — `infisical_domain` (defaults to `app.infisical.com`).
+- **Vault** — `vault_address` (no default; required).
+
+The domain IS the trust boundary. A hostile endpoint receives every token and URI the backend routes through it — for Infisical that includes `$INFISICAL_TOKEN` on every CLI invocation; for Vault it includes every request to `/v1/...` carrying the client token.
+
+Discipline that applies to both:
+
+1. **Verify the domain belongs to your organization.** Typos (`infisical.acne.com` vs. `infisical.acme.com`) + attacker-controlled lookalike registrations silently drain credentials. Compare the domain against your IaC repo / provisioning scripts, not a dashboard screenshot someone sent in chat.
+2. **Pin HTTPS with a cert you trust.** `http://` is accepted by both CLIs but leaks the token to anyone on-path — only acceptable for loopback dev (`http://127.0.0.1:<port>`).
+3. **Confirm the TLS cert chain.** For BYO-CA / internal-PKI setups, the issuing CA must be in the system trust store of every machine running `secretenv`. Test with `openssl s_client -connect <host>:443 -servername <host> </dev/null` — inspect the `Verify return code: 0 (ok)` line and the presented chain.
+4. **Don't inherit a domain from an untrusted registry.** A compromised registry can set `infisical_domain` / `vault_address` in downstream configs and redirect every resolve through an attacker-owned endpoint. Only accept these fields in config files your team owns.
+5. **Rotate tokens after suspected exposure.** If you discover the domain was wrong — even briefly — assume every token + secret URI that routed through it is compromised. Rotate immediately.
+
+Per-backend specifics:
+
+- [backends/infisical.md#self-hosted-domain-trust](backends/infisical.md#self-hosted-domain-trust) — Infisical's `infisical_domain` threat model.
+- [backends/vault.md](backends/vault.md) — Vault's `vault_address` and namespace scoping.
+
+---
+
 ## Supply Chain
 
 secretenv distributed binaries are signed. Checksums are published with every release. The install script verifies checksums before executing.

@@ -143,6 +143,21 @@ use tempfile::NamedTempFile;
 use tokio::process::Command;
 
 const CLI_NAME: &str = "infisical";
+
+/// Payload-size cutover above which `list()` runs `serde_json` on a
+/// tokio `spawn_blocking` worker thread instead of inline. Below it,
+/// the thread-pool dispatch cost is believed to exceed the parse cost
+/// for a typical small registry; above it, a multi-MB payload would
+/// otherwise stall the tokio executor.
+///
+/// PROVISIONAL: the 256 KiB cutover is a reasoned guess, not a
+/// measured breakpoint. The v0.7.1 build-plan called for a 10K-secret
+/// benchmark that has not yet been run — deferred to v0.7.2+ where it
+/// can be captured under the same smoke-harness report that exercises
+/// `list()` against real Infisical. If the measured crossover is
+/// meaningfully different (either direction), adjust this constant
+/// rather than the surrounding branching.
+const LIST_SPAWN_BLOCKING_THRESHOLD: usize = 256 * 1024;
 const INSTALL_HINT: &str =
     "brew install infisical/get-cli/infisical  OR  https://infisical.com/docs/cli/overview";
 const DEFAULT_DOMAIN: &str = "https://app.infisical.com/api";
@@ -204,11 +219,11 @@ struct InfisicalListEntry {
 /// multiple segments (`.../dev/api/stripe/KEY` → `/api/stripe`), and
 /// the short form may need to own the config default to return a
 /// unified type.
-struct ResolvedTarget<'a> {
-    project_id: &'a str,
-    environment: &'a str,
+struct ResolvedTarget<'u> {
+    project_id: &'u str,
+    environment: &'u str,
     secret_path: String,
-    secret_name: &'a str,
+    secret_name: &'u str,
 }
 
 impl InfisicalBackend {
@@ -224,6 +239,27 @@ impl InfisicalBackend {
         let stderr_str = String::from_utf8_lossy(stderr).trim().to_owned();
         format!(
             "infisical backend '{}': {op} failed for URI '{}': {stderr_str}",
+            self.instance_name, uri.raw
+        )
+    }
+
+    /// set()-specific failure message with value-aware stderr scrub.
+    /// Replaces every occurrence of the secret value in stderr with
+    /// `<REDACTED>` before interpolating. Covers the CLI-parse-error
+    /// path that echoes the `--file` contents (NAME=VALUE) back into
+    /// the error chain. Short values (<4 chars) are collision-prone so
+    /// we don't scrub — the tempfile write path plus CV-1 canary cover
+    /// those; the realistic regression is a high-entropy value being
+    /// echoed verbatim by a CLI error message.
+    fn set_failure_message(&self, uri: &BackendUri, stderr: &[u8], value: &str) -> String {
+        let stderr_str = String::from_utf8_lossy(stderr).trim().to_owned();
+        let scrubbed = if value.len() >= 4 && stderr_str.contains(value) {
+            stderr_str.replace(value, "<REDACTED>")
+        } else {
+            stderr_str
+        };
+        format!(
+            "infisical backend '{}': set failed for URI '{}': {scrubbed}",
             self.instance_name, uri.raw
         )
     }
@@ -279,7 +315,10 @@ impl InfisicalBackend {
     /// rejection is intentional — it could mean project/secret,
     /// env/secret, or folder/secret, and silently guessing would be
     /// worse than a clear bail.
-    fn resolve_target<'a>(&'a self, uri: &'a BackendUri) -> Result<ResolvedTarget<'a>> {
+    fn resolve_target<'s, 'u>(&'s self, uri: &'u BackendUri) -> Result<ResolvedTarget<'u>>
+    where
+        's: 'u,
+    {
         let path = uri.path.strip_prefix('/').unwrap_or(&uri.path);
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -517,7 +556,10 @@ impl Backend for InfisicalBackend {
                 })?
                 .permissions();
             perm.set_mode(0o600);
-            std::fs::set_permissions(tempfile.path(), perm).with_context(|| {
+            // fd-based chmod instead of path-based: closes the narrow
+            // TOCTOU window between NamedTempFile::new() and chmod that
+            // a path-based set_permissions would leave open.
+            tempfile.as_file().set_permissions(perm).with_context(|| {
                 format!(
                     "infisical backend '{}': failed to chmod 0600 temp file for set(URI '{}')",
                     self.instance_name, uri.raw
@@ -537,7 +579,22 @@ impl Backend for InfisicalBackend {
             )
         })?;
 
-        let tempfile_path_str = tempfile.path().to_string_lossy().into_owned();
+        // Explicit bail on non-UTF-8 temp-file paths. `to_string_lossy`
+        // would silently substitute U+FFFD and the downstream
+        // `infisical secrets set --file <garbled>` would fail with an
+        // opaque "file not found" — bail explicitly instead.
+        let tempfile_path_str = tempfile
+            .path()
+            .to_str()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "infisical backend '{}': temp file path under $TMPDIR is not \
+                     valid UTF-8 for set(URI '{}')",
+                    self.instance_name,
+                    uri.raw
+                )
+            })?
+            .to_owned();
         let mut cmd = self.infisical_command(
             &["secrets", "set", "--file", &tempfile_path_str, "--type", "shared"],
             t.project_id,
@@ -555,7 +612,16 @@ impl Backend for InfisicalBackend {
         drop(tempfile);
 
         if !output.status.success() {
-            bail!(self.operation_failure_message(uri, "set", &output.stderr));
+            // Value-aware stderr scrub on set(). A CLI parse-error can
+            // echo the `--file` contents (NAME=VALUE) back into stderr;
+            // substitute the value with `<REDACTED>` before folding
+            // stderr into the error chain so a regression cannot leak
+            // the secret through anyhow's propagated context. The scrub
+            // is targeted (value-string only) so non-value diagnostic
+            // information (argv shape, error reason) is preserved for
+            // debugging. Other trait methods (get/delete/list) keep
+            // unscrubbed stderr because their stderr is not value-bearing.
+            bail!(self.set_failure_message(uri, &output.stderr, value));
         }
         Ok(())
     }
@@ -624,15 +690,44 @@ impl Backend for InfisicalBackend {
         // [`InfisicalListEntry`] struct which ONLY declares
         // `secretKey`; serde silently drops `secretValue` and every
         // other field we don't name. The canary test locks this.
-        let entries: Vec<InfisicalListEntry> = serde_json::from_slice(&output.stdout)
-            .with_context(|| {
-                format!(
-                    "infisical backend '{}': 'infisical secrets --output json' returned \
+        //
+        // Parse on a blocking worker thread when the payload is large
+        // enough that serde_json's work becomes meaningful vs. the
+        // thread-pool dispatch cost (>= 256 KiB — crude heuristic but
+        // correct directionally: a small registry stays inline, a
+        // multi-MB payload stops stalling the tokio executor). Small
+        // payloads take the zero-overhead inline path.
+        let entries: Vec<InfisicalListEntry> =
+            if output.stdout.len() >= LIST_SPAWN_BLOCKING_THRESHOLD {
+                let bytes = output.stdout;
+                tokio::task::spawn_blocking(move || {
+                    serde_json::from_slice::<Vec<InfisicalListEntry>>(&bytes)
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "infisical backend '{}': list JSON-parse worker panicked for URI '{}'",
+                        self.instance_name, uri.raw
+                    )
+                })?
+                .with_context(|| {
+                    format!(
+                        "infisical backend '{}': 'infisical secrets --output json' returned \
+                         a payload that is not a JSON array of {{secretKey, …}} objects \
+                         (URI '{}')",
+                        self.instance_name, uri.raw
+                    )
+                })?
+            } else {
+                serde_json::from_slice(&output.stdout).with_context(|| {
+                    format!(
+                        "infisical backend '{}': 'infisical secrets --output json' returned \
                      a payload that is not a JSON array of {{secretKey, …}} objects \
                      (URI '{}')",
-                    self.instance_name, uri.raw
-                )
-            })?;
+                        self.instance_name, uri.raw
+                    )
+                })?
+            };
 
         // list() returns (alias, target-uri) pairs. The Doppler-style
         // bulk model: each Infisical secret name = one alias, each
@@ -760,6 +855,48 @@ mod tests {
     const PROJECT: &str = "abc-123";
     const ENV: &str = "prod";
     const PATH: &str = "/";
+
+    /// Serialize every test that mutates `INFISICAL_TOKEN` so parallel
+    /// cargo-test threads don't race on the process-global env table.
+    ///
+    /// INVARIANT: every test in this module that reads, sets, or
+    /// removes `INFISICAL_TOKEN` MUST go through [`EnvVarGuard`] (or an
+    /// equivalent guard that acquires `ENV_LOCK`). A test that mutates
+    /// the env directly without holding the lock reintroduces the
+    /// race the guard exists to eliminate — the current-run green
+    /// status is not a safe indicator that a new test is safe.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard: unset a single env var for the duration of a test
+    /// scope, restore on drop. Acquires `ENV_LOCK` so only one such
+    /// scope executes at a time across test threads. Poisoned-mutex
+    /// recovery: a panic while holding the guard may leave the env
+    /// unset until another guard runs — acceptable because the guard's
+    /// only declared var (`INFISICAL_TOKEN`) is unset by default on
+    /// developer machines, and CI environments start fresh per job.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn unset(key: &'static str) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn backend(mock_path: &Path, token: Option<&str>, domain: Option<&str>) -> InfisicalBackend {
         InfisicalBackend {
@@ -971,12 +1108,12 @@ mod tests {
             .on(TOKEN_PROBE_ARGV, Response::failure(1, "not logged in\n"))
             .install(dir.path());
         let b = backend(&mock, None, None);
-        // NB: test processes inherit the parent's env. If CI sets
-        // INFISICAL_TOKEN=real-token, this assertion could flip to
-        // Ok(auth=token). Guarded by a runtime skip below.
-        if std::env::var_os("INFISICAL_TOKEN").is_some() {
-            return;
-        }
+        // Deterministic env isolation: unset INFISICAL_TOKEN for the
+        // test duration regardless of parent-process state, and
+        // restore on drop. The `ENV_LOCK` mutex serializes every test
+        // that mutates INFISICAL_TOKEN so parallel `cargo test` threads
+        // don't race on the global env table.
+        let _guard = EnvVarGuard::unset("INFISICAL_TOKEN");
         match b.check().await {
             BackendStatus::NotAuthenticated { hint } => {
                 assert!(hint.contains("infisical login"), "hint: {hint}");
@@ -1159,6 +1296,13 @@ mod tests {
         // (every invocation trips no-match), and assert the canary
         // is absent from the dumped argv.
         //
+        // Dual-purpose: this test also drift-catches `--type shared`
+        // on set() (assertion at bottom of this fn). If a regression
+        // dropped the explicit `--type shared` flag, this test would
+        // fail its shape assertion — paired with
+        // `delete_requires_type_shared_flag` to lock the CLI-default
+        // `--type personal` footgun on both mutation paths.
+        //
         // If a regression passed the value on argv as
         // `SECRET_NAME=<canary>` (the CLI's native positional form),
         // the canary would land in the strict-mock diagnostic and
@@ -1216,6 +1360,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_failure_message_scrubs_value_from_stderr() {
+        // Regression test for the v0.7.1 `set()` stderr-redaction item.
+        // If a future `infisical` CLI echoes the `--file` contents back
+        // in a parse-error, the NAME=VALUE line would surface in
+        // set()'s stderr. Assert that `set_failure_message` removes the
+        // value string before folding stderr into the error.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("infisical").install(dir.path());
+        let b = backend(&mock, None, None);
+        let uri = BackendUri::parse("infisical-prod:///abc-123/prod/STRIPE_KEY").unwrap();
+        let canary = "sk_live_TOP_SECRET_set_failure_stderr_scrub_XYZ99";
+        let synthetic_stderr = format!("parse error: STRIPE_KEY={canary}\n");
+
+        let msg = b.set_failure_message(&uri, synthetic_stderr.as_bytes(), canary);
+
+        assert!(!msg.contains(canary), "canary leaked in set_failure_message output: {msg}");
+        assert!(msg.contains("<REDACTED>"), "expected <REDACTED> marker: {msg}");
+        assert!(msg.contains("STRIPE_KEY"), "non-value diagnostic preserved: {msg}");
+    }
+
+    #[tokio::test]
+    async fn set_failure_message_passthrough_when_value_absent() {
+        // Scrub must be a no-op when the value isn't present in
+        // stderr. Preserves diagnostic content for the common case
+        // (permission denied, network error, etc.).
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("infisical").install(dir.path());
+        let b = backend(&mock, None, None);
+        let uri = BackendUri::parse("infisical-prod:///abc-123/prod/STRIPE_KEY").unwrap();
+        let msg = b.set_failure_message(
+            &uri,
+            b"error: 403 forbidden (token lacks 'secrets:write')\n",
+            "some-value",
+        );
+        assert!(msg.contains("403 forbidden"), "diagnostic preserved: {msg}");
+        assert!(!msg.contains("<REDACTED>"), "no-op when value absent: {msg}");
+    }
+
+    #[tokio::test]
     async fn set_rejects_fragment() {
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("infisical").install(dir.path());
@@ -1257,7 +1440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_without_type_shared_flag_would_fail_strict_mock() {
+    async fn delete_requires_type_shared_flag() {
         // Drift-catch: the CLI default for `--type` is `personal`.
         // A regression that dropped our explicit `--type shared` would
         // produce an argv that no longer matches `delete_argv` —

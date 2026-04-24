@@ -8,6 +8,45 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-04-23
+
+**Headline:** dedicated DEFER-closeout hygiene patch between v0.7.0 and v0.8, keeping the next backend cycle cleanly thematic. Twenty items from the v0.6 (Doppler) and v0.7 (Infisical) closing audits closed in a single patch PR: three security-hardening items on Infisical's `set()` temp-file path, six consistency items unifying Doppler and Infisical error shapes and symmetry patterns, three testing-quality items (deterministic env-isolation, list()-parse spawn_blocking on multi-MB payloads, symmetric drift-catch naming), and eight documentation polish items spanning the self-hosted-domain trust boundary, IAM/RBAC walkthroughs, and smoke-harness fixture comments. No user-facing behavior changes beyond tightened error messages. v0.7.0 → v0.7.1: workspace unit tests **637 → 642** (+5); live smoke matrix unchanged at **373 assertions** (hygiene doesn't add assertions; pre-tag smoke re-runs the v0.7.0 baseline). Closing audit by the `code-reviewer` agent landed 2 HIGH fixes (ENV_LOCK invariant documentation + spawn_blocking threshold provisional flag) inline before tag; 0 BLOCKING findings.
+
+### Changed
+
+- **Doppler `resolve_target` returns a struct** (`ResolvedTarget { project, config, secret }`), replacing the positional `(&str, &str, &str)` tuple. Mirrors the Infisical backend's shape so the two SaaS-bulk-model backends read the same way across four call sites (`get` / `set` / `delete` / `list`).
+- **Doppler `not found` heuristic tightened.** Now requires the CLI's canonical `"Could not find requested secret"` prefix rather than the looser `"not found"` substring. Before: a stderr line like `Doppler Error: Unauthorized: token not found` (auth-error phrasing) false-positived into the friendly "secret not found" arm and hid the real failure. After: only the canonical missing-secret phrasing routes to the friendly arm; auth errors surface verbatim via `operation_failure_message`. Regression tests on both `get()` and `delete()` lock the distinction.
+- **Doppler segment-count error surfaces parsed segments.** A URI like `doppler-prod:///acme/prd` (two segments) now errors with `got 2 segment(s): [acme, prd]` instead of just `got 2 segment(s)`.
+- **Doppler `set()` and `delete()` emit `tracing::debug!` on happy paths.** Matches the Keychain backend's audit-symmetry precedent. No values logged — only instance, op, project, config, secret name.
+- **Infisical `resolve_target` lifetimes split.** Previously `<'a>(&'a self, uri: &'a BackendUri)` over-constrained `self` and `uri` to the same lifetime. Now `<'s, 'u>(&'s self, uri: &'u BackendUri) -> Result<ResolvedTarget<'u>> where 's: 'u` — callers with `self` outliving the URI (the common case) get precise borrow-checker reasoning without an artificial lifetime tie.
+- **Both backends' `list()` JSON parse uses `tokio::task::spawn_blocking` above 256 KiB.** Below the threshold, the zero-overhead inline path runs (thread-pool dispatch > parse cost for a typical small registry). Above it, the parse runs on a blocking worker thread so a multi-MB payload stops stalling the tokio executor. Threshold is provisional — a measured benchmark is deferred to v0.7.2+.
+- **Infisical drift-catch test renamed.** `delete_without_type_shared_flag_would_fail_strict_mock` → `delete_requires_type_shared_flag` for symmetry with the existing set() canary. Dual-purpose doc comment added to `set_value_never_appears_on_argv` flagging its paired `--type shared` drift-catch role.
+
+### Fixed
+
+- **Infisical `set()` stderr scrubs the secret value** before folding stderr into the error chain. A CLI parse-error that echoes the `--file` contents back can surface `NAME=VALUE` in stderr; the new `set_failure_message` helper replaces the value string with `<REDACTED>` when present (≥4 chars to avoid collision-prone short values), preserving non-value diagnostic information for debugging. Dedicated unit tests cover both the scrub path and the passthrough case.
+- **Infisical env-inherit test deterministic.** `check_not_authenticated_when_probe_fails_and_no_token` previously carried a runtime skip if the parent process had `$INFISICAL_TOKEN` set. Now wrapped in an RAII `EnvVarGuard` (mutex-serialized against `ENV_LOCK`) that unsets for the test duration and restores on drop. Test runs and asserts deterministically regardless of parent-process state.
+
+### Security
+
+- **Infisical `set()` uses fd-based `chmod` instead of path-based.** Replaces `std::fs::set_permissions(tempfile.path(), perm)` with `tempfile.as_file().set_permissions(perm)` — closes the narrow TOCTOU window between `NamedTempFile::new()` and the redundant 0600 re-assertion. (The `NamedTempFile` crate already creates with `O_CREAT|O_EXCL` + mode 0600 on Unix; the explicit re-chmod is belt-and-braces.)
+- **Infisical `set()` explicit bail on non-UTF-8 `$TMPDIR` paths.** Replaces `to_string_lossy().into_owned()` with `to_str().ok_or_else(...)?` — a non-UTF-8 temp path now surfaces a clear error instead of passing a U+FFFD-substituted garbled string to `infisical secrets set --file` (which would fail with an opaque "file not found").
+
+### Docs
+
+- **Infisical self-hosted domain-trust section expanded.** New subsection under [Minting a service token](docs/backends/infisical.md) with pin-the-cert callout, verify-the-domain checklist, `openssl s_client` inspection snippet, and the "malicious domain receives every token" threat statement. Cross-linked to new `docs/security.md#self-hosted-domains`.
+- **Infisical `NamedTempFile` panic-safety wording.** `set()` discipline section now spells out that `Drop` runs during unwind so panics / cancellations / runtime drops cannot orphan a secret-bearing file under `$TMPDIR`.
+- **Doppler IAM/RBAC expansion** under [Service-token scope mismatch](docs/backends/doppler.md): service-token scope-mismatch vs. auth-error distinction (ties back to the tightened `not found` heuristic above), service accounts and project-level access grants, multi-workplace setup pattern.
+- **Doppler `doppler_token` file-permissions advisory.** Explicit `chmod 600 config.toml` guidance matching the 1Password backend's precedent, with a pointer to also `700`-scope the parent directory.
+- **Smoke harness Infisical blocks flagged "fixtures only, never use for a real secret"** on both `provision.sh` and `teardown.sh`. The provisioner uses the CLI's positional argv form (value on argv) because the value is a known-fixed fixture string and this is a fixture hook, not the code path end-users invoke.
+- **`docs/security.md` new Self-hosted Domains section** cross-linked from both Infisical (`infisical_domain`) and Vault (`vault_address`). Covers the five-point discipline: verify the domain, pin HTTPS, confirm the cert chain, don't inherit a domain from an untrusted registry, rotate tokens after suspected exposure.
+
+### Deferred to v0.7.2+
+
+- **10K-secret `list()` benchmark** for the 256 KiB `spawn_blocking` threshold. Constant is explicitly marked `PROVISIONAL` in-source; benchmark to be captured under the smoke-harness report that exercises `list()` against a large real registry.
+- **Pattern A registry `set` extension** (would let `registry set`/`unset` target Doppler + Infisical). This is a feature, not hygiene. Logged in the v0.8+ roadmap row.
+- **Already-correct-code-just-needs-a-comment** items from the v0.7 audit (redundant chmod rationale, `sync_all` doc, env-var check scope comment) — drive-by cleanups for any future PR touching those lines.
+
 ## [0.7.0] - 2026-04-22
 
 **Headline:** third release of the single-backend-per-release cycle; second [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Infisical** (SaaS + self-hostable) — brings the total to 10. Spec at [[backends/infisical]] shipped with three inline post-implementation corrections (no `secrets versions` subcommand at CLI v0.43.77; `--plain` deprecated on list (use `--output json`); `delete --type` defaults to `personal` and must be passed `--type shared` explicitly). v0.6.0 → v0.7.0: workspace unit tests **604 → 637** (+33); live smoke matrix **362 → 377** (+15). Pre-tag full-matrix smoke passed 377/377 across all 10 backends; closing reviewer-trio audit (security + code + rust) landed 3 BLOCKING fixes (serde `rename_all`, `list()` iterator readability, `with_context` quality) inline before tag; one post-audit `list()` semantic fix landed during pre-tag smoke (corrected to return `(name, value-as-URI)` pairs matching the Doppler-style bulk model). DEFER items consolidated into [[build-plan-v0.7.1]] for the next hygiene cycle.

@@ -28,6 +28,7 @@ secretenv-backend-azure.workspace     = true
 secretenv-backend-keychain.workspace  = true
 secretenv-backend-doppler.workspace   = true
 secretenv-backend-infisical.workspace = true
+secretenv-backend-keeper.workspace    = true
 anyhow.workspace              = true
 clap.workspace                = true
 clap_complete.workspace       = true

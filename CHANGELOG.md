@@ -8,6 +8,40 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-24
+
+**Headline:** third release of the single-backend-per-release cycle; third [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Keeper** (Keeper Security vault via Keeper Commander v17+) — brings the total to 11. First backend to require a **prerequisite setup step** (persistent-login device-token registration); the install UX has an extra paragraph in docs as a result. v0.7.1 → v0.8.0: workspace unit tests **645 → 676** (+31 from the new Keeper crate); live smoke matrix **383 → 395** (+12 for Section 24). Pre-tag full-matrix smoke passed 395/395 across all 11 backends on first clean run; closing three-agent trio audit (security + code + rust) landed 9 BLOCKING/HIGH/MEDIUM findings inline before tag, including a post-audit whoami text-parse fix surfaced during pre-tag smoke (CLI v17 `keeper whoami` has no `--format=json` flag — a spec/impl drift caught at the final integration gate). Note: v0.7.1 + v0.7.2 shipped as merged-not-tagged hygiene cycles; workspace version stayed at 0.7.1 until this tag bumps directly to 0.8.0.
+
+### Added
+
+- **Keeper backend** (`keeper`) — 11th backend. Wraps the `keeper` CLI (Keeper Commander v17+, installed via `pip install keepercommander`) to read, write (opt-in), delete, and list secrets in a user's Keeper vault. Unlike every other SecretEnv backend, **Keeper requires persistent-login setup as a prerequisite** — one-shot CLI invocations prompt for the master password unless a device token has been persisted via `keeper shell` → `this-device register` → `this-device persistent-login on`. The backend enforces `--batch-mode` on every invocation to prevent interactive prompts from hanging; a non-authenticated instance surfaces cleanly through `doctor` with a setup hint rather than blocking. URI shape: `keeper-<instance>:///<record-uid-or-title>` — a single path segment the CLI resolves to either a 22-char base64url UID or a record title. Optional `#field=<name>` fragment selects a typed or custom field (default: password). Config fields: `keeper_config_path` (custom `~/.keeper/config.json` path for multi-account setups), `keeper_unsafe_set` (default `false`; opt-in gate for argv-based `set()` — the Keeper CLI has no stdin form for field values, matching 1Password's `op_unsafe_set` precedent; emits `tracing::warn!` per unsafe invocation), `timeout_secs`, `keeper_bin` (test hook). `list()` uses the Pattern A bulk model (each vault record = one alias, password field = target URI) mirroring Doppler + Infisical; per-record failures during the hydration fan-out emit `tracing::warn!` with instance + title + reason rather than silent-continue (divergence from the silent pattern was flagged + fixed inline during trio audit). `history()` is unsupported — CLI `history` is interactive-shell command history, NOT per-record version history; bails with Vault-UI pointer. Full reference at [`docs/backends/keeper.md`](docs/backends/keeper.md).
+- **Smoke harness Section 24** — 12 live-backend assertions for the new Keeper backend. Provisions `SMOKE_TEST_VALUE` (scalar `kp_vault_88888`) and `SMOKE_REGISTRY_ALIAS` (URI-valued) records in the user's root folder; exercises `doctor` / `get` (round-trip via both title and registry alias) / `run` (end-to-end env injection) / `history` (unsupported bail) / unknown-fragment-reject end-to-end. Tears down both records after. Tagged `cloud=yes`; skipped when the `keeper` CLI is missing OR persistent login isn't set up.
+
+### Fixed (v0.7.1 + v0.7.2 hygiene work, merged as dev work 2026-04-23/24)
+
+The v0.7.1 (#67) and v0.7.2 (#68) cycles closed 25 DEFER items from the v0.6 Doppler and v0.7 Infisical closing audits as *merged-but-unreleased* work on `main`. Shipping now under the v0.8.0 tag so downstream users benefit. Full detail in [v0.7.1 CHANGELOG](#071---2026-04-23) and the build log.
+
+Key items:
+- Infisical `set()` value-aware stderr scrub; fd-based chmod; non-UTF-8 `$TMPDIR` explicit bail.
+- Doppler `ResolvedTarget` struct (replaces positional tuple); tightened `not found` heuristic so auth errors no longer mask as missing-secret; `tracing::debug!` on set/delete happy paths.
+- Both Doppler + Infisical `list()` JSON parse hops to `spawn_blocking` ≥256 KiB (threshold PROVISIONAL pending 10K-secret benchmark).
+- Infisical env-inherit test deterministic via mutex-serialized `EnvVarGuard`.
+- Live smoke coverage: Doppler + Infisical finally exercised as registry sources (sections 22g, 23g) — closed the long-deferred TODO from v0.6.
+- Documentation polish: Infisical self-hosted domain trust, Doppler IAM/RBAC + chmod advisory, `docs/security.md#self-hosted-domains` cross-linked from Infisical + Vault.
+
+### Changed
+
+- **Workspace version 0.7.1 → 0.8.0.** v0.7.1 + v0.7.2 held Cargo.toml at 0.7.1 while merging hygiene work as dev-only (no tag, no crates.io publish). This v0.8.0 tag bumps directly to 0.8.0, skipping a 0.7.2 tag. Users pulling from crates.io see v0.7.0 → v0.8.0 linearly; the intermediate hygiene fixes are bundled into v0.8.0.
+- **Backend count 10 → 11.** README badge + supported-backends table reflect the Keeper addition.
+
+### Deferred to v0.8.x+
+
+- **Keeper `keeper_config_path` world-readable stat-check** at factory time (trio security H2). Feature-add, not tag-blocker.
+- **Keeper Pattern A `registry set` extension.** Would let `registry set`/`unset` target Keeper (as well as Doppler + Infisical). Feature, not hygiene; target v0.9+.
+- **`keeper_folder` short-form URI scoping.** Field declared + accepted; implementation deferred.
+- **Rust 1.87+ `env::set_var` unsafe-wrap** (v0.7.2 carry-over R-13) — triggers when workspace rust-version floor moves.
+- **256 KiB `spawn_blocking` threshold benchmark** (v0.7.2 carry-over) — distinct activity, not hygiene-shaped.
+
 ## [0.7.1] - 2026-04-23
 
 **Headline:** dedicated DEFER-closeout hygiene patch between v0.7.0 and v0.8, keeping the next backend cycle cleanly thematic. Twenty items from the v0.6 (Doppler) and v0.7 (Infisical) closing audits closed in a single patch PR: three security-hardening items on Infisical's `set()` temp-file path, six consistency items unifying Doppler and Infisical error shapes and symmetry patterns, three testing-quality items (deterministic env-isolation, list()-parse spawn_blocking on multi-MB payloads, symmetric drift-catch naming), and eight documentation polish items spanning the self-hosted-domain trust boundary, IAM/RBAC walkthroughs, and smoke-harness fixture comments. No user-facing behavior changes beyond tightened error messages. v0.7.0 → v0.7.1: workspace unit tests **637 → 642** (+5); live smoke matrix unchanged at **373 assertions** (hygiene doesn't add assertions; pre-tag smoke re-runs the v0.7.0 baseline). Closing audit by the `code-reviewer` agent landed 2 HIGH fixes (ENV_LOCK invariant documentation + spawn_blocking threshold provisional flag) inline before tag; 0 BLOCKING findings.

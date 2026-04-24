@@ -313,6 +313,42 @@ else
     say "[Infisical] skipped (CLI missing or not authenticated)"
 fi
 
+# ---------- Keeper (v0.8) ----------
+# Keeper Commander requires persistent-login set up BEFORE we can
+# invoke non-interactively. The user's ~/.keeper/config.json holds a
+# device token after `this-device register` + `this-device persistent-
+# login on`. Without it, every `keeper --batch-mode <cmd>` exits
+# non-zero on auth failure — run-tests.sh Section 24's doctor SKIPs
+# out cleanly.
+#
+# Skipped entirely if the CLI is missing OR login-status reports
+# "Not logged in" (persistent-login NOT set up) — run-tests.sh
+# Section 24 records a SKIP in either case.
+if command -v keeper >/dev/null 2>&1 \
+   && keeper --batch-mode login-status 2>&1 | grep -q 'Logged in'; then
+    say "[Keeper] seed SMOKE_TEST_VALUE record in vault"
+    # `keeper search <title> --format=json` returns `[]` on miss. We
+    # always delete-then-add for idempotency — simpler than the
+    # probe-then-update flow. `rm -f` is a no-op if the title doesn't
+    # match any record (exits non-zero but we don't -e the script).
+    run "keeper --batch-mode rm -f SMOKE_TEST_VALUE 2>/dev/null || true"
+    # SECURITY NOTE — fixtures only, never use for a real secret.
+    # Value IS on argv here; `ps -ww` will see it mid-run. The value
+    # (`kp_vault_88888`) is a fixed fixture string, not a real
+    # credential. NEVER pattern-match this block for production use —
+    # SecretEnv's `set()` is gated behind `keeper_unsafe_set = true`
+    # and emits tracing::warn per invocation.
+    run "keeper --batch-mode record-add -t SMOKE_TEST_VALUE -rt login password=kp_vault_88888"
+
+    # v0.8 registry-source coverage: a second record whose password
+    # field IS a URI (`local-main://...`). Keeper's `list` enumerates
+    # every vault record; URI-valued records fold in the bulk model.
+    run "keeper --batch-mode rm -f SMOKE_REGISTRY_ALIAS 2>/dev/null || true"
+    run "keeper --batch-mode record-add -t SMOKE_REGISTRY_ALIAS -rt login password=local-main://${RUNTIME_DIR}/local-secrets/stripe-key.txt"
+else
+    say "[Keeper] skipped (CLI missing or persistent login not set up)"
+fi
+
 # ---------- Verification ----------
 say "=== Verification read-back ==="
 run "aws ssm get-parameter --name /secretenv-validation/registry --with-decryption --region '$AWS_REGION' --query Parameter.Value --output text | head -c 200; echo"

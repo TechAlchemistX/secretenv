@@ -93,4 +93,13 @@ if command -v infisical >/dev/null 2>&1 && infisical user get token --plain >/de
     run "infisical secrets delete SMOKE_REGISTRY_ALIAS --projectId '$INFISICAL_PROJECT_ID' --env dev --path /registry --type shared"
 fi
 
+# Keeper (v0.8) — delete the two seeded records. Persistent-login
+# required; skipped if not set up (same discipline as the other
+# SaaS-CLI teardowns).
+if command -v keeper >/dev/null 2>&1 \
+   && keeper --batch-mode login-status 2>&1 | grep -q 'Logged in'; then
+    run "keeper --batch-mode rm -f SMOKE_TEST_VALUE || true"
+    run "keeper --batch-mode rm -f SMOKE_REGISTRY_ALIAS || true"
+fi
+
 say "=== TEARDOWN_DONE ==="

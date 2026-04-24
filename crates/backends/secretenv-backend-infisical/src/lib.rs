@@ -697,36 +697,37 @@ impl Backend for InfisicalBackend {
         // correct directionally: a small registry stays inline, a
         // multi-MB payload stops stalling the tokio executor). Small
         // payloads take the zero-overhead inline path.
-        let entries: Vec<InfisicalListEntry> = if output.stdout.len() >= LIST_SPAWN_BLOCKING_THRESHOLD {
-            let bytes = output.stdout;
-            tokio::task::spawn_blocking(move || {
-                serde_json::from_slice::<Vec<InfisicalListEntry>>(&bytes)
-            })
-            .await
-            .with_context(|| {
-                format!(
-                    "infisical backend '{}': list JSON-parse worker panicked for URI '{}'",
-                    self.instance_name, uri.raw
-                )
-            })?
-            .with_context(|| {
-                format!(
-                    "infisical backend '{}': 'infisical secrets --output json' returned \
+        let entries: Vec<InfisicalListEntry> =
+            if output.stdout.len() >= LIST_SPAWN_BLOCKING_THRESHOLD {
+                let bytes = output.stdout;
+                tokio::task::spawn_blocking(move || {
+                    serde_json::from_slice::<Vec<InfisicalListEntry>>(&bytes)
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "infisical backend '{}': list JSON-parse worker panicked for URI '{}'",
+                        self.instance_name, uri.raw
+                    )
+                })?
+                .with_context(|| {
+                    format!(
+                        "infisical backend '{}': 'infisical secrets --output json' returned \
                          a payload that is not a JSON array of {{secretKey, …}} objects \
                          (URI '{}')",
-                    self.instance_name, uri.raw
-                )
-            })?
-        } else {
-            serde_json::from_slice(&output.stdout).with_context(|| {
-                format!(
-                    "infisical backend '{}': 'infisical secrets --output json' returned \
+                        self.instance_name, uri.raw
+                    )
+                })?
+            } else {
+                serde_json::from_slice(&output.stdout).with_context(|| {
+                    format!(
+                        "infisical backend '{}': 'infisical secrets --output json' returned \
                      a payload that is not a JSON array of {{secretKey, …}} objects \
                      (URI '{}')",
-                    self.instance_name, uri.raw
-                )
-            })?
-        };
+                        self.instance_name, uri.raw
+                    )
+                })?
+            };
 
         // list() returns (alias, target-uri) pairs. The Doppler-style
         // bulk model: each Infisical secret name = one alias, each

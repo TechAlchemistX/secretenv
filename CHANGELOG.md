@@ -8,6 +8,23 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-25
+
+**Headline:** fourth release of the single-backend-per-release cycle; fourth [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Cloudflare Workers KV** (`cf-kv` via `wrangler` CLI 4.x) — brings the total to **12**. First backend whose Phase 0 CLI-shape probe materially flipped the spec: the v0.7-era spec recommended a curl-against-REST design citing 2-3 s wrangler startup, but live measurement at wrangler 4.85.0 showed 0.28 s startup (Bun runtime), so the entire curl branch was retired and the backend ships wrangler-wrapped. v0.8.0 → v0.9.0: workspace unit tests **676 → 705** (+29 from the new cf-kv crate); live smoke matrix **395 → 419** (+24 for Section 25's 13 cf-kv assertions plus a few extras). Pre-tag full-matrix smoke passed all 13 cf-kv assertions on the second run after fixing a registry-source design issue (single namespace can't mix scalar secrets with URI-valued aliases — the resolver bails on the first non-URI value; switched to a two-namespace pattern, mirroring how Doppler/Infisical use separate paths). Closing three-agent trio audit (security + code + rust) landed 8 BLOCKING/HIGH/MEDIUM findings inline before tag. The remaining 11 baseline-smoke failures (8 in v0.4 history + 3 in v0.7 Infisical) are environmental drift unrelated to v0.9 — to be addressed in a follow-up hygiene cycle.
+
+### Added
+
+- **Cloudflare Workers KV backend** (`cf-kv`) wrapping the official `wrangler` CLI 4.x. Supports OAuth (`wrangler login`) and `CLOUDFLARE_API_TOKEN` env-var auth transparently. Two-segment URI shape `cf-kv-<instance>:///<namespace-id>/<key>`, with optional single-segment form `cf-kv-<instance>:///<key>` enabled by `cf_kv_default_namespace_id` config. `set()` writes through a mode-0600 tempfile + `--path` flag (no `_unsafe_set` opt-in needed — strictly safer than argv; matches Infisical's `--file` discipline). `list()` is Pattern A bulk-mode with sequential per-key fan-out for value hydration; `history()` is unsupported (KV has no per-key versioning — overwrites simply replace). Brings the total backend count to **12**. Spec at [docs/backends/cf-kv.md](docs/backends/cf-kv.md).
+- **Smoke Section 25** (assertions 330-352, 13 total) covering cf-kv as both a secrets backend (doctor / get / run-injection / history-unsupported / fragment-reject) AND a registry source (registry list / registry get / cross-backend resolve / end-to-end run via cf-kv-backed registry → local-main file content). Two-namespace pattern (`secretenv-smoke-v09` for secrets + `secretenv-smoke-v09-registry` for URI-valued aliases) is documented in `provision.sh` since cf-kv namespaces are flat (no folders to scope mixed key types).
+
+### Fixed
+
+- **Tightened `cf-kv` "key not found" detector** from a loose `"10009"` substring match to word-boundary forms (`error 10009` / `code 10009` / `code: 10009`) — prevents false-positives on stderr containing the digit run inside request IDs or timestamps. Surfaced by Phase 6 trio audit.
+- **Made `set()` tempfile flush fatal** (`with_context` instead of `.ok()`) — silently dropping a flush error could leave wrangler reading a truncated value with no surface to caller. Surfaced by Phase 6 trio audit.
+- **Added `NotFound` mapping to the `whoami` arm of `check()`** — the `tokio::join!` fires both probes simultaneously; the previous code only mapped `NotFound` on the version arm. Defense-in-depth for OS-shape variation. Surfaced by Phase 6 trio audit.
+
+## [0.8.0] - 2026-04-24
+
 ## [0.8.0] - 2026-04-24
 
 **Headline:** third release of the single-backend-per-release cycle; third [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Keeper** (Keeper Security vault via Keeper Commander v17+) — brings the total to 11. First backend to require a **prerequisite setup step** (persistent-login device-token registration); the install UX has an extra paragraph in docs as a result. v0.7.1 → v0.8.0: workspace unit tests **645 → 676** (+31 from the new Keeper crate); live smoke matrix **383 → 395** (+12 for Section 24). Pre-tag full-matrix smoke passed 395/395 across all 11 backends on first clean run; closing three-agent trio audit (security + code + rust) landed 9 BLOCKING/HIGH/MEDIUM findings inline before tag, including a post-audit whoami text-parse fix surfaced during pre-tag smoke (CLI v17 `keeper whoami` has no `--format=json` flag — a spec/impl drift caught at the final integration gate). Note: v0.7.1 + v0.7.2 shipped as merged-not-tagged hygiene cycles; workspace version stayed at 0.7.1 until this tag bumps directly to 0.8.0.

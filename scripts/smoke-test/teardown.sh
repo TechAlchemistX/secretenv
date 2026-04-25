@@ -102,4 +102,27 @@ if command -v keeper >/dev/null 2>&1 \
     run "keeper --batch-mode rm -f SMOKE_REGISTRY_ALIAS || true"
 fi
 
+# Cloudflare Workers KV (v0.9) — drop the two seeded keys from the
+# smoke namespace. Namespace itself is preserved across runs.
+CFKV_NS="${SECRETENV_TEST_CFKV_NAMESPACE_ID:-c554de8d89644f3d85f21933e7aea910}"
+CFKV_REG_NS="${SECRETENV_TEST_CFKV_REGISTRY_NAMESPACE_ID:-d3cd960f990946809bc3b50cd4ef119d}"
+# Validate hex shape of both namespace IDs — defensive against shell
+# injection via the env-var overrides.
+if ! [[ "$CFKV_NS" =~ ^[0-9a-f]{32}$ ]]; then
+    say "[cf-kv] teardown skipped — invalid secrets namespace id shape: $CFKV_NS"
+    CFKV_NS=""
+fi
+if ! [[ "$CFKV_REG_NS" =~ ^[0-9a-f]{32}$ ]]; then
+    say "[cf-kv] teardown skipped registry namespace — invalid id shape: $CFKV_REG_NS"
+    CFKV_REG_NS=""
+fi
+if command -v wrangler >/dev/null 2>&1 && wrangler whoami >/dev/null 2>&1; then
+    if [ -n "$CFKV_NS" ]; then
+        run "wrangler kv key delete --namespace-id '$CFKV_NS' --remote SMOKE_TEST_VALUE || true"
+    fi
+    if [ -n "$CFKV_REG_NS" ]; then
+        run "wrangler kv key delete --namespace-id '$CFKV_REG_NS' --remote SMOKE_REGISTRY_ALIAS || true"
+    fi
+fi
+
 say "=== TEARDOWN_DONE ==="

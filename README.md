@@ -9,7 +9,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
 [![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
-[![Backends](https://img.shields.io/badge/backends-11-green)](#supported-backends)
+[![Backends](https://img.shields.io/badge/backends-12-green)](#supported-backends)
 
 *No SaaS. No re-encryption. No lock-in. No .env files.*
 
@@ -444,6 +444,7 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Infisical | `infisical` | `infisical-<instance>:///<project-id>/<env>/<secret>` | `infisical` | Available |
 | Linux Secret Service | `secret-service` | `secret-service-<instance>://collection/label` | `secret-tool` | Coming Soon |
 | Keeper | `keeper` | `keeper-<instance>:///<record-uid-or-title>[#field=<name>]` | `keeper` (Commander) | Available |
+| Cloudflare Workers KV | `cf-kv` | `cf-kv-<instance>:///<namespace-id>/<key>` | `wrangler` | Available |
 | Bitwarden Secrets Manager | `bitwarden` | `bitwarden-<instance>://organization/secret` | `bws` | Coming Soon |
 | OpenBao | `openbao` | `openbao-<instance>://mount/path` | `bao` | Coming Soon |
 | CyberArk Conjur | `conjur` | `conjur-<instance>://account/path` | `conjur` | Coming Soon |

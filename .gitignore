@@ -25,3 +25,4 @@ Thumbs.db
 .env
 .env.*
 secretenv.local.toml
+.wrangler/

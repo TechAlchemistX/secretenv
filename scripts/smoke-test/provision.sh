@@ -349,6 +349,56 @@ else
     say "[Keeper] skipped (CLI missing or persistent login not set up)"
 fi
 
+# ---------- Cloudflare Workers KV (v0.9) ----------
+# wrangler is the official Cloudflare Workers CLI. Authenticated via
+# `wrangler login` (OAuth) OR CLOUDFLARE_API_TOKEN env var. The smoke
+# namespace ID defaults to the v0.9 Phase 0 fixture; override via
+# SECRETENV_TEST_CFKV_NAMESPACE_ID for a different account / re-run.
+#
+# Skipped entirely if the CLI is missing OR `wrangler whoami` fails —
+# run-tests.sh Section 25 records a SKIP in either case.
+CFKV_NS="${SECRETENV_TEST_CFKV_NAMESPACE_ID:-c554de8d89644f3d85f21933e7aea910}"
+CFKV_REG_NS="${SECRETENV_TEST_CFKV_REGISTRY_NAMESPACE_ID:-d3cd960f990946809bc3b50cd4ef119d}"
+# Validate hex shape of both namespace IDs — defensive against shell
+# injection via the env-var overrides. Cloudflare KV namespace IDs
+# are 32 lowercase hex chars.
+if ! [[ "$CFKV_NS" =~ ^[0-9a-f]{32}$ ]]; then
+    say "[cf-kv] skipped — invalid secrets namespace id shape: $CFKV_NS"
+    CFKV_NS=""
+fi
+if ! [[ "$CFKV_REG_NS" =~ ^[0-9a-f]{32}$ ]]; then
+    say "[cf-kv] skipped registry namespace — invalid id shape: $CFKV_REG_NS"
+    CFKV_REG_NS=""
+fi
+if [ -n "$CFKV_NS" ] && command -v wrangler >/dev/null 2>&1 \
+   && wrangler whoami >/dev/null 2>&1; then
+    say "[cf-kv] seed SMOKE_TEST_VALUE in secrets namespace $CFKV_NS"
+    # Use a tempfile to seed via --path, mirroring SecretEnv's set()
+    # discipline (avoids putting the value on argv visible via `ps -ww`,
+    # even though these are fixed-string fixtures, not real secrets).
+    CFKV_TMP="$(mktemp)"
+    chmod 600 "$CFKV_TMP"
+    printf 'cf_kv_value_99999' > "$CFKV_TMP"
+    run "wrangler kv key put --namespace-id '$CFKV_NS' --remote --path '$CFKV_TMP' SMOKE_TEST_VALUE"
+
+    # Registry-source coverage uses a SEPARATE namespace because
+    # cf-kv's list() returns every key in the namespace; mixing
+    # scalar secrets with URI-valued aliases in one namespace breaks
+    # the registry-source resolver (it bails on the first non-URI
+    # value). Doppler/Infisical solve this with separate paths under
+    # one project; cf-kv namespaces are flat, so we use two distinct
+    # namespaces. The v0.9 spec recommends the same pattern for users
+    # mixing secret-storage and alias-registry use cases.
+    if [ -n "$CFKV_REG_NS" ]; then
+        say "[cf-kv] seed SMOKE_REGISTRY_ALIAS in registry namespace $CFKV_REG_NS"
+        printf 'local-main://%s/local-secrets/stripe-key.txt' "$RUNTIME_DIR" > "$CFKV_TMP"
+        run "wrangler kv key put --namespace-id '$CFKV_REG_NS' --remote --path '$CFKV_TMP' SMOKE_REGISTRY_ALIAS"
+    fi
+    rm -f "$CFKV_TMP"
+else
+    say "[cf-kv] skipped (wrangler missing or not authenticated)"
+fi
+
 # ---------- Verification ----------
 say "=== Verification read-back ==="
 run "aws ssm get-parameter --name /secretenv-validation/registry --with-decryption --region '$AWS_REGION' --query Parameter.Value --output text | head -c 200; echo"

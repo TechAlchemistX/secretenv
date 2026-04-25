@@ -102,11 +102,27 @@ seed_runtime_from_fixtures() {
           "$RUNTIME_DIR/project-repo/secretenv.toml"
 
     # v0.4 Section 17 prereq: local-secrets must be a git repo so
-    # `registry history` has commits to walk. Idempotent. The second
-    # commit just appends a trailing newline so the scalar value read
-    # by earlier sections stays identical (tests in Sections 4-8 assert
-    # the exact stripe-key payload).
-    if [ ! -d "$RUNTIME_DIR/local-secrets/.git" ]; then
+    # `registry history` has commits to walk. The second commit just
+    # appends a trailing newline so the scalar value read by earlier
+    # sections stays identical (tests in Sections 4-8 assert the
+    # exact stripe-key payload).
+    #
+    # v0.9.1 robustness: the previous `[ ! -d .git ]` check
+    # incorrectly skipped re-init when the .git directory existed
+    # but was broken (e.g., empty from a prior failed run); v0.9
+    # pre-tag smoke caught 8 history-section failures stuck on this
+    # state. Use `git rev-parse --git-dir` as the validity gate
+    # instead — it succeeds only when the repo is functional.
+    needs_init=1
+    if [ -d "$RUNTIME_DIR/local-secrets/.git" ]; then
+        if ( cd "$RUNTIME_DIR/local-secrets" && git rev-parse --git-dir >/dev/null 2>&1 ); then
+            needs_init=0
+        else
+            # Broken .git — wipe and reinit fresh.
+            rm -rf "$RUNTIME_DIR/local-secrets/.git"
+        fi
+    fi
+    if [ "$needs_init" = "1" ]; then
         (
             cd "$RUNTIME_DIR/local-secrets"
             git init -q

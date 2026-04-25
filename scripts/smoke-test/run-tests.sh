@@ -1848,8 +1848,9 @@ section_begin 25 "v0.9 Cloudflare Workers KV backend"
 # OAuth OR CLOUDFLARE_API_TOKEN env var). Non-authenticated runs
 # record a SKIP — same discipline as Doppler/Infisical/Keeper.
 
-CFKV_NS="${SECRETENV_TEST_CFKV_NAMESPACE_ID:-c554de8d89644f3d85f21933e7aea910}"
-CFKV_REG_NS="${SECRETENV_TEST_CFKV_REGISTRY_NAMESPACE_ID:-d3cd960f990946809bc3b50cd4ef119d}"
+# cf-kv namespace IDs from single source of truth. v0.9.1 hygiene.
+# shellcheck source=lib/cfkv-namespace.env
+. "$_here/lib/cfkv-namespace.env"
 
 if ! command -v wrangler >/dev/null 2>&1; then
     record "330 v0.9 cf-kv section skipped — wrangler CLI not installed" "SKIP" \
@@ -1993,6 +1994,17 @@ EOF
       "$BIN" --config "$V09_CFREGSRC" registry list
     assert_contains "343 cf-kv registry-source surfaces SMOKE_REGISTRY_ALIAS" \
       "$RUNS/342-v09-cfkv-reglist.log" 'SMOKE_REGISTRY_ALIAS'
+    # 25g.1 — v0.9.1 hygiene (sec-L1): the registry namespace must
+    # contain ONLY URI-valued aliases. SMOKE_TEST_VALUE is the
+    # scalar fixture seeded in the SECRETS namespace, NOT the
+    # REGISTRY namespace; if it appears here, the two-namespace
+    # provision discipline broke OR the resolver started leaking
+    # non-URI values through registry list (would surface a real
+    # security issue — registry source returning unparseable values
+    # could feed downstream `secretenv get` flows scalars labeled as
+    # URIs). Lock the negative.
+    assert_not_contains "343a cf-kv registry namespace must not surface scalar SMOKE_TEST_VALUE" \
+      "$RUNS/342-v09-cfkv-reglist.log" 'SMOKE_TEST_VALUE'
 
     # 25h — registry get pulls the URI value from cf-kv. Locks
     # registry get's bulk-source resolution path through cf-kv.
@@ -2036,6 +2048,59 @@ EOF
     # chain.
     assert_contains "351 cf-kv-backed run injects local-main file content" \
       "$RUNS/350-v09-cfkv-run-regsrc.log" 'stripe='
+
+    # 25k — v0.9.1 hygiene (sec-M2): wrangler-delete-actually-deletes
+    # canary. The cf-kv backend's `delete()` shells to
+    # `wrangler kv key delete --namespace-id <id> --remote <key>`
+    # without an explicit `--force` flag (none exists in wrangler
+    # 4.85.0). It works today because wrangler skips its interactive
+    # prompt when stdin is not a TTY (as is the case under our
+    # `Stdio::null()` discipline). If a future wrangler minor
+    # regresses to default-no on the prompt, every cf-kv delete
+    # would silently no-op with exit 0 — a real bug class.
+    #
+    # SecretEnv has no CLI surface that calls cf-kv backend.delete()
+    # directly (`registry unset` is Pattern-B-doc only and rejects
+    # Pattern-A bulk backends like cf-kv at the serialize step), so
+    # this canary exercises wrangler's behavior in the same non-TTY
+    # mode our backend uses. The plumbing path (cf-kv backend →
+    # wrangler subprocess → namespace mutation) is locked by the
+    # backend's unit tests; this assertion locks the wrangler
+    # contract our backend depends on.
+    CFKV_PROBE_TMP="$(mktemp)"
+    chmod 600 "$CFKV_PROBE_TMP"
+    printf 'cfkv_delete_probe_value' > "$CFKV_PROBE_TMP"
+    wrangler kv key put --namespace-id "$CFKV_NS" --remote --path "$CFKV_PROBE_TMP" CFKV_DELETE_PROBE >/dev/null 2>&1
+    rm -f "$CFKV_PROBE_TMP"
+
+    # Confirm the probe landed before exercising delete.
+    wrangler kv key get --namespace-id "$CFKV_NS" --remote --text CFKV_DELETE_PROBE > "$RUNS/352-v091-cfkv-predel.log" 2>&1
+    assert_contains "352 v0.9.1 cf-kv pre-delete read confirms probe" \
+      "$RUNS/352-v091-cfkv-predel.log" 'cfkv_delete_probe_value'
+
+    # Delete in same non-TTY context the backend uses (no </dev/tty,
+    # no explicit --force flag). If wrangler ever regresses to
+    # default-no on the prompt, exit will be 0 but the key will
+    # still exist.
+    wrangler kv key delete --namespace-id "$CFKV_NS" --remote CFKV_DELETE_PROBE </dev/null >/dev/null 2>&1
+
+    # Read-back must fail with not-found. The not-found exit code
+    # tells us wrangler's error model still surfaces missing keys
+    # (which our backend depends on for its `is_not_found_stderr`
+    # heuristic to fire).
+    wrangler kv key get --namespace-id "$CFKV_NS" --remote --text CFKV_DELETE_PROBE > "$RUNS/353-v091-cfkv-postdel.log" 2>&1
+    # wrangler 4.85.0 surfaces 404s with "404: Not Found" (capital N)
+    # in stderr. Match on the literal status string rather than the
+    # word "not found" — same evidence, immune to case-shifts.
+    assert_contains "353 v0.9.1 cf-kv post-delete read surfaces 404" \
+      "$RUNS/353-v091-cfkv-postdel.log" '404'
+
+    # Direct wrangler list canary — the most authoritative check.
+    # If wrangler still lists CFKV_DELETE_PROBE, the delete didn't
+    # actually mutate state — load-bearing for the sec-M2 risk.
+    wrangler kv key list --namespace-id "$CFKV_NS" --remote > "$RUNS/354-v091-cfkv-wrangler-list.log" 2>&1
+    assert_not_contains "354 v0.9.1 cf-kv wrangler list does not show deleted probe" \
+      "$RUNS/354-v091-cfkv-wrangler-list.log" 'CFKV_DELETE_PROBE'
 fi
 
 # ---------------------------------------------------------------

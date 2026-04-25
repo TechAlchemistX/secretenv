@@ -34,17 +34,25 @@
 //!
 //! # Config fields
 //!
-//! - `keeper_folder` (optional) — reserved for future short-form
-//!   scoping; currently unused.
 //! - `keeper_config_path` (optional) — path to the Keeper Commander
 //!   `config.json` holding the persisted device token. Defaults to
 //!   `~/.keeper/config.json` (resolved by the CLI itself when
-//!   `--config` is omitted).
+//!   `--config` is omitted). When set, the factory validates at
+//!   creation time that the file exists AND that its mode is not
+//!   world- or group-readable (POSIX); a permissive mode is rejected
+//!   with a `chmod 600` hint to prevent accidentally loading a
+//!   device token from a shared file.
 //! - `keeper_unsafe_set` (optional) — default **`false`**. When
 //!   `false`, `set()` bails. When `true`, opts into argv-based
 //!   `set()` via `record-add`/`record-update` — the Keeper CLI has no
 //!   stdin form for field values, so argv exposure via `ps -ww` is
 //!   unavoidable. Matches the 1Password `op_unsafe_set` precedent.
+//! - `keeper_list_max_records` (optional) — opt-in cap on the
+//!   per-record fan-out in `list()`. When set, the bulk enumeration
+//!   stops after N records have been hydrated. Default `None` (no
+//!   cap; equivalent to current behavior). Bounds the worst-case
+//!   N-wide secret-fanout in heap residence + outbound rate-limit
+//!   pressure for large vaults.
 //! - `timeout_secs` (optional) — per-instance deadline. Default
 //!   [`DEFAULT_GET_TIMEOUT`].
 //! - `keeper_bin` (optional, test hook) — override the `keeper`
@@ -108,20 +116,22 @@ const INSTALL_HINT: &str =
 pub struct KeeperBackend {
     backend_type: &'static str,
     instance_name: String,
-    /// Reserved for future short-form URI scoping. Currently unused;
-    /// the v0.8 URI shape is a single segment (UID or title).
-    #[allow(dead_code)]
-    keeper_folder: Option<String>,
     /// Path to `~/.keeper/config.json` (or an equivalent config file)
     /// holding the persisted device token from `this-device
     /// persistent-login on`. `None` → the CLI's default resolution
-    /// path (`~/.keeper/config.json`).
+    /// path (`~/.keeper/config.json`). Validated at factory creation
+    /// time for existence + non-world-readable mode (POSIX).
     keeper_config_path: Option<String>,
     /// Opt-in gate for argv-based `set()`. Default `false` → `set()`
     /// bails with a safer-path pointer. `true` → `record-add` /
     /// `record-update` with value on argv (visible via `ps -ww`).
     /// Mirrors 1Password's `op_unsafe_set` precedent.
     keeper_unsafe_set: bool,
+    /// Opt-in cap on `list()` per-record fan-out. `None` → no cap
+    /// (current behavior); `Some(n)` → stop after `n` records
+    /// hydrated. Bounds heap residence and outbound rate-limit
+    /// pressure for large vaults.
+    keeper_list_max_records: Option<usize>,
     /// Path or name of the `keeper` binary. Defaults to `"keeper"`
     /// (PATH lookup); tests override to a mock script path via
     /// [`secretenv_testing::StrictMock`].
@@ -651,9 +661,21 @@ impl Backend for KeeperBackend {
         //    URI-values that the resolver would drop regardless),
         //    but a future enhancement should surface a count of
         //    skipped entries in `tracing::warn!` or equivalent.
-        let mut out = Vec::with_capacity(entries.len());
+        // Honor the opt-in fan-out cap. None → no cap (current
+        // unbounded behavior); Some(n) → stop hydrating after n
+        // records. Bounds heap residence + outbound rate-limit
+        // pressure on large vaults. We still parse every list entry
+        // (cheap metadata) — the cap only bounds the per-record
+        // password-fetch fan-out where real cost lives.
+        let cap = self.keeper_list_max_records.unwrap_or(usize::MAX);
+        let mut out = Vec::with_capacity(entries.len().min(cap));
         let mut skipped = 0u32;
+        let mut capped = false;
         for entry in entries {
+            if out.len() >= cap {
+                capped = true;
+                break;
+            }
             let mut c =
                 self.keeper_command(&["get", &entry.title, "--format", "password", "--unmask"]);
             let o = match c.output().await {
@@ -702,6 +724,16 @@ impl Backend for KeeperBackend {
                  downstream alias map is shorter than the vault"
             );
         }
+        if capped {
+            tracing::warn!(
+                instance = self.instance_name.as_str(),
+                cap = cap,
+                returned = out.len(),
+                "keeper list(): hit `keeper_list_max_records` cap; \
+                 downstream alias map is bounded — set a higher cap \
+                 or unset to enumerate the full vault"
+            );
+        }
         Ok(out)
     }
 
@@ -740,6 +772,78 @@ impl Default for KeeperFactory {
     }
 }
 
+/// Parse `keeper_list_max_records` from the per-instance config.
+/// Field absent → `None`; field present but not a positive integer
+/// → factory error (zero is also rejected — a cap of 0 would always
+/// short-circuit to empty and is almost certainly a config typo).
+fn keeper_list_max_records_from(
+    config: &HashMap<String, toml::Value>,
+    instance_name: &str,
+) -> Result<Option<usize>> {
+    let Some(value) = config.get("keeper_list_max_records") else {
+        return Ok(None);
+    };
+    let n = value.as_integer().ok_or_else(|| {
+        anyhow::anyhow!(
+            "keeper instance '{instance_name}': field 'keeper_list_max_records' \
+             must be a positive integer, got {value}"
+        )
+    })?;
+    if n <= 0 {
+        anyhow::bail!(
+            "keeper instance '{instance_name}': field 'keeper_list_max_records' \
+             must be > 0 (got {n}); omit the field to disable the cap"
+        );
+    }
+    // i64 → usize cast: positive (just guarded), and any positive i64
+    // fits in a 64-bit usize. On 32-bit targets this clamps via try_into.
+    Ok(Some(usize::try_from(n).map_err(|_| {
+        anyhow::anyhow!(
+            "keeper instance '{instance_name}': field 'keeper_list_max_records' \
+             value {n} exceeds platform usize max"
+        )
+    })?))
+}
+
+/// Validate that `keeper_config_path` points at an existing file
+/// whose POSIX mode is not world- or group-readable. The Keeper
+/// device-token config encodes a long-lived auth credential;
+/// loading one from a permissive file would silently widen the
+/// blast radius of a host compromise.
+///
+/// On non-POSIX targets the check is a no-op — no portable mode
+/// model exists. Existence is still verified (factory bails if the
+/// path doesn't resolve to a file).
+fn validate_config_path_perms(path: &str, instance_name: &str) -> Result<()> {
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        anyhow::anyhow!(
+            "keeper instance '{instance_name}': keeper_config_path '{path}' \
+             cannot be stat'd: {e}"
+        )
+    })?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "keeper instance '{instance_name}': keeper_config_path '{path}' \
+             is not a regular file"
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode() & 0o777;
+        // 0o077 covers any group OR other read/write/execute bit.
+        // Owner-only modes (0o600, 0o400, 0o700) all mask to 0.
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "keeper instance '{instance_name}': keeper_config_path \
+                 '{path}' has permissive mode {mode:o} (group/other-readable); \
+                 run `chmod 600 {path}` to restrict to owner-only"
+            );
+        }
+    }
+    Ok(())
+}
+
 impl BackendFactory for KeeperFactory {
     fn backend_type(&self) -> &str {
         self.0
@@ -750,22 +854,32 @@ impl BackendFactory for KeeperFactory {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        let keeper_folder = optional_string(config, "keeper_folder", "keeper", instance_name)?;
         let keeper_config_path =
             optional_string(config, "keeper_config_path", "keeper", instance_name)?;
         let keeper_unsafe_set =
             optional_bool(config, "keeper_unsafe_set", "keeper", instance_name)?.unwrap_or(false);
+        let keeper_list_max_records = keeper_list_max_records_from(config, instance_name)?;
         let keeper_bin = optional_string(config, "keeper_bin", "keeper", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
         let timeout = optional_duration_secs(config, "timeout_secs", "keeper", instance_name)?
             .unwrap_or(DEFAULT_GET_TIMEOUT);
 
+        // sec-H2 from v0.8 trio audit: stat-check the device-token
+        // config file at factory creation time. If the file is
+        // present but world- or group-readable, refuse to create
+        // the backend — loading a Keeper device token from a shared
+        // file is a credential-leak posture. POSIX-only; non-POSIX
+        // targets skip the check (no portable fs-mode model).
+        if let Some(path) = keeper_config_path.as_deref() {
+            validate_config_path_perms(path, instance_name)?;
+        }
+
         Ok(Box::new(KeeperBackend {
             backend_type: "keeper",
             instance_name: instance_name.to_owned(),
-            keeper_folder,
             keeper_config_path,
             keeper_unsafe_set,
+            keeper_list_max_records,
             keeper_bin,
             timeout,
         }))
@@ -786,8 +900,8 @@ mod tests {
         KeeperBackend {
             backend_type: "keeper",
             instance_name: "keeper-prod".to_owned(),
-            keeper_folder: None,
             keeper_config_path: None,
+            keeper_list_max_records: None,
             keeper_unsafe_set: unsafe_set,
             keeper_bin: mock_path.to_str().unwrap().to_owned(),
             timeout: DEFAULT_GET_TIMEOUT,
@@ -798,8 +912,8 @@ mod tests {
         KeeperBackend {
             backend_type: "keeper",
             instance_name: "keeper-prod".to_owned(),
-            keeper_folder: None,
             keeper_config_path: None,
+            keeper_list_max_records: None,
             keeper_unsafe_set: false,
             keeper_bin: "/definitely/not/a/real/path/to/keeper-XYZ987".to_owned(),
             timeout: DEFAULT_GET_TIMEOUT,
@@ -1298,5 +1412,132 @@ mod tests {
             panic!("expected error on non-bool keeper_unsafe_set");
         };
         assert!(format!("{err:#}").contains("must be a boolean"), "err: {err:#}");
+    }
+
+    // ---- v0.9.1 hygiene: keeper_list_max_records ----
+
+    #[test]
+    fn factory_accepts_positive_keeper_list_max_records() {
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("keeper_list_max_records".to_owned(), toml::Value::Integer(500));
+        factory.create("keeper-prod", &cfg).unwrap();
+    }
+
+    #[test]
+    fn factory_rejects_zero_keeper_list_max_records() {
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("keeper_list_max_records".to_owned(), toml::Value::Integer(0));
+        let Err(err) = factory.create("keeper-prod", &cfg) else {
+            panic!("expected error on zero keeper_list_max_records");
+        };
+        assert!(format!("{err:#}").contains("must be > 0"), "err: {err:#}");
+    }
+
+    #[test]
+    fn factory_rejects_negative_keeper_list_max_records() {
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("keeper_list_max_records".to_owned(), toml::Value::Integer(-5));
+        let Err(err) = factory.create("keeper-prod", &cfg) else {
+            panic!("expected error on negative keeper_list_max_records");
+        };
+        assert!(format!("{err:#}").contains("must be > 0"), "err: {err:#}");
+    }
+
+    #[test]
+    fn factory_rejects_non_integer_keeper_list_max_records() {
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("keeper_list_max_records".to_owned(), toml::Value::String("100".into()));
+        let Err(err) = factory.create("keeper-prod", &cfg) else {
+            panic!("expected error on non-integer keeper_list_max_records");
+        };
+        assert!(format!("{err:#}").contains("must be a positive integer"), "err: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn list_honors_keeper_list_max_records_cap() {
+        // Provide 4 list entries; cap at 2; verify only the first 2
+        // are hydrated and the third+fourth `get` mocks are never
+        // called (strict-mock would assert no-match if they were).
+        let dir = TempDir::new().unwrap();
+        let list_body = r#"[
+            {"title":"K1","record_uid":"u1"},
+            {"title":"K2","record_uid":"u2"},
+            {"title":"K3","record_uid":"u3"},
+            {"title":"K4","record_uid":"u4"}
+        ]"#;
+        let mock = StrictMock::new("keeper")
+            .on(LIST_ARGV, Response::success(list_body))
+            .on(&get_pw_argv("K1"), Response::success("v1\n"))
+            .on(&get_pw_argv("K2"), Response::success("v2\n"))
+            .install(dir.path());
+        let mut b = backend(&mock, false);
+        b.keeper_list_max_records = Some(2);
+        let uri = BackendUri::parse("keeper-prod:///REG").unwrap();
+        let mut out = b.list(&uri).await.unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec![("K1".to_owned(), "v1".to_owned()), ("K2".to_owned(), "v2".to_owned())]
+        );
+    }
+
+    // ---- v0.9.1 hygiene: keeper_config_path stat-check (sec-H2) ----
+
+    #[test]
+    fn factory_rejects_nonexistent_keeper_config_path() {
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "keeper_config_path".to_owned(),
+            toml::Value::String("/no/such/file/keeper-XYZ.json".into()),
+        );
+        let Err(err) = factory.create("keeper-prod", &cfg) else {
+            panic!("expected error on nonexistent keeper_config_path");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("cannot be stat'd"), "err: {msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn factory_rejects_world_readable_keeper_config_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("keeper-config.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "keeper_config_path".to_owned(),
+            toml::Value::String(path.to_str().unwrap().to_owned()),
+        );
+        let Err(err) = factory.create("keeper-prod", &cfg) else {
+            panic!("expected error on world-readable keeper_config_path");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("permissive mode"), "err: {msg}");
+        assert!(msg.contains("chmod 600"), "err: {msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn factory_accepts_owner_only_keeper_config_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("keeper-config.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let factory = KeeperFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "keeper_config_path".to_owned(),
+            toml::Value::String(path.to_str().unwrap().to_owned()),
+        );
+        factory.create("keeper-prod", &cfg).unwrap();
     }
 }

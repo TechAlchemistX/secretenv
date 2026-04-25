@@ -47,9 +47,9 @@ type = "keeper"                                      # required
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"keeper"` |
-| `keeper_folder` | No | Reserved for future short-form URI scoping. Currently accepted but unused. |
-| `keeper_config_path` | No | Path to the Keeper Commander `config.json` holding the persisted device token. Defaults to `~/.keeper/config.json` (the CLI's own default). Useful for multi-account setups where you keep separate config files per account. |
+| `keeper_config_path` | No | Path to the Keeper Commander `config.json` holding the persisted device token. Defaults to `~/.keeper/config.json` (the CLI's own default). Useful for multi-account setups where you keep separate config files per account. **Validated at factory time:** the file must exist and be owner-only (POSIX mode `0600` or stricter); permissive modes are rejected with a `chmod 600` hint to prevent accidentally loading a Keeper device token from a shared file. |
 | `keeper_unsafe_set` | No | Default `false`. When `false`, `set()` bails with a pointer at the Keeper Vault UI. When `true`, opts into argv-based `set()` via `record-add`/`record-update` — **the Keeper CLI has no stdin form for field values**, so argv exposure via `ps -ww` is unavoidable. Matches the 1Password `op_unsafe_set` precedent (see `docs/backends/1password.md`). |
+| `keeper_list_max_records` | No | Opt-in cap on `list()` per-record fan-out. Default unset (no cap; full vault enumeration). When set to a positive integer, `list()` stops after that many records have been hydrated, bounding heap residence and outbound rate-limit pressure on large vaults. Hitting the cap emits a `tracing::warn!` naming the cap and the truncated count. |
 | `timeout_secs` | No | Per-instance fetch deadline. Default `DEFAULT_GET_TIMEOUT` (30 s). Keeper API latencies are typically sub-second but authoritative-source fetches can spike during peak. |
 
 ### Multi-account setups
@@ -109,7 +109,7 @@ Fragments other than `#field=<name>` are rejected with a specific error at URI-p
 
 ### Folder-path URIs
 
-**Not currently supported.** Keeper records live in folders, but the URI format is a single segment. If your record title isn't globally unique, either rename it or reference it by UID. Future enhancement (v0.8.x+) could add `keeper_folder` as a scoping hint.
+**Not currently supported.** Keeper records live in folders, but the URI format is a single segment. If your record title isn't globally unique, either rename it or reference it by UID. The previously-reserved `keeper_folder` config field was removed in v0.9.1 since it had no implementation behind it; if folder scoping ships in a future release it will be re-introduced under a deliberate spec rather than as a placeholder.
 
 ---
 

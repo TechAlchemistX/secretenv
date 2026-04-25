@@ -143,6 +143,85 @@ backend cf-kv-prod (cf-kv): Ok
 
 The identity reports the email associated with the OAuth token (or the API token's bound user). Account-name and account-ID details are visible via `wrangler whoami` directly; SecretEnv keeps `doctor` lean by parsing only the email line.
 
+## `set()` opt-in posture vs other backends
+
+cf-kv ships **safe-by-default** for writes — no opt-in flag required. This is a deliberate departure from `1password` and `keeper`, which gate writes behind a `*_unsafe_set = true` config flag because their CLIs have no stdin or filesystem-input form for values (the value MUST land on argv, visible to same-UID processes via `ps -ww`).
+
+| Backend | `set()` posture | Why |
+|---|---|---|
+| `local` | Safe by default | Writes to a TOML file with explicit perms |
+| `aws-ssm`, `aws-secrets`, `gcp`, `azure`, `vault` | Safe by default | CLIs accept value via stdin or `--file` |
+| `doppler`, `infisical` | Safe by default | `doppler secrets set --file -`, `infisical secrets set --file <path>` |
+| **`cf-kv`** | **Safe by default** | `wrangler kv key put --path <tempfile>` — mode-0600 tempfile + RAII unlink |
+| `1password` | Opt-in via `op_unsafe_set = true` | `op item edit` puts value on argv with no stdin alternative |
+| `keeper` | Opt-in via `keeper_unsafe_set = true` | `keeper record-add/-update` puts value on argv with no stdin alternative |
+| `keychain` | Safe by default | `security add-generic-password` accepts `-w` argv but SecretEnv uses `-w` only with the value, NOT logging it |
+
+The cf-kv tempfile path is strictly safer than argv: there is no `ps -ww` exposure, mode 0600 bounds the same-UID file-system race window, and RAII unlink immediately after wrangler exits keeps the disk-resident lifetime to seconds. No opt-in is required because no exposure mechanism exists to opt into.
+
+## Multi-namespace worked example
+
+cf-kv namespaces are flat — there's no folder/path scoping like Doppler's `dev/registry/` or Infisical's `/registry`. If you want to use cf-kv for **both** scalar secret storage AND a SecretEnv alias registry, use **two namespaces**: one for scalar secrets, one for URI-valued aliases. The registry-source resolver bails on the first non-URI value it sees, so mixing types in a single namespace breaks `secretenv registry list` immediately.
+
+```toml
+# ~/.config/secretenv/config.toml
+
+[registries.default]
+# The REGISTRY namespace holds ONLY URI-valued aliases.
+sources = ["cf-kv-prod:///abc123…/REGISTRY_MARKER"]
+
+[backends.cf-kv-prod]
+type = "cf-kv"
+# The SECRETS namespace holds scalar values addressed via secretenv.toml.
+# Two-segment URIs in alias values point HERE for actual secret reads.
+cf_kv_default_namespace_id = "def456…"
+```
+
+Then in your alias registry namespace (the one in `[registries.default]`), seed entries like:
+
+```bash
+# Each KV key in the registry namespace IS one alias; each value
+# IS the full backend URI for the secret behind that alias.
+echo -n 'cf-kv-prod:///def456…/STRIPE_KEY' | wrangler kv key put \
+  --namespace-id abc123… --remote --path /dev/stdin stripe_key
+
+echo -n 'aws-ssm-prod:///stripe-webhook-secret' | wrangler kv key put \
+  --namespace-id abc123… --remote --path /dev/stdin webhook_secret
+```
+
+The registry can point at any mix of backends; cf-kv just provides the alias-store layer. `secretenv registry list` enumerates the alias namespace; `secretenv get stripe_key` resolves through whatever URI the alias holds.
+
+## Troubleshooting
+
+**`✗ not authenticated  run: wrangler login OR export CLOUDFLARE_API_TOKEN`**
+OAuth token expired or never set up. Quickest fix:
+
+```bash
+wrangler logout && wrangler login
+# OR
+export CLOUDFLARE_API_TOKEN=<token>  # token needs Workers KV Storage:Edit scope
+```
+
+**`Error: code 10009: key not found`**
+The key doesn't exist in the namespace. Verify with `wrangler kv key list --namespace-id <id> --remote`. Double-check you're using the **namespace ID** (UUID-shaped, from `wrangler kv namespace list`), NOT the binding name (which is per-Worker-script-local).
+
+**`Error: 429 Too Many Requests`**
+Cloudflare KV's account-wide rate limit (~1200 req / 5 min default) has been hit, typically by a `secretenv registry list` against a namespace with many keys (each key triggers a sequential `get`). Either request a rate-limit increase from Cloudflare, or scope the registry to a smaller dedicated namespace with bounded entry count.
+
+**Wrong account / multi-account confusion**
+`wrangler whoami` shows the active account. To switch:
+
+```bash
+# OAuth path:
+wrangler logout && wrangler login
+# Token path:
+export CLOUDFLARE_API_TOKEN=<token-for-other-account>
+# Or scope per-instance via wrapper script that exports CLOUDFLARE_ACCOUNT_ID.
+```
+
+**`Error: Resource location: remote / Writing the value "..." ...` showing in stderr**
+wrangler's info banner. Not an error — the operation succeeded. SecretEnv suppresses this banner from `set()` output by nulling stdout; you'll see it only when running `wrangler` directly.
+
 ## Limitations and roadmap
 
 - **No per-key version history.** Use key naming conventions or a separate audit-log key. Cloudflare may add this; SecretEnv will follow.

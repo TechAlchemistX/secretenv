@@ -8,6 +8,42 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### v0.9.1 hygiene (merged-not-tagged 2026-04-25)
+
+Rolling-backlog cycle following the v0.7.1 / v0.7.2 dev-work pattern: merged to `main`, workspace `version` stays at `0.9.0`, no tag. Closes 13 actionable items from the v0.9 trio audit deferred list ([reviews/2026-04-25-v0.9-cf-kv-audit](kb/wiki/reviews/2026-04-25-v0.9-cf-kv-audit.md)) plus the v0.8.x Keeper carry-forward backlog plus baseline smoke hygiene. v0.10 Bitwarden release will fold these into its tagged CHANGELOG.
+
+#### Added
+
+- **`keeper_list_max_records`** (Keeper backend) — opt-in cap on `list()` per-record fan-out. Default unset (no cap). Bounds heap residence and outbound rate-limit pressure on large vaults; hitting the cap emits a `tracing::warn!`. Closes Keeper trio sec-H1 follow-up.
+
+#### Changed
+
+- **`keeper_config_path` validated at factory time** — file existence + POSIX mode `0o077` mask. Permissive modes (group/other-readable) now bail with a `chmod 600` hint instead of silently loading a Keeper device token from a shared file. Closes Keeper trio sec-H2.
+- **cf-kv `WranglerWhoami::parse` refactored to `find_map`** — clearer style, same behavior. Closes cf-kv rust-L1.
+- **cf-kv `resolve_target` allocation-free** — `split_once('/')` chain replaces the previous `Vec<&str>` collect. Closes cf-kv rust-L5.
+- **cf-kv smoke namespace IDs centralized** to `scripts/smoke-test/lib/cfkv-namespace.env` — single source of truth (was 3-place duplication). Closes cf-kv code-reviewer L2.
+- **cf-kv docs expanded** with Troubleshooting, `set()` opt-in posture comparison table vs other backends, and multi-namespace worked example. Closes cf-kv code-reviewer L1.
+- **Backend-spec template Phase 1 checklist** explicit "new crate → `deny.toml` per-crate AGPL exception" + `cargo deny check licenses` preflight gate. Captures the v0.8 Keeper lesson so future cycles don't hit the CI-only failure.
+
+#### Removed
+
+- **`keeper_folder` config field** — declared since v0.8 but never wired up (documented as "reserved for future short-form URI scoping. Currently accepted but unused"). API-surface debt removed; if folder scoping ships in a future release it will be re-introduced under a deliberate spec.
+
+#### Fixed
+
+- **Section 17 (v0.4 history) — `seed_runtime_from_fixtures` git-init validity gate.** The previous `[ ! -d .git ]` check skipped re-init when `.git/` existed but was broken (e.g., empty from a prior failed run). Replaced with `git rev-parse --git-dir` validity probe that wipes and reinits broken state. Recovers the 8 baseline failures (assertions 185-192) that were stuck in this state. Pre-existing baseline drift surfaced by v0.9 pre-tag full-matrix smoke.
+- **Section 25k cf-kv post-delete read assertion** — switched pattern from lowercase `'not found'` to literal `'404'` to match wrangler 4.85.0's actual `404: Not Found` (capital N) error string. Same evidence; immune to case-shifts.
+
+#### Smoke Section 25 additions (v0.9.1 hygiene)
+
+- **343a — registry-namespace must NOT contain scalar fixtures** (sec-L1). Negative assertion locks the two-namespace discipline so a future regression mixing scalar + URI keys in the registry namespace fails loudly.
+- **352–354 — wrangler-delete-actually-deletes canary** (sec-M2). Provisions a probe key, deletes via wrangler in the same non-TTY mode the cf-kv backend uses, asserts (a) post-delete read returns `404`, (b) `wrangler kv key list` no longer shows the probe. Locks the wrangler contract our backend depends on; if wrangler ever regresses to default-no on its interactive confirmation prompt, this canary catches it.
+
+#### Smoke matrix delta
+
+- v0.9.0 pre-tag: 408/419 PASS (11 baseline failures: 8 history + 3 Infisical).
+- v0.9.1 post-fix: **420/423 PASS** (3 remaining = Infisical session expired locally; environmental, not code). +12 net recovered + 4 new assertions.
+
 ## [0.9.0] - 2026-04-25
 
 **Headline:** fourth release of the single-backend-per-release cycle; fourth [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Cloudflare Workers KV** (`cf-kv` via `wrangler` CLI 4.x) — brings the total to **12**. First backend whose Phase 0 CLI-shape probe materially flipped the spec: the v0.7-era spec recommended a curl-against-REST design citing 2-3 s wrangler startup, but live measurement at wrangler 4.85.0 showed 0.28 s startup (Bun runtime), so the entire curl branch was retired and the backend ships wrangler-wrapped. v0.8.0 → v0.9.0: workspace unit tests **676 → 705** (+29 from the new cf-kv crate); live smoke matrix **395 → 419** (+24 for Section 25's 13 cf-kv assertions plus a few extras). Pre-tag full-matrix smoke passed all 13 cf-kv assertions on the second run after fixing a registry-source design issue (single namespace can't mix scalar secrets with URI-valued aliases — the resolver bails on the first non-URI value; switched to a two-namespace pattern, mirroring how Doppler/Infisical use separate paths). Closing three-agent trio audit (security + code + rust) landed 8 BLOCKING/HIGH/MEDIUM findings inline before tag. The remaining 11 baseline-smoke failures (8 in v0.4 history + 3 in v0.7 Infisical) are environmental drift unrelated to v0.9 — to be addressed in a follow-up hygiene cycle.

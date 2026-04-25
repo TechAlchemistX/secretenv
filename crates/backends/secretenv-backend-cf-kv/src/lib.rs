@@ -164,23 +164,17 @@ struct WranglerWhoami {
 impl WranglerWhoami {
     /// Scan stdout for the `associated with the email <email>` line.
     /// Anything else → `Default { email: None }`, which the caller
-    /// renders as `email=unknown`.
+    /// renders as `email=unknown`. A wrangler version that changes
+    /// the phrase silently degrades to `email=unknown` rather than
+    /// mis-parsing — `find_map` returns `None` if no line matches
+    /// and the first non-empty match wins.
     fn parse(stdout: &str) -> Self {
-        let mut out = Self::default();
-        for line in stdout.lines() {
-            // Look for the exact phrase wrangler 4.x uses; a wrangler
-            // version that changes wording silently degrades to
-            // `email=unknown` rather than mis-parsing.
-            if let Some(idx) = line.find("associated with the email ") {
-                let rest = &line[idx + "associated with the email ".len()..];
-                let email = rest.trim_end_matches('.').trim();
-                if !email.is_empty() {
-                    out.email = Some(email.to_owned());
-                }
-                break;
-            }
-        }
-        out
+        let email = stdout.lines().find_map(|line| {
+            let rest = line.split_once("associated with the email ")?.1;
+            let trimmed = rest.trim_end_matches('.').trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        });
+        Self { email }
     }
 }
 
@@ -234,9 +228,14 @@ impl CfKvBackend {
                 uri.raw
             );
         }
-        let segments: Vec<&str> = trimmed.split('/').collect();
-        match segments.as_slice() {
-            [key] => {
+        // Allocation-free segment match. Max valid path is two
+        // segments (<namespace-id>/<key>); split_once gives us the
+        // first '/' boundary cheaply, and we reject any further '/'
+        // in the remainder explicitly to keep the >2-segment error
+        // message specific.
+        match trimmed.split_once('/') {
+            None => {
+                let key = trimmed;
                 let Some(ns) = self.cf_kv_default_namespace_id.as_deref() else {
                     bail!(
                         "cf-kv backend '{}': URI '{}' is single-segment but \
@@ -249,8 +248,10 @@ impl CfKvBackend {
                 };
                 Ok(ResolvedTarget { namespace_id: ns, key })
             }
-            [ns, key] => Ok(ResolvedTarget { namespace_id: ns, key }),
-            _ => bail!(
+            Some((ns, rest)) if !rest.contains('/') => {
+                Ok(ResolvedTarget { namespace_id: ns, key: rest })
+            }
+            Some(_) => bail!(
                 "cf-kv backend '{}': URI '{}' has more than two path segments; \
                  cf-kv URIs take at most '<namespace-id>/<key>'",
                 self.instance_name,

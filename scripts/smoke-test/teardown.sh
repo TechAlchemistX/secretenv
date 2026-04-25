@@ -104,8 +104,9 @@ fi
 
 # Cloudflare Workers KV (v0.9) — drop the two seeded keys from the
 # smoke namespace. Namespace itself is preserved across runs.
-CFKV_NS="${SECRETENV_TEST_CFKV_NAMESPACE_ID:-c554de8d89644f3d85f21933e7aea910}"
-CFKV_REG_NS="${SECRETENV_TEST_CFKV_REGISTRY_NAMESPACE_ID:-d3cd960f990946809bc3b50cd4ef119d}"
+# cf-kv namespace IDs from single source of truth. v0.9.1 hygiene.
+# shellcheck source=lib/cfkv-namespace.env
+. "$_here/lib/cfkv-namespace.env"
 # Validate hex shape of both namespace IDs — defensive against shell
 # injection via the env-var overrides.
 if ! [[ "$CFKV_NS" =~ ^[0-9a-f]{32}$ ]]; then

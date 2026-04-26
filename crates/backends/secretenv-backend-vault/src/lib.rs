@@ -644,6 +644,64 @@ mod tests {
         assert!(format!("{err:#}").contains("must be a string"));
     }
 
+    #[test]
+    fn factory_rejects_non_string_vault_namespace() {
+        let factory = VaultFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "vault_address".to_owned(),
+            toml::Value::String("https://vault.example.com".to_owned()),
+        );
+        cfg.insert("vault_namespace".to_owned(), toml::Value::Boolean(true));
+        let Err(err) = factory.create("vault-eng", &cfg) else {
+            panic!("expected type error for non-string vault_namespace");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("vault_namespace"), "names the field: {msg}");
+        assert!(msg.contains("must be a string"), "describes type mismatch: {msg}");
+    }
+
+    #[test]
+    fn factory_rejects_non_string_vault_bin() {
+        let factory = VaultFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "vault_address".to_owned(),
+            toml::Value::String("https://vault.example.com".to_owned()),
+        );
+        cfg.insert("vault_bin".to_owned(), toml::Value::Integer(0));
+        let Err(err) = factory.create("vault-eng", &cfg) else {
+            panic!("expected type error for non-string vault_bin");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("vault_bin"), "names the field: {msg}");
+    }
+
+    #[test]
+    fn factory_honors_timeout_secs() {
+        let factory = VaultFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "vault_address".to_owned(),
+            toml::Value::String("https://vault.example.com".to_owned()),
+        );
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(11));
+        let b = factory.create("vault-eng", &cfg).unwrap();
+        assert_eq!(b.timeout(), Duration::from_secs(11));
+    }
+
+    #[test]
+    fn factory_uses_default_timeout_when_omitted() {
+        let factory = VaultFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "vault_address".to_owned(),
+            toml::Value::String("https://vault.example.com".to_owned()),
+        );
+        let b = factory.create("vault-eng", &cfg).unwrap();
+        assert_eq!(b.timeout(), DEFAULT_GET_TIMEOUT);
+    }
+
     // ---- vault_path normalization ----
 
     #[test]

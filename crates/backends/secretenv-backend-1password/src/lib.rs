@@ -473,6 +473,57 @@ mod tests {
         assert_eq!(OnePasswordFactory::new().backend_type(), "1password");
     }
 
+    #[test]
+    fn factory_op_unsafe_set_accepts_true() {
+        let factory = OnePasswordFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("op_unsafe_set".to_owned(), toml::Value::Boolean(true));
+        assert!(factory.create("1password-personal", &cfg).is_ok());
+    }
+
+    #[test]
+    fn factory_rejects_non_bool_op_unsafe_set() {
+        let factory = OnePasswordFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("op_unsafe_set".to_owned(), toml::Value::String("yes".to_owned()));
+        let Err(err) = factory.create("1password-personal", &cfg) else {
+            panic!("expected error for non-bool op_unsafe_set");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("op_unsafe_set"), "names the field: {msg}");
+        assert!(msg.contains("must be a boolean"), "describes type mismatch: {msg}");
+    }
+
+    #[test]
+    fn factory_honors_timeout_secs() {
+        let factory = OnePasswordFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(17));
+        let b = factory.create("1password-personal", &cfg).unwrap();
+        assert_eq!(b.timeout(), Duration::from_secs(17));
+    }
+
+    #[test]
+    fn factory_uses_default_timeout_when_omitted() {
+        let factory = OnePasswordFactory::new();
+        let cfg: HashMap<String, toml::Value> = HashMap::new();
+        let b = factory.create("1password-personal", &cfg).unwrap();
+        assert_eq!(b.timeout(), DEFAULT_GET_TIMEOUT);
+    }
+
+    #[test]
+    fn factory_rejects_non_integer_timeout_secs() {
+        let factory = OnePasswordFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("timeout_secs".to_owned(), toml::Value::String("30".to_owned()));
+        let Err(err) = factory.create("1password-personal", &cfg) else {
+            panic!("expected error for non-integer timeout_secs");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timeout_secs"), "names the field: {msg}");
+        assert!(msg.contains("must be an integer"), "describes type mismatch: {msg}");
+    }
+
     // ---- URI parsing ----
 
     #[test]

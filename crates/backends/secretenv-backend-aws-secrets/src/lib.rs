@@ -644,6 +644,52 @@ mod tests {
         assert!(format!("{err:#}").contains("must be a string"));
     }
 
+    #[test]
+    fn factory_rejects_non_string_aws_profile() {
+        let factory = AwsSecretsFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        cfg.insert("aws_profile".to_owned(), toml::Value::Boolean(false));
+        let Err(err) = factory.create("aws-secrets-prod", &cfg) else {
+            panic!("expected type error for non-string aws_profile");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("aws_profile"), "names the field: {msg}");
+        assert!(msg.contains("must be a string"), "describes type mismatch: {msg}");
+    }
+
+    #[test]
+    fn factory_rejects_non_string_aws_bin() {
+        let factory = AwsSecretsFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        cfg.insert("aws_bin".to_owned(), toml::Value::Integer(7));
+        let Err(err) = factory.create("aws-secrets-prod", &cfg) else {
+            panic!("expected type error for non-string aws_bin");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("aws_bin"), "names the field: {msg}");
+    }
+
+    #[test]
+    fn factory_honors_timeout_secs() {
+        let factory = AwsSecretsFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(22));
+        let b = factory.create("aws-secrets-prod", &cfg).unwrap();
+        assert_eq!(b.timeout(), Duration::from_secs(22));
+    }
+
+    #[test]
+    fn factory_uses_default_timeout_when_omitted() {
+        let factory = AwsSecretsFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("aws_region".to_owned(), toml::Value::String("us-east-1".to_owned()));
+        let b = factory.create("aws-secrets-prod", &cfg).unwrap();
+        assert_eq!(b.timeout(), DEFAULT_GET_TIMEOUT);
+    }
+
     // ---- check Level 1 ----
 
     #[tokio::test]

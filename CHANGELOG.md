@@ -8,6 +8,26 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### v0.9.2 hygiene (merged-not-tagged 2026-04-26)
+
+Fourth consecutive rolling-backlog cycle (v0.7.1 → v0.7.2 → v0.9.1 → **v0.9.2**) draining the v0.9.x carry-forward queue before the v0.10 OpenBao cycle opens. Merged to `main`, workspace `version` stays at `0.9.0`, no tag. v0.10 OpenBao release will fold these into its tagged CHANGELOG.
+
+#### Added
+
+- **`cf_kv_list_prefix` config field** (cf-kv backend) — optional key-prefix filter passed to `wrangler kv key list` as `--prefix <value>`. Enables single-namespace scalar+registry mixing via key conventions (e.g. `cf_kv_list_prefix = "registry/"` so registry-source aliases live under `registry/<alias-name>` while plain scalar secrets share the namespace at the top level). Empty string is normalized to `None` at factory time. Closes the v0.9.x carry-forward "cf-kv `--prefix` flag" item. Pre-v0.9.2 alternative — two separate namespaces — still works and remains the default posture for accounts where namespace count is not a constraint.
+- **17 new factory-validation unit tests** across `secretenv-backend-1password` (+5: `op_unsafe_set` accept/reject + `timeout_secs` honor/default/reject), `secretenv-backend-cf-kv` (+4: `wrangler_bin` reject + `timeout_secs` honor/reject/zero) and prefix-related (+2 above), `secretenv-backend-vault` (+4: `vault_namespace`/`vault_bin` reject + `timeout_secs` honor/default), `secretenv-backend-aws-secrets` (+4: `aws_profile`/`aws_bin` reject + `timeout_secs` honor/default). Closes the cf-kv code-reviewer M1 carry-forward "factory-helper test parity audit" — the four backends with the thinnest factory-validation coverage now match the keeper / azure / aws-ssm pattern.
+
+#### Audited (no findings)
+
+- **Workspace-wide placeholder-field audit** — methodology: `grep -rn "Reserved\|reserved" crates/backends/*/src/*.rs` plus per-backend struct-field walk for any `Option<T>` config field never read after factory construction. Result: zero placeholder fields outside the `keeper_folder` already removed in v0.9.1. The two grep hits (`backend-doppler` "Fragments are reserved for v0.7+", `backend-infisical` "Fragments are reserved and currently rejected") are doc-comment phrases describing forward-compatibility posture, not dead config fields. Audit captured here so it doesn't get re-run unnecessarily next cycle.
+
+#### Deferred / declined (carry-forward closeout notes)
+
+- **cf-kv `bulk get`** — DEFER. Cloudflare API still in open-beta as of 2026-04-26. Trigger to revisit: GA announcement.
+- **cf-kv `#metadata` fragment** — DECLINE. Speculative; zero user demand. Resurrect on demand.
+- **Rust 1.87+ `env::set_var` unsafe-wrap (R-13 from v0.7.2)** — DEFER. Workspace MSRV is 1.75. Bumping to 1.87 in a hygiene patch is a user-facing breaking floor change, not hygiene. Trigger: next natural workspace MSRV bump.
+- **256 KiB `spawn_blocking` measured benchmark (v0.7.2 carry-over)** — DEFER. Needs `cargo bench` / criterion infrastructure that doesn't exist in the workspace yet. Trigger: dedicated benchmark-infrastructure micro-cycle.
+
 ### v0.9.1 hygiene (merged-not-tagged 2026-04-25)
 
 Rolling-backlog cycle following the v0.7.1 / v0.7.2 dev-work pattern: merged to `main`, workspace `version` stays at `0.9.0`, no tag. Closes 13 actionable items from the v0.9 trio audit deferred list ([reviews/2026-04-25-v0.9-cf-kv-audit](kb/wiki/reviews/2026-04-25-v0.9-cf-kv-audit.md)) plus the v0.8.x Keeper carry-forward backlog plus baseline smoke hygiene. v0.10 Bitwarden release will fold these into its tagged CHANGELOG.

@@ -141,6 +141,15 @@ pub struct CfKvBackend {
     /// (PATH lookup); tests override to a mock script path via
     /// [`secretenv_testing::StrictMock`].
     wrangler_bin: String,
+    /// Optional key-prefix filter passed to `wrangler kv key list` as
+    /// `--prefix <value>`. When set, only keys whose name begins with
+    /// the prefix are enumerated by `list()`. Enables single-namespace
+    /// scalar+registry mixing via key conventions (e.g.
+    /// `cf_kv_list_prefix = "registry/"` so registry-source aliases live
+    /// under `registry/<alias-name>` while plain secrets share the
+    /// namespace at the top level). Empty string is treated as `None`
+    /// at factory time — same end result, cleaner argv.
+    cf_kv_list_prefix: Option<String>,
     timeout: Duration,
 }
 
@@ -566,14 +575,13 @@ impl Backend for CfKvBackend {
         // ignored, mirroring Keeper / Doppler / Infisical bulk-mode.
         let target = self.resolve_target(uri)?;
 
-        let mut cmd = self.wrangler_command(&[
-            "kv",
-            "key",
-            "list",
-            "--namespace-id",
-            target.namespace_id,
-            "--remote",
-        ]);
+        let mut list_argv: Vec<&str> =
+            vec!["kv", "key", "list", "--namespace-id", target.namespace_id, "--remote"];
+        if let Some(prefix) = self.cf_kv_list_prefix.as_deref() {
+            list_argv.push("--prefix");
+            list_argv.push(prefix);
+        }
+        let mut cmd = self.wrangler_command(&list_argv);
         let output = cmd.output().await.with_context(|| {
             format!(
                 "cf-kv backend '{}': failed to invoke 'wrangler kv key list' for URI '{}'",
@@ -705,6 +713,12 @@ impl BackendFactory for CfKvFactory {
             optional_string(config, "cf_kv_default_namespace_id", "cf-kv", instance_name)?;
         let wrangler_bin = optional_string(config, "wrangler_bin", "cf-kv", instance_name)?
             .unwrap_or_else(|| CLI_NAME.to_owned());
+        // Empty string is normalized to `None` so the wrangler argv stays
+        // identical to the no-prefix path — `--prefix ""` is technically
+        // a no-op for wrangler but pollutes argv inspection in --verbose.
+        let cf_kv_list_prefix =
+            optional_string(config, "cf_kv_list_prefix", "cf-kv", instance_name)?
+                .filter(|s| !s.is_empty());
         let timeout = optional_duration_secs(config, "timeout_secs", "cf-kv", instance_name)?
             .unwrap_or(DEFAULT_GET_TIMEOUT);
 
@@ -713,6 +727,7 @@ impl BackendFactory for CfKvFactory {
             instance_name: instance_name.to_owned(),
             cf_kv_default_namespace_id,
             wrangler_bin,
+            cf_kv_list_prefix,
             timeout,
         }))
     }
@@ -736,6 +751,22 @@ mod tests {
             instance_name: "cf-kv-prod".to_owned(),
             cf_kv_default_namespace_id: default_ns.map(str::to_owned),
             wrangler_bin: mock_path.to_str().unwrap().to_owned(),
+            cf_kv_list_prefix: None,
+            timeout: DEFAULT_GET_TIMEOUT,
+        }
+    }
+
+    fn backend_with_prefix(
+        mock_path: &Path,
+        default_ns: Option<&str>,
+        prefix: &str,
+    ) -> CfKvBackend {
+        CfKvBackend {
+            backend_type: "cf-kv",
+            instance_name: "cf-kv-prod".to_owned(),
+            cf_kv_default_namespace_id: default_ns.map(str::to_owned),
+            wrangler_bin: mock_path.to_str().unwrap().to_owned(),
+            cf_kv_list_prefix: Some(prefix.to_owned()),
             timeout: DEFAULT_GET_TIMEOUT,
         }
     }
@@ -746,6 +777,7 @@ mod tests {
             instance_name: "cf-kv-prod".to_owned(),
             cf_kv_default_namespace_id: None,
             wrangler_bin: "/definitely/not/a/real/path/to/wrangler-XYZ987".to_owned(),
+            cf_kv_list_prefix: None,
             timeout: DEFAULT_GET_TIMEOUT,
         }
     }
@@ -1154,6 +1186,65 @@ Getting User settings...
         );
     }
 
+    #[tokio::test]
+    async fn list_with_prefix_passes_prefix_arg_to_wrangler() {
+        let dir = TempDir::new().unwrap();
+        let body = r#"[{"name":"registry/STRIPE_KEY"}]"#;
+        let prefixed_argv: &[&str] =
+            &["kv", "key", "list", "--namespace-id", NS, "--remote", "--prefix", "registry/"];
+        let mock = StrictMock::new("wrangler")
+            .on(prefixed_argv, Response::success(body))
+            .on(&get_argv("registry/STRIPE_KEY"), Response::success("aws-ssm-prod:///stripe\n"))
+            .install(dir.path());
+        let b = backend_with_prefix(&mock, None, "registry/");
+        let uri = BackendUri::parse(&format!("cf-kv-prod:///{NS}/REG")).unwrap();
+        let out = b.list(&uri).await.unwrap();
+        assert_eq!(
+            out,
+            vec![("registry/STRIPE_KEY".to_owned(), "aws-ssm-prod:///stripe".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_without_prefix_omits_prefix_arg_from_wrangler() {
+        // Drift-catch: the prefix arg MUST be absent when not configured.
+        // The strict-mock LIST_ARGV pattern (no --prefix) only matches the
+        // no-prefix path; a regression that always appended --prefix would
+        // surface as `strict-mock-no-match`.
+        let dir = TempDir::new().unwrap();
+        let mock =
+            StrictMock::new("wrangler").on(LIST_ARGV, Response::success("[]")).install(dir.path());
+        let b = backend(&mock, None);
+        let uri = BackendUri::parse(&format!("cf-kv-prod:///{NS}/REG")).unwrap();
+        let out = b.list(&uri).await.unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn factory_normalizes_empty_prefix_to_none() {
+        // Empty string in TOML → factory drops it to None → list() takes
+        // the no-prefix argv path. Locks the elision contract.
+        let factory = CfKvFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("cf_kv_list_prefix".to_owned(), toml::Value::String(String::new()));
+        // Backend builds successfully — no error from the empty prefix.
+        let b = factory.create("cf-kv-prod", &cfg).unwrap();
+        assert_eq!(b.backend_type(), "cf-kv");
+    }
+
+    #[test]
+    fn factory_rejects_non_string_list_prefix() {
+        let factory = CfKvFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("cf_kv_list_prefix".to_owned(), toml::Value::Integer(42));
+        let Err(err) = factory.create("cf-kv-prod", &cfg) else {
+            panic!("expected type error for non-string cf_kv_list_prefix");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("cf_kv_list_prefix"), "names the field: {msg}");
+        assert!(msg.contains("must be a string"), "describes type mismatch: {msg}");
+    }
+
     // ---- history ----
 
     #[tokio::test]
@@ -1210,5 +1301,52 @@ Getting User settings...
             panic!("expected error on non-string default namespace");
         };
         assert!(format!("{err:#}").contains("must be a string"), "err: {err:#}");
+    }
+
+    #[test]
+    fn factory_rejects_non_string_wrangler_bin() {
+        let factory = CfKvFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("wrangler_bin".to_owned(), toml::Value::Integer(1));
+        let Err(err) = factory.create("cf-kv-prod", &cfg) else {
+            panic!("expected error on non-string wrangler_bin");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("wrangler_bin"), "names the field: {msg}");
+        assert!(msg.contains("must be a string"), "describes type mismatch: {msg}");
+    }
+
+    #[test]
+    fn factory_honors_timeout_secs() {
+        let factory = CfKvFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(45));
+        let b = factory.create("cf-kv-prod", &cfg).unwrap();
+        assert_eq!(b.timeout(), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn factory_rejects_non_integer_timeout_secs() {
+        let factory = CfKvFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("timeout_secs".to_owned(), toml::Value::String("30".to_owned()));
+        let Err(err) = factory.create("cf-kv-prod", &cfg) else {
+            panic!("expected error on non-integer timeout_secs");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timeout_secs"), "names the field: {msg}");
+        assert!(msg.contains("must be an integer"), "describes type mismatch: {msg}");
+    }
+
+    #[test]
+    fn factory_rejects_zero_timeout_secs() {
+        let factory = CfKvFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert("timeout_secs".to_owned(), toml::Value::Integer(0));
+        let Err(err) = factory.create("cf-kv-prod", &cfg) else {
+            panic!("expected error on zero timeout_secs");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("must be a positive"), "rejects zero: {msg}");
     }
 }

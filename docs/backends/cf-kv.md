@@ -56,9 +56,35 @@ type = "cf-kv"
 # Leave unset to require the explicit two-segment form on every URI.
 cf_kv_default_namespace_id = "c554de8d89644f3d85f21933e7aea910"
 
+# Optional: prefix filter applied to every `list()` operation. Translates
+# to `wrangler kv key list --prefix <value>`. Enables single-namespace
+# scalar+registry mixing — see "Single-namespace mixing" below.
+cf_kv_list_prefix = "registry/"
+
 # Optional: per-instance read/write deadline (seconds). Default 30.
 timeout_secs = 15
 ```
+
+### Single-namespace mixing via `cf_kv_list_prefix`
+
+Cloudflare Workers KV namespaces are flat — every key sits at the same level. If you want one namespace to hold both:
+
+- **scalar secrets** (e.g. `STRIPE_KEY`, `DB_URL`) consumed via direct `get`, AND
+- **registry-source aliases** (alias-name → URI string) consumed via `list`
+
+…then the registry's `list()` call would otherwise enumerate the scalar keys too and try to interpret them as URIs. The fix is a key-naming convention plus the `cf_kv_list_prefix` filter:
+
+```toml
+[backends.cf-kv-prod]
+type = "cf-kv"
+cf_kv_default_namespace_id = "c554de8d89644f3d85f21933e7aea910"
+cf_kv_list_prefix          = "registry/"
+```
+
+With this set, store registry aliases under `registry/<alias-name>` (e.g. `registry/STRIPE_KEY` → `aws-ssm-prod:///stripe`). `list()` only enumerates keys with that prefix; scalar keys at the top level are invisible to the registry resolver but still accessible via direct `get`. The pre-v0.9.2 alternative — two separate namespaces — still works and remains the recommended posture for accounts where the namespace count isn't a constraint.
+
+Empty-string prefix is treated as `None` (the wrangler `--prefix` flag is elided from argv) — same end result as omitting the field.
+
 
 Multiple instances against multiple Cloudflare accounts work via standard SecretEnv multi-instance config; wrangler's account scope follows the OAuth login or `CLOUDFLARE_ACCOUNT_ID` env var.
 

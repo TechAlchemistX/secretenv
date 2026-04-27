@@ -8,7 +8,31 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
-### v0.9.2 hygiene (merged-not-tagged 2026-04-26)
+## [0.10.0] - 2026-04-27
+
+**Headline:** fifth release of the single-backend-per-release cycle; fifth [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **OpenBao** (Linux Foundation MPL-2.0 fork of HashiCorp Vault, via the `bao` CLI 2.x) — brings the total to **13**. First Vault-fork peer; near-clone of `secretenv-backend-vault` with three concrete divergences: binary name (`bao` vs `vault`), env-var prefix (`BAO_*` with `VAULT_*` CLI fallback for transition), and install path (`brew install openbao` direct from homebrew-core, no tap dance — explicit contrast with Vault's post-BSL `brew tap hashicorp/tap` form). The `#json-key=<field>` fragment ships from day one — Vault's deferred-launch fragment work informs OpenBao's, so v0.10 lands the same JSON-extraction pattern `aws-secrets` pioneered.
+
+v0.9.0 → v0.10.0: workspace unit tests **705 → 748** (+43 from the new openbao crate). Live smoke matrix **419 → 452** (+29 for Section 26: doctor Level 1+2, scalar round-trip, `#json-key` fragment, end-to-end `run`, set/list/unset cycle, fragment-reject, history-unsupported, registry-source cross-backend chain, HTTP/HTTPS mismatch surface). Pre-tag full-matrix smoke passed 444/452 on the first run; the eight failures were all in Section 26 and all smoke-test design bugs (a redundant fragment-on-scalar test, a missing pre-seed at the unique-per-run cycle path that `registry set` reads-then-writes, and a stale "not supported" assertion vs the trait-default "not implemented" wording). Re-run after the smoke-test patch: **452/452**. Closing three-agent trio audit (security + code + rust) landed 1 HIGH + 3 MEDIUM findings inline before tag; LOW + remaining MEDIUMs deferred to v0.10.x carry-forward.
+
+This release also folds the **v0.9.2 hygiene cycle** (merged-not-tagged 2026-04-26 per the rolling-backlog pattern) into the tagged CHANGELOG.
+
+### Added — OpenBao backend (v0.10)
+
+- **`secretenv-backend-openbao` crate** — `OpenBaoFactory` registered unconditionally in `secretenv-cli/src/backends_init.rs`. URI shape `openbao-<instance>://<mount>/<path>[#json-key=<field>]`. `BAO_ADDR` / `BAO_NAMESPACE` routed via per-child env (same lesson as Vault PR #33; argv-form `-address` flags after positional path tokens are rejected by the CLI parser).
+- **`bao_unsafe_set` defense-in-depth flag** — reserved opt-in for any future regression that routes the secret through argv. v0.10 always uses the safe `value=-` stdin form; the flag defaults to `false` and is observed at factory time only. Default-off invariant machine-checked via `OpenBaoFactory::create_concrete` test path.
+- **`#json-key=<field>` fragment on `get`** — parses the `value` field as a JSON object and extracts the named top-level scalar. Mirrors `aws-secrets`. `set` / `delete` / `list` / `history` reject any fragment.
+- **`openbao` addition to `serialize_registry` JSON arm** (`secretenv-cli`) — registry documents through the `openbao` backend round-trip as `value=-` JSON-strings, matching `aws-ssm` / `aws-secrets` / `gcp` / `azure` / `vault`.
+- **Smoke harness Section 26** (29 assertions covering doctor / get / fragment / run / cycle / fragment-reject / history-unsupported / registry-source / cross-backend resolve / HTTP/HTTPS mismatch). Skipped cleanly if `bao` is missing OR the server is sealed/unreachable.
+- **`docs/backends/openbao.md`** — leads with the `BAO_ADDR` HTTP/HTTPS gotcha, contrasts the install path with Vault's tap form, explains the MPL-2.0 vs BSL governance distinction.
+- **`secretenv-backend-openbao` AGPL-3.0-only exception** in `deny.toml`.
+- **README backend table** 12 → 13 + backend-count badge bumped.
+- **Smoke harness README inventory** + `SECTIONS` array — sections 22–26 backfilled; sections 23–25 had drifted from prior cycles.
+
+### Spec divergence (intentional)
+
+- **`list()` storage model** — the spec at `kb/wiki/backends/openbao.md` originally described `list()` as parsing `data.data` as a multi-field alias map (Vault-style). The shipped implementation instead reads a JSON-string from the canonical `value` field (`aws-secrets`-style), driven by a single-field-per-secret writer discipline (`bao kv put <path> value=-`). The aws-secrets shape is internally consistent with this backend's `set()` path and with the `#json-key=<field>` fragment design that ships from day one. Documented in lib.rs crate-level docs, `docs/backends/openbao.md` "Storage model" section, and the spec was amended to match.
+
+### Folded — v0.9.2 hygiene (merged-not-tagged 2026-04-26)
 
 Fourth consecutive rolling-backlog cycle (v0.7.1 → v0.7.2 → v0.9.1 → **v0.9.2**) draining the v0.9.x carry-forward queue before the v0.10 OpenBao cycle opens. Merged to `main`, workspace `version` stays at `0.9.0`, no tag. v0.10 OpenBao release will fold these into its tagged CHANGELOG.
 

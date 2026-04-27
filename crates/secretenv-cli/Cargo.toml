@@ -30,6 +30,7 @@ secretenv-backend-doppler.workspace   = true
 secretenv-backend-infisical.workspace = true
 secretenv-backend-keeper.workspace    = true
 secretenv-backend-cf-kv.workspace     = true
+secretenv-backend-openbao.workspace   = true
 anyhow.workspace              = true
 clap.workspace                = true
 clap_complete.workspace       = true

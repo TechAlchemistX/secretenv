@@ -126,4 +126,17 @@ if command -v wrangler >/dev/null 2>&1 && wrangler whoami >/dev/null 2>&1; then
     fi
 fi
 
+# OpenBao (v0.10) — soft-delete the smoke fixtures. KV v2 metadata
+# survives soft-deletes; for a fully clean slate, follow the soft
+# delete with `bao kv metadata delete <path>`. Dev-mode storage is
+# inmem so server restart wipes everything anyway, but for shared
+# dev servers we leave the path tidy.
+BAO_ADDR_FIXTURE="${SECRETENV_TEST_BAO_ADDR:-http://127.0.0.1:8300}"
+if command -v bao >/dev/null 2>&1 \
+   && BAO_ADDR="$BAO_ADDR_FIXTURE" bao status >/dev/null 2>&1; then
+    run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv metadata delete secret/secretenv-smoke/scalar || true"
+    run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv metadata delete secret/secretenv-smoke/json-multi || true"
+    run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv metadata delete secret/secretenv-smoke/openbao-registry || true"
+fi
+
 say "=== TEARDOWN_DONE ==="

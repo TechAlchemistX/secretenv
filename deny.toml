@@ -50,6 +50,7 @@ exceptions = [
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-infisical" },
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-keeper" },
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-cf-kv" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-backend-openbao" },
 ]
 
 [bans]

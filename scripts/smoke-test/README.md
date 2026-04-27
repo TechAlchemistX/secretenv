@@ -125,6 +125,11 @@ release tag.
 | 19 | yes    | v0.4 Phase 1 — `doctor --fix` + `--extensive`             |
 | 20 | yes    | v0.4 Phase 3 — `timeout_secs` (offline) + `op_unsafe_set` (needs `op`) |
 | 21 | yes    | v0.5 — macOS Keychain backend (macOS hosts only; SKIP on Linux)         |
+| 22 | yes    | v0.6 — Doppler backend (skips if not authenticated)                     |
+| 23 | yes    | v0.7 — Infisical backend (skips if not authenticated)                   |
+| 24 | yes    | v0.8 — Keeper backend (skips if persistent-login not set)               |
+| 25 | yes    | v0.9 — Cloudflare Workers KV (skips if `wrangler` not authenticated)    |
+| 26 | yes    | v0.10 — OpenBao backend (skips if `bao` server unreachable / sealed)    |
 
 Run `./run-tests.sh --list-sections` for the live inventory.
 

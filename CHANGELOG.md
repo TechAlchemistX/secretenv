@@ -8,11 +8,33 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### v0.10.x hygiene — Homebrew formula license fix + retrospective audit closeout (merged-not-tagged)
+
+Rolling-backlog cycle following the v0.7.1 / v0.7.2 / v0.9.1 / v0.9.2 dev-work pattern: merged to `main`, workspace `version` stays at `0.10.0`, no tag pushed. Triggered by the user catching a real Homebrew-formula license bug post-tag and the realization that the Phase 6 three-agent audit at v0.10.0 ran BEFORE the Phase 8 release-prep commit landed, so the smoke patch + version bump + CHANGELOG closeout + `release.yml` change shipped unreviewed. Retrospective three-agent audit (security + code + deployment) ran against the as-shipped state @ `368c38a`; this CHANGELOG block + commit closes the BLOCKING/HIGH findings.
+
+#### Fixed
+
+- **Homebrew formula license** (`.github/workflows/release.yml:251`) — `license "MIT"` → `license "AGPL-3.0-only"`. Workspace has been AGPL-3.0-only since the v0.3 relicense; every release since had been pushing a wrongly-licensed brew formula to `TechAlchemistX/homebrew-secretenv`. Real legal-surface bug, not just cosmetic. The next tagged release will re-render the formula correctly. Caught by the retrospective deployment-engineer audit pass.
+- **CHANGELOG line 57** — folded v0.9.1 hygiene block referenced "v0.10 Bitwarden release" but v0.10 shipped as **OpenBao** (queue was reordered 2026-04-25 putting OpenBao before Bitwarden). Updated to "v0.10 OpenBao release".
+- **CHANGELOG headline test counts in `[0.10.0]`** — cited `705 → 748` was wrong on both ends. Actual counts (`cargo test --workspace` summed): `735 → 778`. The `+43 from openbao` delta was correct; baselines were prediction-error. Caught by the retrospective code-reviewer audit pass.
+- **Duplicate `## [0.8.0] - 2026-04-24` header** — pre-existing CHANGELOG defect at lines 106/108, removed.
+
+#### Process
+
+- New feedback memory `feedback_audit_after_release_prep.md` — the Phase 6 three-agent audit must be followed by a second targeted audit pass over the Phase 8 release-prep delta (smoke patches, version bump, CHANGELOG closeout, release.yml changes) BEFORE tag push. v0.10.0 missed this and surfaced a release-yml bug post-tag; v0.11+ cycles add it as Phase 6.5.
+
+#### Deferred / declined
+
+- **Homebrew formula `desc` length + workspace-description-as-source-of-truth** — devops audit HIGH. Intentional Homebrew-side brevity vs longer CLI Cargo.toml description. Documenting intent in a comment is fine but not load-bearing; deferred.
+- **`set -euo pipefail` in release.yml bash blocks** — devops audit MEDIUM. Existing safety loop on line 241 is sufficient; defense-in-depth strict-mode would be polish, not a real bug class.
+- **`sleep 45` rationale comment** — devops audit MEDIUM. 45s has been empirically sufficient through v0.1–v0.10; document if a future release times out.
+- **CHANGELOG date 2026-04-27 vs commit date 2026-04-26** — code-reviewer audit MEDIUM. CHANGELOG file's own header at line 8 declares UTC dates; tag pushed 2026-04-27T01:50:35Z UTC, so 2026-04-27 is correct per the file's convention. No change.
+
 ## [0.10.0] - 2026-04-27
 
 **Headline:** fifth release of the single-backend-per-release cycle; fifth [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **OpenBao** (Linux Foundation MPL-2.0 fork of HashiCorp Vault, via the `bao` CLI 2.x) — brings the total to **13**. First Vault-fork peer; near-clone of `secretenv-backend-vault` with three concrete divergences: binary name (`bao` vs `vault`), env-var prefix (`BAO_*` with `VAULT_*` CLI fallback for transition), and install path (`brew install openbao` direct from homebrew-core, no tap dance — explicit contrast with Vault's post-BSL `brew tap hashicorp/tap` form). The `#json-key=<field>` fragment ships from day one — Vault's deferred-launch fragment work informs OpenBao's, so v0.10 lands the same JSON-extraction pattern `aws-secrets` pioneered.
 
-v0.9.0 → v0.10.0: workspace unit tests **705 → 748** (+43 from the new openbao crate). Live smoke matrix **419 → 452** (+29 for Section 26: doctor Level 1+2, scalar round-trip, `#json-key` fragment, end-to-end `run`, set/list/unset cycle, fragment-reject, history-unsupported, registry-source cross-backend chain, HTTP/HTTPS mismatch surface). Pre-tag full-matrix smoke passed 444/452 on the first run; the eight failures were all in Section 26 and all smoke-test design bugs (a redundant fragment-on-scalar test, a missing pre-seed at the unique-per-run cycle path that `registry set` reads-then-writes, and a stale "not supported" assertion vs the trait-default "not implemented" wording). Re-run after the smoke-test patch: **452/452**. Closing three-agent trio audit (security + code + rust) landed 1 HIGH + 3 MEDIUM findings inline before tag; LOW + remaining MEDIUMs deferred to v0.10.x carry-forward.
+v0.9.0 → v0.10.0: workspace unit tests **735 → 778** (+43 from the new openbao crate, counted by `cargo test --workspace` `test result: ok.` lines summed). Live smoke matrix **419 → 452** (+29 for Section 26: doctor Level 1+2, scalar round-trip, `#json-key` fragment, end-to-end `run`, set/list/unset cycle, fragment-reject, history-unsupported, registry-source cross-backend chain, HTTP/HTTPS mismatch surface). Pre-tag full-matrix smoke passed 444/452 on the first run; the eight failures were all in Section 26 and all smoke-test design bugs (a redundant fragment-on-scalar test, a missing pre-seed at the unique-per-run cycle path that `registry set` reads-then-writes, and a stale "not supported" assertion vs the trait-default "not implemented" wording). Re-run after the smoke-test patch: **452/452**. Closing three-agent trio audit (security + code + rust) landed 1 HIGH + 3 MEDIUM findings inline before tag; LOW + remaining MEDIUMs deferred to v0.10.x carry-forward.
 
 This release also folds the **v0.9.2 hygiene cycle** (merged-not-tagged 2026-04-26 per the rolling-backlog pattern) into the tagged CHANGELOG.
 
@@ -54,7 +76,7 @@ Fourth consecutive rolling-backlog cycle (v0.7.1 → v0.7.2 → v0.9.1 → **v0.
 
 ### v0.9.1 hygiene (merged-not-tagged 2026-04-25)
 
-Rolling-backlog cycle following the v0.7.1 / v0.7.2 dev-work pattern: merged to `main`, workspace `version` stays at `0.9.0`, no tag. Closes 13 actionable items from the v0.9 trio audit deferred list ([reviews/2026-04-25-v0.9-cf-kv-audit](kb/wiki/reviews/2026-04-25-v0.9-cf-kv-audit.md)) plus the v0.8.x Keeper carry-forward backlog plus baseline smoke hygiene. v0.10 Bitwarden release will fold these into its tagged CHANGELOG.
+Rolling-backlog cycle following the v0.7.1 / v0.7.2 dev-work pattern: merged to `main`, workspace `version` stays at `0.9.0`, no tag. Closes 13 actionable items from the v0.9 trio audit deferred list ([reviews/2026-04-25-v0.9-cf-kv-audit](kb/wiki/reviews/2026-04-25-v0.9-cf-kv-audit.md)) plus the v0.8.x Keeper carry-forward backlog plus baseline smoke hygiene. v0.10 OpenBao release will fold these into its tagged CHANGELOG.
 
 #### Added
 
@@ -102,8 +124,6 @@ Rolling-backlog cycle following the v0.7.1 / v0.7.2 dev-work pattern: merged to 
 - **Tightened `cf-kv` "key not found" detector** from a loose `"10009"` substring match to word-boundary forms (`error 10009` / `code 10009` / `code: 10009`) — prevents false-positives on stderr containing the digit run inside request IDs or timestamps. Surfaced by Phase 6 trio audit.
 - **Made `set()` tempfile flush fatal** (`with_context` instead of `.ok()`) — silently dropping a flush error could leave wrangler reading a truncated value with no surface to caller. Surfaced by Phase 6 trio audit.
 - **Added `NotFound` mapping to the `whoami` arm of `check()`** — the `tokio::join!` fires both probes simultaneously; the previous code only mapped `NotFound` on the version arm. Defense-in-depth for OS-shape variation. Surfaced by Phase 6 trio audit.
-
-## [0.8.0] - 2026-04-24
 
 ## [0.8.0] - 2026-04-24
 

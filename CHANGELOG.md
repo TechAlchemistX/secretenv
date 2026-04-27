@@ -8,6 +8,26 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### v0.10.0 — OpenBao backend (in progress)
+
+13th SecretEnv backend, first Vault-fork peer. Heavy template reuse from `secretenv-backend-vault` — same wire protocol, same KV semantics, same delegated-CLI auth model — with three concrete divergences: binary name (`bao`), env-var prefix (`BAO_*`), and tap-less brew install (`brew install openbao`). The `#json-key=<field>` fragment ships from day one (Vault's deferred-launch fragment work informs OpenBao's, so v0.10 lands the same JSON-extraction pattern `aws-secrets` uses).
+
+#### Added
+
+- **`secretenv-backend-openbao` crate** — `OpenBaoFactory` registered unconditionally in `secretenv-cli/src/backends_init.rs`. URI shape `openbao-<instance>://<mount>/<path>[#json-key=<field>]`. `BAO_ADDR` / `BAO_NAMESPACE` routed via per-child env (same lesson as Vault PR #33; argv-form `-address` flags after positional path tokens are rejected by the CLI parser).
+- **`bao_unsafe_set` defense-in-depth flag** — reserved opt-in for any future regression that routes the secret through argv. v0.10 always uses the safe `value=-` stdin form; the flag defaults to `false` and is observed at factory time only.
+- **`#json-key=<field>` fragment on `get`** — parses the `value` field as a JSON object and extracts the named top-level scalar. Mirrors `aws-secrets`. `set` / `delete` / `list` / `history` reject any fragment.
+- **OpenBao addition to `serialize_registry` JSON arm** (`secretenv-cli`) — registry documents through the `openbao` backend round-trip as `value=-` JSON-strings, matching `aws-ssm` / `aws-secrets` / `gcp` / `azure` / `vault`.
+
+#### Spec divergence (intentional)
+
+- **`list()` storage model** — the spec at `kb/wiki/backends/openbao.md` originally described `list()` as parsing `data.data` as a multi-field alias map (Vault-style). The shipped implementation instead reads a JSON-string from the canonical `value` field (`aws-secrets`-style), driven by a single-field-per-secret writer discipline (`bao kv put <path> value=-`). The aws-secrets shape is internally consistent with this backend's `set()` path and with the `#json-key=<field>` fragment design that ships from day one. Documented in lib.rs crate-level docs and in `docs/backends/openbao.md` "Storage model" section. Spec at `kb/wiki/backends/openbao.md` updated to match.
+- **Smoke harness Section 26** (`scripts/smoke-test/run-tests.sh` + `provision.sh` + `teardown.sh`) — ~14 assertions: doctor Level 1+2, scalar round-trip, `#json-key` fragment, end-to-end `run`, set/list/unset cycle, history-unsupported, registry-source cross-backend chain, HTTP/HTTPS mismatch surface. Skipped if `bao` is missing OR the server is sealed/unreachable.
+- **`docs/backends/openbao.md`** user-facing reference — leads with the `BAO_ADDR` HTTP/HTTPS gotcha, contrasts the install path with Vault's tap-form, explains the MPL-2.0 vs BSL governance distinction.
+- **`secretenv-backend-openbao` AGPL-3.0-only exception** in `deny.toml` — first-party AGPL admittance per the v0.8 license-allowlist rule.
+- **Workspace-wide bumps**: `members` + `workspace.dependencies`, `secretenv-cli` dep, README backend table 12 → 13, README backend-count badge 12 → 13.
+- **Smoke harness README inventory** — sections 22–26 added (sections 22–25 had drifted from prior cycles; the v0.10 entry brings the table back in sync).
+
 ### v0.9.2 hygiene (merged-not-tagged 2026-04-26)
 
 Fourth consecutive rolling-backlog cycle (v0.7.1 → v0.7.2 → v0.9.1 → **v0.9.2**) draining the v0.9.x carry-forward queue before the v0.10 OpenBao cycle opens. Merged to `main`, workspace `version` stays at `0.9.0`, no tag. v0.10 OpenBao release will fold these into its tagged CHANGELOG.

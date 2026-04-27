@@ -19,13 +19,15 @@
 //! v0.8 adds `keeper` (Keeper Commander CLI wrapper; requires persistent
 //! login set up via `this-device register` + `persistent-login on`).
 //! v0.9 adds `cf-kv` (Cloudflare Workers KV via `wrangler` CLI wrapper).
+//! v0.10 adds `openbao` (Linux Foundation MPL-2.0 fork of Vault — KV
+//! v1/v2 via the `bao` CLI, tap-less brew install).
 
 use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
 /// Register every compiled-in backend factory (`local`, `aws-ssm`,
 /// `1password`, `vault`, `aws-secrets`, `gcp`, `azure`, `keychain`,
-/// `doppler`, `infisical`, `keeper`, `cf-kv`) and instantiate the backends declared in `config`.
+/// `doppler`, `infisical`, `keeper`, `cf-kv`, `openbao`) and instantiate the backends declared in `config`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a
@@ -45,6 +47,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_infisical::InfisicalFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_keeper::KeeperFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_cf_kv::CfKvFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_openbao::OpenBaoFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

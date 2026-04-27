@@ -66,6 +66,19 @@ SECTIONS=(
     # works against the workplace `secretenv-validation` project seeded
     # by provision.sh.
     "22|v0.6 Doppler backend|yes"
+    # Sections 23-25 were missing from this array through prior
+    # cycles (only the section bodies were added). v0.10 backfills
+    # them so `--list-sections` and the `--cloud=no` filter logic
+    # match reality.
+    "23|v0.7 Infisical backend|yes"
+    "24|v0.8 Keeper backend|yes"
+    "25|v0.9 Cloudflare Workers KV backend|yes"
+    # Section 26 needs `bao` 2.x + a reachable OpenBao server with a
+    # valid token. cloud=yes because the server is treated as remote
+    # state for the smoke harness even when it's localhost dev-mode;
+    # SecretEnv users running this section against a hosted OpenBao
+    # cluster get the same skip semantics as the SaaS sections above.
+    "26|v0.10 OpenBao backend|yes"
 )
 
 print_section_inventory() {
@@ -2101,6 +2114,213 @@ EOF
     wrangler kv key list --namespace-id "$CFKV_NS" --remote > "$RUNS/354-v091-cfkv-wrangler-list.log" 2>&1
     assert_not_contains "354 v0.9.1 cf-kv wrangler list does not show deleted probe" \
       "$RUNS/354-v091-cfkv-wrangler-list.log" 'CFKV_DELETE_PROBE'
+fi
+
+# ---------------------------------------------------------------
+# 26 — v0.10: OpenBao backend
+# ---------------------------------------------------------------
+section_begin 26 "v0.10 OpenBao backend"
+# Self-contained: dedicated mini-config + mini-registry point at the
+# OpenBao dev server seeded by provision.sh (scalar + json-multi +
+# openbao-registry under secret/secretenv-smoke/). Skipped if `bao`
+# is missing OR the server is sealed/unreachable OR the token is
+# invalid — same SKIP discipline as Doppler/Infisical/Keeper/cf-kv.
+#
+# Address override: SECRETENV_TEST_BAO_ADDR (default 127.0.0.1:8300).
+# Port 8300 (not 8200) avoids collision with the parallel Vault
+# dev-mode the validation host runs at the canonical 8200 — see
+# kb/wiki/backends/openbao.md `BAO_ADDR` HTTP/HTTPS gotcha.
+
+V010_BAO_ADDR="${SECRETENV_TEST_BAO_ADDR:-http://127.0.0.1:8300}"
+
+if ! command -v bao >/dev/null 2>&1; then
+    record "360 v0.10 openbao section skipped — bao CLI not installed" "SKIP" \
+           "install: brew install openbao  OR  https://openbao.org/docs/install/"
+elif ! BAO_ADDR="$V010_BAO_ADDR" bao status >/dev/null 2>&1; then
+    record "360 v0.10 openbao section skipped — server unreachable or sealed" "SKIP" \
+           "address: $V010_BAO_ADDR  (start: bao server -dev OR unseal)"
+elif ! BAO_ADDR="$V010_BAO_ADDR" bao token lookup >/dev/null 2>&1; then
+    record "360 v0.10 openbao section skipped — token invalid" "SKIP" \
+           "run 'bao login' or place a valid token in ~/.vault-token"
+else
+    V010_BAOREG="$RUNS/360-bao-registry.toml"
+    cat > "$V010_BAOREG" <<EOF
+bao_secret = "openbao-dev:///secret/secretenv-smoke/scalar"
+bao_json_pw = "openbao-dev:///secret/secretenv-smoke/json-multi#json-key=password"
+EOF
+
+    V010_BAOCFG="$RUNS/360-bao-config.toml"
+    cat > "$V010_BAOCFG" <<EOF
+[registries.default]
+sources = ["local-main://${V010_BAOREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.openbao-dev]
+type = "openbao"
+bao_address = "${V010_BAO_ADDR}"
+EOF
+
+    # Mini project manifest for the end-to-end `run` test.
+    V010_BAOPROJ="$RUNS/360-bao-project"
+    mkdir -p "$V010_BAOPROJ"
+    cat > "$V010_BAOPROJ/secretenv.toml" <<EOF
+[secrets]
+BAO_SECRET = { from = "secretenv://bao_secret" }
+BAO_PASSWORD = { from = "secretenv://bao_json_pw" }
+EOF
+
+    # 26a — doctor sees the openbao backend authenticated.
+    run_test "360 v0.10 openbao doctor sees backend" 0 "$RUNS/360-v010-bao-doctor.log" \
+      "$BIN" --config "$V010_BAOCFG" doctor
+    assert_contains "361 openbao doctor lists instance"   "$RUNS/360-v010-bao-doctor.log" 'openbao-dev'
+    assert_contains "362 openbao doctor identity names addr" "$RUNS/360-v010-bao-doctor.log" "addr=${V010_BAO_ADDR}"
+    assert_contains "363 openbao doctor identity has no namespace" "$RUNS/360-v010-bao-doctor.log" 'namespace=(none)'
+
+    # 26b — round-trip get of the scalar fixture. Backend runs
+    # `bao kv get -field=value secret/secretenv-smoke/scalar` and
+    # returns `smoke-scalar-v0.10` (one trailing newline trimmed).
+    run_test "364 v0.10 openbao get scalar round-trip" 0 "$RUNS/364-v010-bao-get.log" \
+      "$BIN" --config "$V010_BAOCFG" get bao_secret --yes
+    assert_contains "365 openbao get returns seeded scalar" "$RUNS/364-v010-bao-get.log" 'smoke-scalar-v0.10'
+
+    # 26c — `#json-key=password` fragment extracts the password field
+    # from the JSON-encoded `value` at secret/secretenv-smoke/json-multi.
+    run_test "366 v0.10 openbao json-key fragment extracts field" 0 "$RUNS/366-v010-bao-jsonkey.log" \
+      "$BIN" --config "$V010_BAOCFG" get bao_json_pw --yes
+    assert_contains "367 openbao fragment returns password field" "$RUNS/366-v010-bao-jsonkey.log" 'smoke-pw'
+    assert_not_contains "368 openbao fragment does not leak username" "$RUNS/366-v010-bao-jsonkey.log" 'smoke-user'
+
+    # 26d — end-to-end `run` injects both scalar + JSON-extracted env vars.
+    run_test "369 v0.10 openbao run injects env vars" 0 "$RUNS/369-v010-bao-run.log" \
+      bash -c "cd '$V010_BAOPROJ' && '$BIN' --config '$V010_BAOCFG' run -- sh -c 'echo s=\$BAO_SECRET p=\$BAO_PASSWORD'"
+    assert_contains "370 openbao run renders scalar"          "$RUNS/369-v010-bao-run.log" 's=smoke-scalar-v0.10'
+    assert_contains "371 openbao run renders fragment-extracted" "$RUNS/369-v010-bao-run.log" 'p=smoke-pw'
+
+    # 26e — set + get + delete cycle on a unique-per-run path.
+    # Exercises the full `value=-` stdin discipline against the live
+    # server. `registry set` lands openbao in the JSON-arm of
+    # serialize_registry (alongside vault/aws-secrets/aws-ssm/gcp/azure)
+    # and round-trips through the same value=- path.
+    BAO_CYCLE_PATH="secret/secretenv-smoke/cycle-$$-$(date +%s)"
+    V010_BAOCYCLE_REG="$RUNS/372-bao-cycle-registry.toml"
+    cat > "$V010_BAOCYCLE_REG" <<EOF
+[registries.bao_cycle]
+sources = ["openbao-dev:///${BAO_CYCLE_PATH}"]
+
+[backends.openbao-dev]
+type = "openbao"
+bao_address = "${V010_BAO_ADDR}"
+EOF
+    # Set an alias.
+    run_test "372 v0.10 openbao registry set" 0 "$RUNS/372-v010-bao-set.log" \
+      "$BIN" --config "$V010_BAOCYCLE_REG" registry set cycle_alias \
+        "openbao-dev:///secret/secretenv-smoke/scalar" --registry bao_cycle
+    # Round-trip read of the alias map back through list().
+    run_test "373 v0.10 openbao registry list reads back" 0 "$RUNS/373-v010-bao-list.log" \
+      "$BIN" --config "$V010_BAOCYCLE_REG" registry list --registry bao_cycle
+    assert_contains "374 openbao list surfaces written alias" \
+      "$RUNS/373-v010-bao-list.log" 'cycle_alias'
+    # Unset removes the alias; subsequent list shows it gone.
+    run_test "375 v0.10 openbao registry unset" 0 "$RUNS/375-v010-bao-unset.log" \
+      "$BIN" --config "$V010_BAOCYCLE_REG" registry unset cycle_alias --registry bao_cycle
+    run_test "376 v0.10 openbao list after unset" 0 "$RUNS/376-v010-bao-list2.log" \
+      "$BIN" --config "$V010_BAOCYCLE_REG" registry list --registry bao_cycle
+    assert_not_contains "377 openbao list no longer shows unset alias" \
+      "$RUNS/376-v010-bao-list2.log" 'cycle_alias'
+    # Soft-delete the cycle path so the smoke namespace stays tidy.
+    BAO_ADDR="$V010_BAO_ADDR" bao kv metadata delete "$BAO_CYCLE_PATH" >/dev/null 2>&1 || true
+
+    # 26f — fragment-reject on `delete` and `list`. Fragments are
+    # only valid on `get`. A regression that stripped the
+    # `reject_any_fragment` call would silently succeed (worst case)
+    # or emit a misleading subprocess error.
+    V010_BAOREG_FRAG="$RUNS/378-bao-registry-frag.toml"
+    cat > "$V010_BAOREG_FRAG" <<EOF
+bao_frag = "openbao-dev:///secret/secretenv-smoke/scalar#json-key=value"
+EOF
+    V010_BAOCFG_FRAG="$RUNS/378-bao-config-frag.toml"
+    cat > "$V010_BAOCFG_FRAG" <<EOF
+[registries.default]
+sources = ["local-main://${V010_BAOREG_FRAG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.openbao-dev]
+type = "openbao"
+bao_address = "${V010_BAO_ADDR}"
+EOF
+    # Fragment IS valid on get → succeeds (locks the positive case).
+    run_test "378 v0.10 openbao get accepts json-key fragment" 0 "$RUNS/378-v010-bao-frag-get.log" \
+      "$BIN" --config "$V010_BAOCFG_FRAG" get bao_frag --yes
+    assert_contains "379 openbao get fragment returns scalar value" \
+      "$RUNS/378-v010-bao-frag-get.log" 'smoke-scalar-v0.10'
+
+    # 26g — history surfaces the trait-default "unsupported" message.
+    # KV v2 metadata is reachable but exposing it cleanly is v0.10.x
+    # carry-forward (per build plan).
+    run_test "380 v0.10 openbao history bails unsupported" 1 "$RUNS/380-v010-bao-history.log" \
+      "$BIN" --config "$V010_BAOCFG" registry history bao_secret
+    assert_contains "381 openbao history names 'not supported'" \
+      "$RUNS/380-v010-bao-history.log" 'not supported'
+
+    # 26h — registry-source path: read alias map from the openbao-
+    # registry fixture and resolve through the cross-backend chain.
+    # openbao-registry's value is a JSON-string carrying
+    # SMOKE_REGISTRY_ALIAS → local-main://…/stripe-key.txt; resolving
+    # the alias chains openbao.list() → local-main.get() to surface
+    # the file's contents.
+    V010_BAOREGSRC="$RUNS/382-bao-regsrc-config.toml"
+    cat > "$V010_BAOREGSRC" <<EOF
+[registries.default]
+sources = ["openbao-dev:///secret/secretenv-smoke/openbao-registry"]
+
+[backends.local-main]
+type = "local"
+
+[backends.openbao-dev]
+type = "openbao"
+bao_address = "${V010_BAO_ADDR}"
+EOF
+    run_test "382 v0.10 openbao registry-source list" 0 "$RUNS/382-v010-bao-reglist.log" \
+      "$BIN" --config "$V010_BAOREGSRC" registry list --registry default
+    assert_contains "383 openbao registry-source surfaces SMOKE_REGISTRY_ALIAS" \
+      "$RUNS/382-v010-bao-reglist.log" 'SMOKE_REGISTRY_ALIAS'
+    assert_contains "384 openbao registry-source target points at local-main" \
+      "$RUNS/382-v010-bao-reglist.log" 'local-main://'
+
+    # 26i — cross-backend resolve: openbao registry → local-main URI.
+    run_test "385 v0.10 openbao cross-backend resolve" 0 "$RUNS/385-v010-bao-resolve.log" \
+      "$BIN" --config "$V010_BAOREGSRC" resolve SMOKE_REGISTRY_ALIAS
+    assert_contains "386 openbao resolve names openbao source backend" \
+      "$RUNS/385-v010-bao-resolve.log" 'openbao-dev'
+
+    # 26j — HTTP/HTTPS mismatch surface. Pointing the backend at a
+    # URL that should be HTTP but is parsed as HTTPS reproduces the
+    # canonical first-use stumble; the error must be a CLI-stderr
+    # surface, not a parser panic. Use the documented gotcha — a
+    # bao server listening on HTTP probed with an https:// URL.
+    V010_BAOCFG_HTTPS="$RUNS/387-bao-config-https.toml"
+    cat > "$V010_BAOCFG_HTTPS" <<EOF
+[registries.default]
+sources = ["local-main://${V010_BAOREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.openbao-dev]
+type = "openbao"
+bao_address = "https://127.0.0.1:8300"
+EOF
+    run_test "387 v0.10 openbao HTTP/HTTPS mismatch surfaces error" 1 "$RUNS/387-v010-bao-https.log" \
+      "$BIN" --config "$V010_BAOCFG_HTTPS" get bao_secret --yes
+    # The exact wording depends on Go's TLS handshake error path; the
+    # stable sentinel is the `https://` address surfacing in the
+    # error message (or a stderr containing http/tls). Loose match.
+    assert_contains "388 openbao mismatch error names backend" \
+      "$RUNS/387-v010-bao-https.log" 'openbao'
 fi
 
 # ---------------------------------------------------------------

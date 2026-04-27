@@ -662,6 +662,7 @@ dependencies = [
  "secretenv-backend-keeper",
  "secretenv-backend-keychain",
  "secretenv-backend-local",
+ "secretenv-backend-openbao",
  "secretenv-backend-vault",
  "secretenv-core",
  "secretenv-testing",
@@ -835,6 +836,21 @@ dependencies = [
  "anyhow",
  "async-trait",
  "secretenv-core",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "secretenv-backend-openbao"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "secretenv-testing",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",

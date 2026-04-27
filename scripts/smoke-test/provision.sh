@@ -401,6 +401,40 @@ else
     say "[cf-kv] skipped (wrangler missing or not authenticated)"
 fi
 
+# ---------- OpenBao (v0.10) ----------
+# Local OpenBao dev server on a non-default port so it can run in
+# parallel with HashiCorp Vault dev-mode (port 8200) on the same host.
+# Address override: SECRETENV_TEST_BAO_ADDR (default http://127.0.0.1:8300).
+# Skipped if `bao` missing OR server unreachable OR sealed.
+#
+# Storage convention: every fixture is a single `value` field carrying
+# the secret content (scalar or JSON-string-of-aliases). Matches the
+# OpenBao backend's `value=-` write discipline + JSON-string-as-registry
+# read path. KV v2 idempotent re-seed is just another version bump.
+BAO_ADDR_FIXTURE="${SECRETENV_TEST_BAO_ADDR:-http://127.0.0.1:8300}"
+if command -v bao >/dev/null 2>&1 \
+   && BAO_ADDR="$BAO_ADDR_FIXTURE" bao status >/dev/null 2>&1 \
+   && BAO_ADDR="$BAO_ADDR_FIXTURE" bao token lookup >/dev/null 2>&1; then
+    say "[openbao] seed scalar fixture at secret/secretenv-smoke/scalar"
+    # Pipe value via stdin (`value=-`) — argv-discipline parity with
+    # the SecretEnv backend's set() path.
+    printf 'smoke-scalar-v0.10' | run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv put secret/secretenv-smoke/scalar value=-"
+
+    say "[openbao] seed json-multi fixture at secret/secretenv-smoke/json-multi"
+    printf '%s' '{"username":"smoke-user","password":"smoke-pw"}' \
+        | run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv put secret/secretenv-smoke/json-multi value=-"
+
+    say "[openbao] seed registry-source alias map at secret/secretenv-smoke/openbao-registry"
+    # Single URI-valued alias pointing into the local-main fixture
+    # tree (mirrors the cf-kv registry-source pattern). The cross-
+    # backend chain in section 26g resolves SMOKE_REGISTRY_ALIAS via
+    # local-main → stripe-key.txt.
+    printf '{"SMOKE_REGISTRY_ALIAS":"local-main://%s/local-secrets/stripe-key.txt"}' "$RUNTIME_DIR" \
+        | run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv put secret/secretenv-smoke/openbao-registry value=-"
+else
+    say "[openbao] skipped (bao missing, server unreachable at $BAO_ADDR_FIXTURE, or token invalid)"
+fi
+
 # ---------- Verification ----------
 say "=== Verification read-back ==="
 run "aws ssm get-parameter --name /secretenv-validation/registry --with-decryption --region '$AWS_REGION' --query Parameter.Value --output text | head -c 200; echo"
@@ -411,5 +445,9 @@ run "gcloud secrets versions access latest --secret secretenv_validation_registr
 run "gcloud secrets versions access latest --secret secretenv_validation_gcp_secret --project '$GCP_PROJECT' --quiet; echo"
 run "az keyvault secret show --vault-name '$AZURE_VAULT' --name secretenv-validation-registry --query value -o tsv | head -c 200; echo"
 run "az keyvault secret show --vault-name '$AZURE_VAULT' --name secretenv-validation-azure-secret --query value -o tsv; echo"
+if command -v bao >/dev/null 2>&1 \
+   && BAO_ADDR="$BAO_ADDR_FIXTURE" bao status >/dev/null 2>&1; then
+    run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv get -field=value secret/secretenv-smoke/scalar; echo"
+fi
 
 say "=== PROVISION_DONE ==="

@@ -248,7 +248,7 @@ jobs:
             desc "Run any process with secrets from all your backends"
             homepage "https://secretenv.io"
             version "${VER}"
-            license "MIT"
+            license "AGPL-3.0-only"
 
             on_macos do
               if Hardware::CPU.arm?

@@ -181,6 +181,7 @@ jobs:
           cargo publish -p secretenv-backend-infisical --locked
           cargo publish -p secretenv-backend-keeper --locked
           cargo publish -p secretenv-backend-cf-kv --locked
+          cargo publish -p secretenv-backend-openbao --locked
 
       - name: Wait for crates.io to index backend crates
         run: sleep 45

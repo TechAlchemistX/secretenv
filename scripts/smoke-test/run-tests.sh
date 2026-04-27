@@ -2203,7 +2203,15 @@ EOF
     # server. `registry set` lands openbao in the JSON-arm of
     # serialize_registry (alongside vault/aws-secrets/aws-ssm/gcp/azure)
     # and round-trips through the same value=- path.
+    #
+    # `registry set` reads the existing registry document first to
+    # merge the new alias in. For a fresh path that doesn't exist,
+    # this fails — so we pre-seed an empty `{}` JSON map at the cycle
+    # path before the set call. Vault dodges this because its smoke
+    # paths are pre-seeded by provision.sh under shared keys; here we
+    # use a unique-per-run path so seeds and teardown are tidy.
     BAO_CYCLE_PATH="secret/secretenv-smoke/cycle-$$-$(date +%s)"
+    printf '{}' | BAO_ADDR="$V010_BAO_ADDR" bao kv put "$BAO_CYCLE_PATH" value=- >/dev/null 2>&1
     V010_BAOCYCLE_REG="$RUNS/372-bao-cycle-registry.toml"
     cat > "$V010_BAOCYCLE_REG" <<EOF
 [registries.bao_cycle]
@@ -2232,39 +2240,31 @@ EOF
     # Soft-delete the cycle path so the smoke namespace stays tidy.
     BAO_ADDR="$V010_BAO_ADDR" bao kv metadata delete "$BAO_CYCLE_PATH" >/dev/null 2>&1 || true
 
-    # 26f — fragment-reject on `delete` and `list`. Fragments are
-    # only valid on `get`. A regression that stripped the
-    # `reject_any_fragment` call would silently succeed (worst case)
-    # or emit a misleading subprocess error.
+    # 26f — fragment-reject on registry list. Fragments are only
+    # valid on `get`; `list` rejects them locally before any subprocess.
+    # The positive `#json-key` path is already locked by 366/367 (the
+    # json-multi fixture) — no need to re-test fragment-on-get here.
     V010_BAOREG_FRAG="$RUNS/378-bao-registry-frag.toml"
     cat > "$V010_BAOREG_FRAG" <<EOF
-bao_frag = "openbao-dev:///secret/secretenv-smoke/scalar#json-key=value"
-EOF
-    V010_BAOCFG_FRAG="$RUNS/378-bao-config-frag.toml"
-    cat > "$V010_BAOCFG_FRAG" <<EOF
 [registries.default]
-sources = ["local-main://${V010_BAOREG_FRAG}"]
-
-[backends.local-main]
-type = "local"
+sources = ["openbao-dev:///secret/secretenv-smoke/openbao-registry#json-key=foo"]
 
 [backends.openbao-dev]
 type = "openbao"
 bao_address = "${V010_BAO_ADDR}"
 EOF
-    # Fragment IS valid on get → succeeds (locks the positive case).
-    run_test "378 v0.10 openbao get accepts json-key fragment" 0 "$RUNS/378-v010-bao-frag-get.log" \
-      "$BIN" --config "$V010_BAOCFG_FRAG" get bao_frag --yes
-    assert_contains "379 openbao get fragment returns scalar value" \
-      "$RUNS/378-v010-bao-frag-get.log" 'smoke-scalar-v0.10'
+    run_test "378 v0.10 openbao registry list rejects fragment" 1 "$RUNS/378-v010-bao-frag-list.log" \
+      "$BIN" --config "$V010_BAOREG_FRAG" registry list --registry default
+    assert_contains "379 openbao fragment-reject names backend" \
+      "$RUNS/378-v010-bao-frag-list.log" 'openbao'
 
-    # 26g — history surfaces the trait-default "unsupported" message.
-    # KV v2 metadata is reachable but exposing it cleanly is v0.10.x
-    # carry-forward (per build plan).
+    # 26g — history surfaces the trait-default "not implemented"
+    # message. KV v2 metadata is reachable but exposing it cleanly
+    # is v0.10.x carry-forward (per build plan).
     run_test "380 v0.10 openbao history bails unsupported" 1 "$RUNS/380-v010-bao-history.log" \
       "$BIN" --config "$V010_BAOCFG" registry history bao_secret
-    assert_contains "381 openbao history names 'not supported'" \
-      "$RUNS/380-v010-bao-history.log" 'not supported'
+    assert_contains "381 openbao history names 'not implemented'" \
+      "$RUNS/380-v010-bao-history.log" 'not implemented'
 
     # 26h — registry-source path: read alias map from the openbao-
     # registry fixture and resolve through the cross-backend chain.

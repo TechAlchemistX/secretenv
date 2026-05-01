@@ -79,6 +79,14 @@ SECTIONS=(
     # SecretEnv users running this section against a hosted OpenBao
     # cluster get the same skip semantics as the SaaS sections above.
     "26|v0.10 OpenBao backend|yes"
+    # Section 27 needs the cyberark/conjur-cli:8 Docker image wrapper +
+    # a reachable Conjur OSS server with a valid login. cloud=yes —
+    # same SaaS-like skip semantics as 1Password / Doppler / OpenBao.
+    # Default address is http://localhost:8083 (matches the
+    # conjur-local/ docker-compose harness shipped alongside the repo);
+    # operators with their own Conjur instance set
+    # SECRETENV_TEST_CONJUR_URL and SECRETENV_TEST_CONJUR_ACCOUNT.
+    "27|v0.11 CyberArk Conjur backend|yes"
 )
 
 print_section_inventory() {
@@ -2321,6 +2329,197 @@ EOF
     # error message (or a stderr containing http/tls). Loose match.
     assert_contains "388 openbao mismatch error names backend" \
       "$RUNS/387-v010-bao-https.log" 'openbao'
+fi
+
+# ---------------------------------------------------------------
+# 27 — v0.11: CyberArk Conjur backend
+# ---------------------------------------------------------------
+section_begin 27 "v0.11 CyberArk Conjur backend"
+# Self-contained: dedicated mini-config + mini-registry point at the
+# Conjur OSS dev server seeded by provision.sh (scalar + json-multi +
+# conjur-registry under root policy `secretenv-smoke`). Skipped if
+# `conjur` is missing OR the server is unreachable OR the session is
+# expired/unauthenticated — same SKIP discipline as the other
+# wrap-a-CLI backends.
+#
+# Default URL: http://localhost:8083 (matches conjur-local/
+# docker-compose harness). Override via SECRETENV_TEST_CONJUR_URL +
+# SECRETENV_TEST_CONJUR_ACCOUNT for hosted Conjur Enterprise smoke.
+# HTTP only locally — Phase 0 confirmed `conjur init --insecure` is
+# the operator-acknowledged form for HTTP-only dev servers.
+
+V011_CONJUR_URL="${SECRETENV_TEST_CONJUR_URL:-http://localhost:8083}"
+V011_CONJUR_ACCOUNT="${SECRETENV_TEST_CONJUR_ACCOUNT:-myorg}"
+
+if ! command -v conjur >/dev/null 2>&1; then
+    record "390 v0.11 conjur section skipped — conjur CLI not installed" "SKIP" \
+           "install: docker pull cyberark/conjur-cli:8 (alias \`conjur\` to a docker-run wrapper)"
+elif ! CONJUR_APPLIANCE_URL="$V011_CONJUR_URL" CONJUR_ACCOUNT="$V011_CONJUR_ACCOUNT" \
+       conjur whoami >/dev/null 2>&1; then
+    record "390 v0.11 conjur section skipped — server unreachable or session expired" "SKIP" \
+           "url: $V011_CONJUR_URL  account: $V011_CONJUR_ACCOUNT  (run: conjur login)"
+else
+    V011_CONJURREG="$RUNS/390-conjur-registry.toml"
+    cat > "$V011_CONJURREG" <<EOF
+conjur_secret = "conjur-dev:///secretenv-smoke/scalar"
+conjur_json_pw = "conjur-dev:///secretenv-smoke/json-multi#json-key=password"
+EOF
+
+    V011_CONJURCFG="$RUNS/390-conjur-config.toml"
+    cat > "$V011_CONJURCFG" <<EOF
+[registries.default]
+sources = ["local-main://${V011_CONJURREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.conjur-dev]
+type = "conjur"
+conjur_url = "${V011_CONJUR_URL}"
+conjur_account = "${V011_CONJUR_ACCOUNT}"
+EOF
+
+    # Mini project manifest for the end-to-end `run` test.
+    V011_CONJURPROJ="$RUNS/390-conjur-project"
+    mkdir -p "$V011_CONJURPROJ"
+    cat > "$V011_CONJURPROJ/secretenv.toml" <<EOF
+[secrets]
+CONJUR_SECRET = { from = "secretenv://conjur_secret" }
+CONJUR_PASSWORD = { from = "secretenv://conjur_json_pw" }
+EOF
+
+    # 27a — doctor sees the conjur backend authenticated.
+    run_test "390 v0.11 conjur doctor sees backend" 0 "$RUNS/390-v011-conjur-doctor.log" \
+      "$BIN" --config "$V011_CONJURCFG" doctor
+    assert_contains "391 conjur doctor lists instance"   "$RUNS/390-v011-conjur-doctor.log" 'conjur-dev'
+    assert_contains "392 conjur doctor identity names account" "$RUNS/390-v011-conjur-doctor.log" "account=${V011_CONJUR_ACCOUNT}"
+    assert_contains "393 conjur doctor identity surfaces configured authn" "$RUNS/390-v011-conjur-doctor.log" 'authn=authn'
+
+    # 27b — round-trip get of the scalar fixture. Backend runs
+    # `conjur variable get -i secretenv-smoke/scalar` and returns
+    # `smoke-scalar-v0.11` (one trailing newline trimmed).
+    run_test "394 v0.11 conjur get scalar round-trip" 0 "$RUNS/394-v011-conjur-get.log" \
+      "$BIN" --config "$V011_CONJURCFG" get conjur_secret --yes
+    assert_contains "395 conjur get returns seeded scalar" "$RUNS/394-v011-conjur-get.log" 'smoke-scalar-v0.11'
+
+    # 27c — `#json-key=password` fragment extracts the password field
+    # from the JSON-encoded variable at secretenv-smoke/json-multi.
+    run_test "396 v0.11 conjur json-key fragment extracts field" 0 "$RUNS/396-v011-conjur-jsonkey.log" \
+      "$BIN" --config "$V011_CONJURCFG" get conjur_json_pw --yes
+    assert_contains "397 conjur fragment returns password field" "$RUNS/396-v011-conjur-jsonkey.log" 'smoke-pw'
+    assert_not_contains "398 conjur fragment does not leak username" "$RUNS/396-v011-conjur-jsonkey.log" 'smoke-user'
+
+    # 27d — end-to-end `run` injects both scalar + JSON-extracted env vars.
+    run_test "399 v0.11 conjur run injects env vars" 0 "$RUNS/399-v011-conjur-run.log" \
+      bash -c "cd '$V011_CONJURPROJ' && '$BIN' --config '$V011_CONJURCFG' run -- sh -c 'echo s=\$CONJUR_SECRET p=\$CONJUR_PASSWORD'"
+    assert_contains "400 conjur run renders scalar"          "$RUNS/399-v011-conjur-run.log" 's=smoke-scalar-v0.11'
+    assert_contains "401 conjur run renders fragment-extracted" "$RUNS/399-v011-conjur-run.log" 'p=smoke-pw'
+
+    # 27e — set + get + clear cycle on a unique-per-run variable.
+    # Conjur has no native delete; `delete()` implements clear-via-
+    # empty-set per spec, so the cycle ends with a cleared (not
+    # removed) variable. The variable must already exist in policy
+    # (Conjur policy-defines variables; values are set after); the
+    # smoke fixture seed creates `secretenv-smoke/cycle` for this.
+    #
+    # Pre-seed `{}` at the cycle path before `registry set` so the
+    # read-then-write merge has a valid empty starting point (per
+    # feedback_smoke_section_design Rule 1).
+    CONJUR_CYCLE_VAR="secretenv-smoke/cycle"
+    printf '{}' | CONJUR_APPLIANCE_URL="$V011_CONJUR_URL" CONJUR_ACCOUNT="$V011_CONJUR_ACCOUNT" \
+      conjur variable set -i "$CONJUR_CYCLE_VAR" -f /dev/stdin >/dev/null 2>&1
+    V011_CONJURCYCLE_REG="$RUNS/402-conjur-cycle-registry.toml"
+    cat > "$V011_CONJURCYCLE_REG" <<EOF
+[registries.conjur_cycle]
+sources = ["conjur-dev:///${CONJUR_CYCLE_VAR}"]
+
+[backends.conjur-dev]
+type = "conjur"
+conjur_url = "${V011_CONJUR_URL}"
+conjur_account = "${V011_CONJUR_ACCOUNT}"
+EOF
+    # Set an alias.
+    run_test "402 v0.11 conjur registry set" 0 "$RUNS/402-v011-conjur-set.log" \
+      "$BIN" --config "$V011_CONJURCYCLE_REG" registry set cycle_alias \
+        "conjur-dev:///secretenv-smoke/scalar" --registry conjur_cycle
+    # Round-trip read of the alias map back through list().
+    run_test "403 v0.11 conjur registry list reads back" 0 "$RUNS/403-v011-conjur-list.log" \
+      "$BIN" --config "$V011_CONJURCYCLE_REG" registry list --registry conjur_cycle
+    assert_contains "404 conjur list surfaces written alias" \
+      "$RUNS/403-v011-conjur-list.log" 'cycle_alias'
+    # Unset removes the alias from the map; subsequent list shows it gone.
+    run_test "405 v0.11 conjur registry unset" 0 "$RUNS/405-v011-conjur-unset.log" \
+      "$BIN" --config "$V011_CONJURCYCLE_REG" registry unset cycle_alias --registry conjur_cycle
+    run_test "406 v0.11 conjur list after unset" 0 "$RUNS/406-v011-conjur-list2.log" \
+      "$BIN" --config "$V011_CONJURCYCLE_REG" registry list --registry conjur_cycle
+    assert_not_contains "407 conjur list no longer shows unset alias" \
+      "$RUNS/406-v011-conjur-list2.log" 'cycle_alias'
+    # Clear the cycle variable to keep the smoke namespace tidy. Conjur
+    # has no native delete — this writes an empty value via the same
+    # safe -f /dev/stdin path used by `secretenv registry unset`.
+    printf '' | CONJUR_APPLIANCE_URL="$V011_CONJUR_URL" CONJUR_ACCOUNT="$V011_CONJUR_ACCOUNT" \
+      conjur variable set -i "$CONJUR_CYCLE_VAR" -f /dev/stdin >/dev/null 2>&1 || true
+
+    # 27f — fragment-reject on registry list. Fragments are only valid
+    # on `get`; `list` rejects them locally before any subprocess. The
+    # positive `#json-key` path is locked by 396/397.
+    V011_CONJURREG_FRAG="$RUNS/408-conjur-registry-frag.toml"
+    cat > "$V011_CONJURREG_FRAG" <<EOF
+[registries.default]
+sources = ["conjur-dev:///secretenv-smoke/conjur-registry#json-key=foo"]
+
+[backends.conjur-dev]
+type = "conjur"
+conjur_url = "${V011_CONJUR_URL}"
+conjur_account = "${V011_CONJUR_ACCOUNT}"
+EOF
+    run_test "408 v0.11 conjur registry list rejects fragment" 1 "$RUNS/408-v011-conjur-frag-list.log" \
+      "$BIN" --config "$V011_CONJURREG_FRAG" registry list --registry default
+    # 'fragment' is the load-bearing word — `'conjur'` would also match
+    # the URI string itself (the URI starts with `conjur-dev://...`),
+    # so a generic resolver error that just echoed the URI would pass
+    # without ever exercising the backend's `reject_any_fragment` path.
+    assert_contains "409 conjur fragment-reject surfaces fragment-rejection error" \
+      "$RUNS/408-v011-conjur-frag-list.log" 'fragment'
+
+    # 27g — history surfaces the trait-default "not implemented"
+    # message. Conjur tracks variable versions but listing them
+    # requires REST API; v0.11.x carry-forward.
+    run_test "410 v0.11 conjur history bails not implemented" 1 "$RUNS/410-v011-conjur-history.log" \
+      "$BIN" --config "$V011_CONJURCFG" registry history conjur_secret
+    assert_contains "411 conjur history names 'not implemented'" \
+      "$RUNS/410-v011-conjur-history.log" 'not implemented'
+
+    # 27h — registry-source path: read alias map from the
+    # conjur-registry fixture and resolve through the cross-backend
+    # chain. conjur-registry's value is JSON
+    # SMOKE_REGISTRY_ALIAS → local-main://…/stripe-key.txt; resolving
+    # the alias chains conjur.list() → local-main.get().
+    V011_CONJURREGSRC="$RUNS/412-conjur-regsrc-config.toml"
+    cat > "$V011_CONJURREGSRC" <<EOF
+[registries.default]
+sources = ["conjur-dev:///secretenv-smoke/conjur-registry"]
+
+[backends.local-main]
+type = "local"
+
+[backends.conjur-dev]
+type = "conjur"
+conjur_url = "${V011_CONJUR_URL}"
+conjur_account = "${V011_CONJUR_ACCOUNT}"
+EOF
+    run_test "412 v0.11 conjur registry-source list" 0 "$RUNS/412-v011-conjur-reglist.log" \
+      "$BIN" --config "$V011_CONJURREGSRC" registry list --registry default
+    assert_contains "413 conjur registry-source surfaces SMOKE_REGISTRY_ALIAS" \
+      "$RUNS/412-v011-conjur-reglist.log" 'SMOKE_REGISTRY_ALIAS'
+    assert_contains "414 conjur registry-source target points at local-main" \
+      "$RUNS/412-v011-conjur-reglist.log" 'local-main://'
+
+    # 27i — cross-backend resolve: conjur registry → local-main URI.
+    run_test "415 v0.11 conjur cross-backend resolve" 0 "$RUNS/415-v011-conjur-resolve.log" \
+      "$BIN" --config "$V011_CONJURREGSRC" resolve SMOKE_REGISTRY_ALIAS
+    assert_contains "416 conjur resolve names conjur source backend" \
+      "$RUNS/415-v011-conjur-resolve.log" 'conjur-dev'
 fi
 
 # ---------------------------------------------------------------

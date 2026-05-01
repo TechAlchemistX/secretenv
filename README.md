@@ -9,7 +9,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
 [![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
-[![Backends](https://img.shields.io/badge/backends-13-green)](#supported-backends)
+[![Backends](https://img.shields.io/badge/backends-14-green)](#supported-backends)
 
 *No SaaS. No re-encryption. No lock-in. No .env files.*
 
@@ -447,7 +447,7 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Cloudflare Workers KV | `cf-kv` | `cf-kv-<instance>:///<namespace-id>/<key>` | `wrangler` | Available |
 | Bitwarden Secrets Manager | `bitwarden` | `bitwarden-<instance>://organization/secret` | `bws` | Coming Soon |
 | OpenBao | `openbao` | `openbao-<instance>://mount/path[#json-key=<field>]` | `bao` | Available |
-| CyberArk Conjur | `conjur` | `conjur-<instance>://account/path` | `conjur` | Coming Soon |
+| CyberArk Conjur | `conjur` | `conjur-<instance>://<variable-id>[#json-key=<field>]` | `conjur` (v8+) | Available |
 | Delinea Secret Server | `delinea` | `delinea-<instance>://folder/secret` | `tss` | Coming Soon |
 
 The URI scheme is your named instance. Multiple instances of the same backend type — for multiple accounts, multiple vaults, or multiple credential sets — are configured in `config.toml` and referenced by their instance name.

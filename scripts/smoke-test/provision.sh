@@ -435,6 +435,45 @@ else
     say "[openbao] skipped (bao missing, server unreachable at $BAO_ADDR_FIXTURE, or token invalid)"
 fi
 
+# Local Conjur OSS server. Address override:
+# SECRETENV_TEST_CONJUR_URL (default http://localhost:8083) +
+# SECRETENV_TEST_CONJUR_ACCOUNT (default myorg). Skipped if `conjur`
+# missing OR server unreachable OR session expired.
+#
+# Storage convention: each Conjur variable holds the value verbatim
+# (scalar or JSON-string-of-aliases). The variables MUST already be
+# defined in policy — Conjur is policy-defined, values come second.
+# The `conjur-local/seeds/secretenv-smoke-policy.yml` policy must be
+# loaded before this provision runs (one-time bootstrap per the
+# conjur-local README; provision idempotently re-seeds VALUES).
+#
+# Phase 0 finding: v8 CLI lacks `--value-from-stdin`. Seed values
+# via `-f /dev/stdin` (kernel pseudo-file) — the value never appears
+# on argv. CV-1 discipline parity with the SecretEnv backend's set().
+#
+# The `secretenv-smoke/cycle` variable used by section 27e MUST also
+# be defined in the policy; it has no initial value (set + cleared
+# during the smoke cycle itself).
+CONJUR_URL_FIXTURE="${SECRETENV_TEST_CONJUR_URL:-http://localhost:8083}"
+CONJUR_ACCOUNT_FIXTURE="${SECRETENV_TEST_CONJUR_ACCOUNT:-myorg}"
+if command -v conjur >/dev/null 2>&1 \
+   && CONJUR_APPLIANCE_URL="$CONJUR_URL_FIXTURE" CONJUR_ACCOUNT="$CONJUR_ACCOUNT_FIXTURE" \
+      conjur whoami >/dev/null 2>&1; then
+    say "[conjur] seed scalar fixture at secretenv-smoke/scalar"
+    printf 'smoke-scalar-v0.11' \
+      | run "CONJUR_APPLIANCE_URL='$CONJUR_URL_FIXTURE' CONJUR_ACCOUNT='$CONJUR_ACCOUNT_FIXTURE' conjur variable set -i secretenv-smoke/scalar -f /dev/stdin"
+
+    say "[conjur] seed json-multi fixture at secretenv-smoke/json-multi"
+    printf '%s' '{"username":"smoke-user","password":"smoke-pw"}' \
+      | run "CONJUR_APPLIANCE_URL='$CONJUR_URL_FIXTURE' CONJUR_ACCOUNT='$CONJUR_ACCOUNT_FIXTURE' conjur variable set -i secretenv-smoke/json-multi -f /dev/stdin"
+
+    say "[conjur] seed registry-source alias map at secretenv-smoke/conjur-registry"
+    printf '{"SMOKE_REGISTRY_ALIAS":"local-main://%s/local-secrets/stripe-key.txt"}' "$RUNTIME_DIR" \
+      | run "CONJUR_APPLIANCE_URL='$CONJUR_URL_FIXTURE' CONJUR_ACCOUNT='$CONJUR_ACCOUNT_FIXTURE' conjur variable set -i secretenv-smoke/conjur-registry -f /dev/stdin"
+else
+    say "[conjur] skipped (conjur missing, server unreachable at $CONJUR_URL_FIXTURE, or session expired)"
+fi
+
 # ---------- Verification ----------
 say "=== Verification read-back ==="
 run "aws ssm get-parameter --name /secretenv-validation/registry --with-decryption --region '$AWS_REGION' --query Parameter.Value --output text | head -c 200; echo"
@@ -448,6 +487,11 @@ run "az keyvault secret show --vault-name '$AZURE_VAULT' --name secretenv-valida
 if command -v bao >/dev/null 2>&1 \
    && BAO_ADDR="$BAO_ADDR_FIXTURE" bao status >/dev/null 2>&1; then
     run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv get -field=value secret/secretenv-smoke/scalar; echo"
+fi
+if command -v conjur >/dev/null 2>&1 \
+   && CONJUR_APPLIANCE_URL="$CONJUR_URL_FIXTURE" CONJUR_ACCOUNT="$CONJUR_ACCOUNT_FIXTURE" \
+      conjur whoami >/dev/null 2>&1; then
+    run "CONJUR_APPLIANCE_URL='$CONJUR_URL_FIXTURE' CONJUR_ACCOUNT='$CONJUR_ACCOUNT_FIXTURE' conjur variable get -i secretenv-smoke/scalar; echo"
 fi
 
 say "=== PROVISION_DONE ==="

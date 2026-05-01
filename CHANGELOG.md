@@ -8,6 +8,31 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+### v0.11.x hygiene — closing-audit deferred LOW chips (merged-not-tagged)
+
+Sixth merged-not-tagged hygiene cycle (v0.7.1 / v0.7.2 / v0.9.1 / v0.9.2 / v0.10.x → **v0.11.x**) per the rolling-backlog pattern: merged to `main`, workspace `version` stays at `0.11.0`, no tag pushed. Triggered by routine post-cycle slack and a desire to clean the v0.11 carry-forward queue before v0.12 (Delinea Secret Server) opens. Every chip below was already audited during v0.10's or v0.11's closing trio — the hygiene cycle just lands the deferred LOW fixes that were explicitly punted to keep the v0.11 PR scoped per [[feedback_pr_scoping_hygiene_carrier]].
+
+#### Fixed
+
+- **`aws-secrets` `extract_json_field` `map.remove` allocation fix** (`crates/backends/secretenv-backend-aws-secrets/src/lib.rs:442-475`) — the same single-line allocation fix that landed in `openbao` during the v0.10 Phase 6 audit and in `conjur` during v0.11 Phase 7. The `String` arm now moves rather than clones (`map.remove` instead of `map.get` + `.clone()`). Carried forward from v0.10.x; deliberately deferred from v0.11 to keep the conjur PR scoped.
+- **`.github/workflows/release.yml:177-194` backend-publish strict-mode** — the 14-line `cargo publish` block now starts with `set -euo pipefail` so a transient mid-list failure (crates.io 5xx, indexing race, network blip) fails the workflow step rather than being masked by bash's last-command-only exit semantics. v0.10.x deferred this; Phase 9 security audit re-flagged at v0.11; landing here. Mirrors the strict-mode discipline that landed on the Package-tarball block in v0.11.0.
+- **`conjur` backend `tracing::warn` on `conjur_unsafe_set = true` runtime branch** (`crates/backends/secretenv-backend-conjur/src/lib.rs:280-294`) — when the operator opts into the `-v <value>` argv path, the backend now emits a per-invocation `tracing::warn!` naming the instance + URI + operation. Mirrors the 1Password / Keeper precedent. `secretenv --verbose` now surfaces the choice as a runtime breadcrumb instead of silently routing through argv. Phase 7 closing security-auditor LOW.
+- **`conjur` `parse_version_token` dead-fallback cleanup** (`crates/backends/secretenv-backend-conjur/src/lib.rs:549-559`) — the prior `split('-').next().unwrap_or(token)` shape had an unreachable fallback arm (`split` always yields at least one element). Replaced with `split_once('-').map_or(token, |(prefix, _)| prefix)` for clearer intent. Phase 7 closing rust-engineer LOW.
+- **`conjur` `parse_json_key_fragment` two-pass cleanup** (`crates/backends/secretenv-backend-conjur/src/lib.rs:212-242`) — the prior `contains_key` + `len()` shape made two passes over directives in the common single-key case. Refactored to single-pass `shift_remove` + leftover-emptiness check; whatever remains in the map after extracting `json-key` is by definition the unsupported set. Phase 7 closing rust-engineer LOW.
+
+#### Process
+
+- This is the **first hygiene cycle to land entirely from the v0.11.x post-cycle carry-forward queue** documented in [[roadmap]]. The `feedback_pr_scoping_hygiene_carrier.md` discipline is now an established pattern across two cycles (v0.10.x retrospective + v0.11.x carry-forward); subsequent cycles should default to it. No three-agent retrospective audit run on this commit because every chip closed a finding from v0.10 / v0.11 closing audits — re-auditing closed findings would be theatre.
+
+#### Deferred / declined
+
+- **`variable_id` inline control-char rejection** — Phase 7 security-auditor LOW. Already locked at the upstream `secretenv-core::BackendUri::parse` layer (`uri.rs:96`) with a regression-lock test (`uri_parser_rejects_control_chars_in_variable_id_path` in the conjur crate). Inline check would be defense-in-depth only; not landing.
+- **`teardown.sh` shell-quoting parity** — Phase 7 security-auditor MEDIUM. Same `run "..."` wrapper pattern every prior backend uses; not a regression. Would need a workspace-wide rewrite of the smoke harness to address; out of scope for this hygiene cycle.
+- **Smoke `|| true` failure-signal loss** — Phase 7 security-auditor LOW. Cosmetic; the assertion below catches the real failure regardless. Not landing.
+- **Phase 9 audit-artifact wiki cross-link** — Phase 9 security-auditor LOW. No `kb/wiki/reviews/2026-04-30-v0.11-conjur-audit.md` artifact exists; nothing to link. Declined.
+- **CHANGELOG history-wording cleanup** — Phase 9 code-reviewer LOW (advisory). The historical v0.10.0 block at `CHANGELOG.md` still says "history-unsupported" while v0.11.0+ uses "history-not-implemented". Don't retroactively edit history.
+- **`history()` for openbao via `bao kv metadata get`** — v0.10.x carry-forward. Non-trivial (KV v1/v2 mount detection, soft-delete + destroy markers); requires real design work. Stays in v0.10.x deferred-with-trigger queue.
+
 ## [0.11.0] - 2026-04-30
 
 **Headline:** sixth release of the single-backend-per-release cycle; sixth [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **CyberArk Conjur** (Apache-2.0 OSS / Enterprise wire-compatible, via the Go-based `conjur` v8 CLI) — brings the total to **14**. First non-Vault-family enterprise backend; first cycle to land Phase 0 prep as a discrete pre-cycle session and the **first cycle to run the Phase 9 release-prep audit by default** per `feedback_audit_after_release_prep` — the discipline the v0.10.x retrospective surfaced.

@@ -139,4 +139,19 @@ if command -v bao >/dev/null 2>&1 \
     run "BAO_ADDR='$BAO_ADDR_FIXTURE' bao kv metadata delete secret/secretenv-smoke/openbao-registry || true"
 fi
 
+# Conjur teardown — clear values rather than remove (Conjur has no
+# native delete; full removal requires policy reload). Variables stay
+# defined; values become empty strings. Same semantic gap surfaced by
+# the wrapper's delete-as-clear convention. Idempotent across reruns.
+CONJUR_URL_FIXTURE="${SECRETENV_TEST_CONJUR_URL:-http://localhost:8083}"
+CONJUR_ACCOUNT_FIXTURE="${SECRETENV_TEST_CONJUR_ACCOUNT:-myorg}"
+if command -v conjur >/dev/null 2>&1 \
+   && CONJUR_APPLIANCE_URL="$CONJUR_URL_FIXTURE" CONJUR_ACCOUNT="$CONJUR_ACCOUNT_FIXTURE" \
+      conjur whoami >/dev/null 2>&1; then
+    for v in secretenv-smoke/scalar secretenv-smoke/json-multi secretenv-smoke/conjur-registry secretenv-smoke/cycle; do
+        printf '' \
+          | run "CONJUR_APPLIANCE_URL='$CONJUR_URL_FIXTURE' CONJUR_ACCOUNT='$CONJUR_ACCOUNT_FIXTURE' conjur variable set -i '$v' -f /dev/stdin || true"
+    done
+fi
+
 say "=== TEARDOWN_DONE ==="

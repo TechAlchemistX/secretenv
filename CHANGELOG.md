@@ -8,6 +8,40 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-30
+
+**Headline:** sixth release of the single-backend-per-release cycle; sixth [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **CyberArk Conjur** (Apache-2.0 OSS / Enterprise wire-compatible, via the Go-based `conjur` v8 CLI) — brings the total to **14**. First non-Vault-family enterprise backend; first cycle to land Phase 0 prep as a discrete pre-cycle session and the **first cycle to run the Phase 9 release-prep audit by default** per `feedback_audit_after_release_prep` — the discipline the v0.10.x retrospective surfaced.
+
+v0.10.0 → v0.11.0: workspace unit tests **778 → 830** (+52 from the new conjur crate, counted by `cargo test --workspace` `test result: ok.` lines summed). Live smoke matrix **452 → 479** (+27 for Section 27: doctor Level 1+2 with `account=` / `identity=` / `authn=` checks, scalar round-trip, `#json-key=password` fragment extraction, end-to-end `run`, set/list/unset cycle on `secretenv-smoke/cycle`, fragment-reject on registry list, history-not-implemented surface, registry-source cross-backend chain). Pre-tag full-matrix smoke: 27/27 on Section 27 first run after a stale `target/release/secretenv` binary blocked the conjur factory in an initial attempt; full matrix **479/479** clean after release rebuild. Closing three-agent trio audit (security + code + rust) landed 1 BLOCKING + 1 HIGH + 7 MEDIUM/LOW findings inline before tag; LOW + remaining MEDIUMs deferred to v0.11.x carry-forward.
+
+This is the **first tagged release after the v0.10.x merged-not-tagged hygiene cycle** — the Homebrew formula re-renders with the corrected `license "AGPL-3.0-only"` (v0.3 onward had been pushing the wrong MIT label to the tap; fixed in v0.10.x but only takes effect on the next tagged release, which is this one).
+
+### Added — CyberArk Conjur backend (v0.11)
+
+- **`secretenv-backend-conjur` crate** — `ConjurFactory` registered unconditionally in `secretenv-cli/src/backends_init.rs`. URI shape `conjur-<instance>://<variable-id>[#json-key=<field>]` (no KV-mount segment — Conjur uses a resource-graph identity model where the variable ID IS the path). `CONJUR_APPLIANCE_URL` + `CONJUR_ACCOUNT` routed via per-child env (uniform across `version`, `whoami`, and every `variable` invocation; the `version_command()` helper landed in the closing audit applies env even though `--version` doesn't strictly need it, so the env-only invariant stays uniform). 52 unit tests via the strict-mock harness.
+- **`-f /dev/stdin` safe-stdin path** — CV-1-equivalent to OpenBao's `value=-`. Conjur v8 has no `--value-from-stdin` flag; using the kernel `/dev/stdin` pseudo-file lets the CLI read the value bytes "as if from a file" without touching disk and without ever appearing on argv. `conjur_unsafe_set = true` is the explicit operator opt-in for the `-v <value>` argv path (only legitimate when `/dev/stdin` is unavailable, e.g. chrooted CI runner with stripped `/dev/`). Default-off invariant machine-checked via `ConjurFactory::create_concrete` test path; argv-path-unreachable test registers ONLY the argv-mock entry and asserts the safe branch was taken.
+- **`#json-key=<field>` fragment on `get`** — parses the variable value as a JSON object and extracts the named top-level scalar. Mirrors `aws-secrets` / `openbao`. `set` / `delete` / `list` / `history` reject any fragment.
+- **`delete` as clear-via-empty-set** — Conjur has no native delete (variables are policy-defined; full removal requires policy reload, which a typical SecretEnv operator can't do). `delete()` writes the empty string via the same safe `-f /dev/stdin` path used by `set`. The variable retains its policy definition; only the value is emptied. Documented as a deliberate semantic gap; mirrors 1Password's `delete` precedent.
+- **Identity line surfaces configured authn** — Conjur's `whoami` JSON returns `{account, username, client_ip, user_agent, token_issued_at}` and does NOT include the authenticator name. The doctor identity line constructs `account=<from-whoami> identity=<username-from-whoami> authn=<from-conjur_authn-config>` (default authn `"authn"`).
+- **v7 (Ruby) CLI rejection** — `check()` Level 1 parses the version token from `Conjur CLI version <X.Y.Z>[-<build-sha>]` and fails fast on v7 with a clear "v8+ required" message + Docker-image install hint. A version line that doesn't parse (no literal "version " token) also surfaces as `BackendStatus::Error` rather than silently bypassing the v7 branch — closes a defense-in-depth gap surfaced by the closing security audit.
+- **`list()` returns alphabetically-sorted entries** — `HashMap::into_iter` is randomized per-process; `list()` now sorts before returning so callers and the smoke harness's `assert_contains` checks see deterministic output across runs. Lifted from the closing rust-engineer audit.
+- **`conjur` addition to `serialize_registry` JSON arm** (`secretenv-cli`) — registry documents through the `conjur` backend round-trip as JSON-string values stored in the variable, matching `aws-ssm` / `aws-secrets` / `gcp` / `azure` / `vault` / `openbao`.
+- **Smoke harness Section 27** (27 assertions, ids 390–416, covering doctor / get / fragment / run / cycle / fragment-reject / history-not-implemented / registry-source / cross-backend resolve). Skipped cleanly if `conjur` is missing OR the server is unreachable OR the session is expired. Provision side seeds `secretenv-smoke/{scalar,json-multi,conjur-registry,cycle}` under root policy.
+- **`docs/backends/conjur.md`** — leads with the install gotcha (Docker-image canonical, PyPI is EOL v7), explains the resource-graph model + `delete` semantic gap + identity-line authn convention.
+- **`.github/workflows/release.yml`** — adds `cargo publish -p secretenv-backend-conjur --locked` to the backend-publish list.
+- **`secretenv-backend-conjur` AGPL-3.0-only exception** in `deny.toml`.
+- **README backend table** 13 → 14 + backend-count badge bumped (and stale "Coming Soon" Conjur stub row deleted).
+
+#### Phase 0 corrections (2026-04-30, pre-cycle)
+
+The pre-cycle Phase 0 live-probe ran against `Conjur CLI version 8.1.3-879b90b` at the local Conjur OSS docker-compose harness and corrected several spec inaccuracies before the cycle opened. Captured here so the v0.11 tagged CHANGELOG block carries the rationale.
+
+- **CLI is Go-based v8, not Python.** PyPI `conjur` is the EOL Ruby v7 line. No Homebrew tap; no native macOS binary. Canonical install is the `cyberark/conjur-cli:8` Docker image. Spec install hint corrected; doctor v7 rejection wired.
+- **`--value-from-stdin` does not exist in v8.** The CV-1-safe substitute is `-f /dev/stdin` with stdin-piped value.
+- **`CONJUR_APPLIANCE_URL` + `CONJUR_ACCOUNT` env routing works without a `~/.conjurrc`.** Standard env-only contract retained; no per-instance config-file fallback shipped.
+- **`whoami` JSON shape:** `{account, username, client_ip, user_agent, token_issued_at}` — no authenticator name. Identity-line `authn=` derives from configured `conjur_authn`.
+- **`variable get` still appends one trailing `\n`.** Strip-one rule stands.
+
 ### v0.10.x hygiene — Homebrew formula license fix + retrospective audit closeout (merged-not-tagged)
 
 Rolling-backlog cycle following the v0.7.1 / v0.7.2 / v0.9.1 / v0.9.2 dev-work pattern: merged to `main`, workspace `version` stays at `0.10.0`, no tag pushed. Triggered by the user catching a real Homebrew-formula license bug post-tag and the realization that the Phase 6 three-agent audit at v0.10.0 ran BEFORE the Phase 8 release-prep commit landed, so the smoke patch + version bump + CHANGELOG closeout + `release.yml` change shipped unreviewed. Retrospective three-agent audit (security + code + deployment) ran against the as-shipped state @ `368c38a`; this CHANGELOG block + commit closes the BLOCKING/HIGH findings.

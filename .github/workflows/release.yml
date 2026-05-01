@@ -77,6 +77,13 @@ jobs:
       - name: Package tarball
         shell: bash
         run: |
+          set -euo pipefail
+          # Strict-mode so a silent `mkdir`/`cp` failure (permissions,
+          # disk full, missing source binary) fails the step rather
+          # than shipping a half-populated tarball. Phase-9 deploy
+          # audit found this was needed at v0.11.0; landed in the
+          # release-prep delta so v0.11+ tags can never publish a
+          # corrupted artifact through this step.
           mkdir -p dist
           cp target/${{ matrix.target }}/release/secretenv dist/
           cp README.md LICENSE dist/
@@ -182,6 +189,7 @@ jobs:
           cargo publish -p secretenv-backend-keeper --locked
           cargo publish -p secretenv-backend-cf-kv --locked
           cargo publish -p secretenv-backend-openbao --locked
+          cargo publish -p secretenv-backend-conjur --locked
 
       - name: Wait for crates.io to index backend crates
         run: sleep 45

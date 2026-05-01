@@ -48,6 +48,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_keeper::KeeperFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_cf_kv::CfKvFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_openbao::OpenBaoFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_conjur::ConjurFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

@@ -213,7 +213,11 @@ impl ConjurBackend {
         let Some(mut directives) = uri.fragment_directives()? else {
             return Ok(None);
         };
-        if !directives.contains_key("json-key") {
+        // Single pass: `shift_remove("json-key")` either extracts the
+        // key (success path) or returns None (key absent). Whatever
+        // sits in `directives` after the remove is by definition the
+        // "unsupported" set — no second filter pass needed.
+        let Some(key) = directives.shift_remove("json-key") else {
             let mut unsupported: Vec<&str> = directives.keys().map(String::as_str).collect();
             unsupported.sort_unstable();
             bail!(
@@ -223,13 +227,9 @@ impl ConjurBackend {
                 uri.raw,
                 unsupported.join(", ")
             );
-        }
-        if directives.len() > 1 {
-            let mut extra: Vec<&str> = directives
-                .keys()
-                .filter(|k| k.as_str() != "json-key")
-                .map(String::as_str)
-                .collect();
+        };
+        if !directives.is_empty() {
+            let mut extra: Vec<&str> = directives.keys().map(String::as_str).collect();
             extra.sort_unstable();
             bail!(
                 "conjur backend '{}': URI '{}' has unsupported directive(s) [{}] alongside \
@@ -239,9 +239,6 @@ impl ConjurBackend {
                 extra.join(", ")
             );
         }
-        let Some(key) = directives.shift_remove("json-key") else {
-            unreachable!("json-key presence was checked above")
-        };
         Ok(Some(key))
     }
 
@@ -280,6 +277,16 @@ impl ConjurBackend {
         if self.conjur_unsafe_set {
             // Unsafe argv path — explicit operator opt-in. Secret
             // appears in /proc/<pid>/cmdline and `ps` output.
+            // Per-invocation tracing breadcrumb so `secretenv --verbose`
+            // surfaces the choice (mirrors 1Password / Keeper precedent).
+            tracing::warn!(
+                instance = self.instance_name.as_str(),
+                uri = uri.raw.as_str(),
+                op = op,
+                "`conjur variable set -v <value>` passes the secret through subprocess argv \
+                 (conjur_unsafe_set = true was set; CV-1 exposure acknowledged) — \
+                 do not run on multi-user hosts unless audited"
+            );
             let mut cmd = self.conjur_command("variable", &["set", "-i", &var_id, "-v", value]);
             let output = cmd.output().await.with_context(|| {
                 format!(
@@ -539,7 +546,13 @@ impl Backend for ConjurBackend {
 fn parse_version_token(line: &str) -> Option<&str> {
     let after = line.split_once("version ")?.1;
     let token = after.split_whitespace().next()?;
-    Some(token.split('-').next().unwrap_or(token))
+    // `split_once('-')` returns Some when a `-<build-sha>` suffix is
+    // present (the v8 build-info form `8.1.3-879b90b`), None when it's
+    // a bare semver (`8.1.3`). Either way the first arm is the X.Y.Z
+    // portion. Cleaner than the prior `split('-').next().unwrap_or(token)`
+    // dead-fallback shape — `split` always yields at least one element
+    // so the unwrap_or arm was unreachable.
+    Some(token.split_once('-').map_or(token, |(prefix, _)| prefix))
 }
 
 /// Parse `raw` as a JSON object and extract the top-level `key` field

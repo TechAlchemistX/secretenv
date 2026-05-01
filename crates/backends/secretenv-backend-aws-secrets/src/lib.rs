@@ -74,7 +74,7 @@ use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
@@ -439,34 +439,39 @@ fn extract_json_field(
     raw: &str,
     key: &str,
 ) -> Result<String> {
-    let map: HashMap<String, serde_json::Value> = serde_json::from_str(raw).with_context(|| {
-        format!(
-            "aws-secrets backend '{instance_name}': URI '{}' selects JSON key '{key}' \
-             but secret value at '{}' is not a JSON object",
-            uri.raw, uri.path
-        )
-    })?;
-    let value = map.get(key).ok_or_else(|| {
+    let mut map: HashMap<String, serde_json::Value> =
+        serde_json::from_str(raw).with_context(|| {
+            format!(
+                "aws-secrets backend '{instance_name}': URI '{}' selects JSON key '{key}' \
+                 but secret value at '{}' is not a JSON object",
+                uri.raw, uri.path
+            )
+        })?;
+    if !map.contains_key(key) {
         let mut fields: Vec<&str> = map.keys().map(String::as_str).collect();
         fields.sort_unstable();
-        anyhow!(
+        bail!(
             "aws-secrets backend '{instance_name}': URI '{}' field '{key}' not found; \
              secret at '{}' has fields: [{}]",
             uri.raw,
             uri.path,
             fields.join(", ")
-        )
-    })?;
+        );
+    }
+    // `remove` so the String arm can move rather than clone (parity with
+    // the openbao + conjur extractors; allocation fix from v0.10 audit
+    // landed there but missed aws-secrets — carried forward via v0.11.x).
+    let Some(value) = map.remove(key) else { unreachable!("presence checked above") };
     match value {
-        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::String(s) => Ok(s),
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::Bool(b) => Ok(b.to_string()),
         serde_json::Value::Null => Ok("null".to_owned()),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => bail!(
+        ref v @ (serde_json::Value::Array(_) | serde_json::Value::Object(_)) => bail!(
             "aws-secrets backend '{instance_name}': URI '{}' field '{key}' is a JSON \
              {} — only scalar fields (string/number/boolean/null) can be extracted",
             uri.raw,
-            if value.is_array() { "array" } else { "object" }
+            if v.is_array() { "array" } else { "object" }
         ),
     }
 }

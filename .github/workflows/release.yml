@@ -175,7 +175,14 @@ jobs:
         run: sleep 45
 
       - name: Publish backend crates (parallel dep-wise; sequential here for simplicity)
+        shell: bash
         run: |
+          set -euo pipefail
+          # Strict-mode so a transient mid-list failure (crates.io 5xx,
+          # indexing race, network blip) fails the step rather than
+          # masking via bash last-command-only exit semantics. Phase 9
+          # security audit LOW + v0.10.x deferred — landed in v0.11.x
+          # hygiene cycle.
           cargo publish -p secretenv-backend-local --locked
           cargo publish -p secretenv-backend-aws-ssm --locked
           cargo publish -p secretenv-backend-1password --locked

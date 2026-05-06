@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-1password"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-aws-secrets"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-aws-ssm"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-azure"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-bitwarden-sm"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-cf-kv"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-conjur"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-doppler"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-gcp"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-infisical"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -835,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-keeper"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-keychain"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-local"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-openbao"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-backend-vault"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "secretenv-testing"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "tempfile",
 ]

@@ -21,13 +21,20 @@
 //! v0.9 adds `cf-kv` (Cloudflare Workers KV via `wrangler` CLI wrapper).
 //! v0.10 adds `openbao` (Linux Foundation MPL-2.0 fork of Vault — KV
 //! v1/v2 via the `bao` CLI, tap-less brew install).
+//! v0.11 adds `conjur` (`CyberArk` Conjur OSS / Enterprise via the
+//! Go-based `conjur` v8 CLI).
+//! v0.12 adds `bitwarden-sm` (`Bitwarden` Secrets Manager via the
+//! `bws` CLI v2.x; project-scoped secrets, machine-account access
+//! tokens). Distinct from a future `bitwarden` (Password Manager)
+//! backend.
 
 use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
 /// Register every compiled-in backend factory (`local`, `aws-ssm`,
 /// `1password`, `vault`, `aws-secrets`, `gcp`, `azure`, `keychain`,
-/// `doppler`, `infisical`, `keeper`, `cf-kv`, `openbao`) and instantiate the backends declared in `config`.
+/// `doppler`, `infisical`, `keeper`, `cf-kv`, `openbao`, `conjur`,
+/// `bitwarden-sm`) and instantiate the backends declared in `config`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a
@@ -49,6 +56,7 @@ pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     registry.register_factory(Box::new(secretenv_backend_cf_kv::CfKvFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_openbao::OpenBaoFactory::new()));
     registry.register_factory(Box::new(secretenv_backend_conjur::ConjurFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_bitwarden_sm::BitwardenSmFactory::new()));
     registry.load_from_config(config).context("loading backend instances from config.toml")?;
     Ok(registry)
 }

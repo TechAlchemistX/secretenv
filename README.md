@@ -445,7 +445,7 @@ secretenv delegates all authentication to each backend's native CLI. Authenticat
 | Linux Secret Service | `secret-service` | `secret-service-<instance>://collection/label` | `secret-tool` | Coming Soon |
 | Keeper | `keeper` | `keeper-<instance>:///<record-uid-or-title>[#field=<name>]` | `keeper` (Commander) | Available |
 | Cloudflare Workers KV | `cf-kv` | `cf-kv-<instance>:///<namespace-id>/<key>` | `wrangler` | Available |
-| Bitwarden Secrets Manager | `bitwarden` | `bitwarden-<instance>://organization/secret` | `bws` | Coming Soon |
+| Bitwarden Secrets Manager | `bitwarden-sm` | `bitwarden-sm-<instance>://<32-hex-uuid>[#json-key=<field>]` | `bws` (v1+) | Available |
 | OpenBao | `openbao` | `openbao-<instance>://mount/path[#json-key=<field>]` | `bao` | Available |
 | CyberArk Conjur | `conjur` | `conjur-<instance>://<variable-id>[#json-key=<field>]` | `conjur` (v8+) | Available |
 | Delinea Secret Server | `delinea` | `delinea-<instance>://folder/secret` | `tss` | Coming Soon |

@@ -32,6 +32,7 @@ secretenv-backend-keeper.workspace    = true
 secretenv-backend-cf-kv.workspace     = true
 secretenv-backend-openbao.workspace   = true
 secretenv-backend-conjur.workspace    = true
+secretenv-backend-bitwarden-sm.workspace = true
 anyhow.workspace              = true
 clap.workspace                = true
 clap_complete.workspace       = true

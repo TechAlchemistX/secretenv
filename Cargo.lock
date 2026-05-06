@@ -655,6 +655,7 @@ dependencies = [
  "secretenv-backend-aws-secrets",
  "secretenv-backend-aws-ssm",
  "secretenv-backend-azure",
+ "secretenv-backend-bitwarden-sm",
  "secretenv-backend-cf-kv",
  "secretenv-backend-conjur",
  "secretenv-backend-doppler",
@@ -736,6 +737,22 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "secretenv-backend-bitwarden-sm"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "secretenv-core",
+ "secretenv-testing",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 
 **Type:** `bitwarden-sm`
 **CLI required:** `bws` (Bitwarden Secrets Manager CLI v1+)
-**URI scheme:** `<instance-name>://<32-char-hex-uuid>[#json-key=<field>]`
+**URI scheme:** `<instance-name>://<uuid>[#json-key=<field>]`
 
 [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/) is the developer/CI product from Bitwarden — machine-account access tokens, project-scoped secrets, designed for application/CI consumption rather than personal vault use.
 
@@ -93,7 +93,7 @@ bitwarden_access_token_env = "BWS_ACCESS_TOKEN_STAGING"
 ## URI shape
 
 ```
-bitwarden-sm-<instance>://<32-char-hex-uuid>[#json-key=<field>]
+bitwarden-sm-<instance>://<uuid>[#json-key=<field>]
 ```
 
 Examples:

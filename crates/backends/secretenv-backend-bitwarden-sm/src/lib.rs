@@ -15,11 +15,10 @@
 //!
 //! # URI shape
 //!
-//! `<instance>://<32-char-hex-uuid>[#json-key=<field>]`. Bitwarden
-//! Secrets Manager addresses every secret by a server-generated
-//! "simple" UUID (32 hex chars, no hyphens — verified live-probe
-//! against `bws 2.0.0`: a path of length 0 yields
-//! `invalid length: expected length 32 for simple format, found 0`).
+//! `<instance>://<uuid>[#json-key=<field>]` where `<uuid>` is either
+//! the 36-char canonical hyphenated form (`8-4-4-4-12`, what `bws`
+//! emits and what users copy from the web UI) or the 32-char "simple"
+//! form (no hyphens). `bws` v2.0.0 accepts both on input.
 //! `bws secret get` accepts ONLY UUIDs — there is no `--key` lookup
 //! mode, and the server allows duplicate keys within a project, so
 //! key-name addressing would be ambiguous as well as costlier
@@ -807,7 +806,9 @@ mod tests {
     // vault use.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// 32-char Bitwarden simple-format UUIDs for use in tests.
+    /// Bitwarden simple-format UUIDs (32 chars, no hyphens) used in
+    /// tests. Hyphenated-form fixtures appear inline in the tests
+    /// that exercise the dual-form parser.
     const TEST_UUID: &str = "abcdef0123456789abcdef0123456789";
     const REGISTRY_UUID: &str = "1111111122222222333333334444aaaa";
     const TEST_TOKEN: &str = "0.fakeaccount.fakekey:fakemac";
@@ -1084,11 +1085,15 @@ mod tests {
 
     #[test]
     fn secret_uuid_rejects_hyphenated_with_misplaced_dashes() {
-        // Right length (36) and right char set, wrong dash positions.
+        // Exactly 36 chars (correct length) with all hex + dash chars,
+        // but dashes at positions 7/13/18/23 instead of canonical
+        // 8/13/18/23. Exercises the `is_hyphenated_uuid` dash-position
+        // check; the length gate alone would let this slip.
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("bws").install(dir.path());
         let b = backend(&mock);
-        let bogus = "abcdef0-12345-6789-abcd-ef0123456789a"; // dashes at 7/13/18/23
+        let bogus = "abcdef0-12345-6789-abcd-ef0123456789";
+        assert_eq!(bogus.len(), 36, "fixture must be 36 chars to hit the dash-position branch");
         let uri = BackendUri::parse(&format!("bws-dev://{bogus}")).unwrap();
         let Err(err) = b.secret_uuid(&uri) else {
             panic!("expected error for misplaced-dash UUID");

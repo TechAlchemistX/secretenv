@@ -518,7 +518,13 @@ impl Backend for BitwardenSmBackend {
         let raw = self.get_raw_value(uri).await?;
         match json_key {
             None => Ok(raw),
-            Some(key) => extract_json_field(&self.instance_name, uri, &raw, &key),
+            Some(key) => extract_json_field(
+                &self.instance_name,
+                &uri.raw,
+                Self::raw_secret_id(uri),
+                &raw,
+                &key,
+            ),
         }
     }
 
@@ -534,7 +540,7 @@ impl Backend for BitwardenSmBackend {
         tracing::warn!(
             instance = self.instance_name.as_str(),
             uri = uri.raw.as_str(),
-            "`bws secret edit --value <value>` passes the secret through subprocess argv \
+            "`bws secret edit --value <value>` will pass the secret through subprocess argv \
              (bitwarden_unsafe_set = true was set; CV-1 exposure acknowledged) — \
              do not run on multi-user hosts unless audited"
         );
@@ -609,42 +615,40 @@ fn parse_version_token(line: &str) -> Option<&str> {
 
 /// Parse `raw` as a JSON object and extract the top-level `key`
 /// field as a string. Mirrors the `aws-secrets` / `openbao` /
-/// `conjur` extractors so behavior is identical across backends.
+/// `conjur` extractors. Takes the validated `secret_id` directly
+/// (without leading `/`) so error messages identify the secret by
+/// the same form the operator typed, not the URI's normalized path.
 fn extract_json_field(
     instance_name: &str,
-    uri: &BackendUri,
+    uri_raw: &str,
+    secret_id: &str,
     raw: &str,
     key: &str,
 ) -> Result<String> {
     let mut map: HashMap<String, serde_json::Value> =
         serde_json::from_str(raw).with_context(|| {
             format!(
-                "bitwarden-sm backend '{instance_name}': URI '{}' selects JSON key '{key}' \
-                 but secret value at '{}' is not a JSON object",
-                uri.raw, uri.path
+                "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' selects JSON key '{key}' \
+                 but secret value at '{secret_id}' is not a JSON object"
             )
         })?;
-    if !map.contains_key(key) {
+    let Some(value) = map.remove(key) else {
         let mut fields: Vec<&str> = map.keys().map(String::as_str).collect();
         fields.sort_unstable();
         bail!(
-            "bitwarden-sm backend '{instance_name}': URI '{}' field '{key}' not found; \
-             secret at '{}' has fields: [{}]",
-            uri.raw,
-            uri.path,
+            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' not found; \
+             secret at '{secret_id}' has fields: [{}]",
             fields.join(", ")
         );
-    }
-    let Some(value) = map.remove(key) else { unreachable!("presence checked above") };
+    };
     match value {
         serde_json::Value::String(s) => Ok(s),
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::Bool(b) => Ok(b.to_string()),
         serde_json::Value::Null => Ok("null".to_owned()),
         ref v @ (serde_json::Value::Array(_) | serde_json::Value::Object(_)) => bail!(
-            "bitwarden-sm backend '{instance_name}': URI '{}' field '{key}' is a JSON {} — only \
-             scalar fields (string/number/boolean/null) can be extracted",
-            uri.raw,
+            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON {} \
+             — only scalar fields (string/number/boolean/null) can be extracted",
             if v.is_array() { "array" } else { "object" }
         ),
     }
@@ -1472,6 +1476,44 @@ mod tests {
     }
 
     // ---- env routing regression locks ----
+
+    #[tokio::test]
+    async fn command_token_value_never_appears_in_argv() {
+        // Direct positive assertion that the token VALUE is never
+        // present anywhere in the constructed argv. The
+        // `command_passes_token_via_env_not_argv` test below proves
+        // the env path is taken via mock-side env assertions + exact
+        // argv match, but a future refactor that adds `-t $TOKEN`
+        // ALONGSIDE the env var would still satisfy that test (env
+        // assertion still matches, argv changes break the exact-
+        // match rule). This test inspects the actual `Command` argv
+        // and asserts no fragment of the token is there — fail-loud
+        // on the exact regression Phase 7 audit flagged.
+        let _env = env_with(DEFAULT_TOKEN_ENV, TEST_TOKEN, None);
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("bws").install(dir.path());
+        let b = backend(&mock);
+        let cmd = b.bws_secret_command("get", &[TEST_UUID]).expect("token env present");
+        for arg in cmd.as_std().get_args() {
+            let s = arg.to_string_lossy();
+            assert!(
+                !s.contains(TEST_TOKEN),
+                "token VALUE must never appear in argv; arg was {s:?}"
+            );
+            // Also reject any fragment of the token (post-`.` parts)
+            // — defense against a future refactor that splits the
+            // token before passing on argv.
+            for fragment in TEST_TOKEN.split('.') {
+                if fragment.len() >= 8 {
+                    assert!(
+                        !s.contains(fragment),
+                        "token fragment '{fragment}' must never appear in argv; \
+                         arg was {s:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn command_passes_token_via_env_not_argv() {

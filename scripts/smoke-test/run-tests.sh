@@ -87,6 +87,13 @@ SECTIONS=(
     # operators with their own Conjur instance set
     # SECRETENV_TEST_CONJUR_URL and SECRETENV_TEST_CONJUR_ACCOUNT.
     "27|v0.11 CyberArk Conjur backend|yes"
+    # Section 28 needs `bws` (Bitwarden Secrets Manager CLI) v1+, a
+    # valid BWS_ACCESS_TOKEN env var, and operator-pre-seeded fixture
+    # UUIDs in SECRETENV_TEST_BWS_{SCALAR,JSON,REGISTRY,CYCLE}_UUID.
+    # cloud=yes — same SaaS-like skip semantics. Default server URL is
+    # the US Bitwarden cloud; EU / self-hosted set
+    # SECRETENV_TEST_BWS_SERVER_URL.
+    "28|v0.12 Bitwarden Secrets Manager backend|yes"
 )
 
 print_section_inventory() {
@@ -2520,6 +2527,232 @@ EOF
       "$BIN" --config "$V011_CONJURREGSRC" resolve SMOKE_REGISTRY_ALIAS
     assert_contains "416 conjur resolve names conjur source backend" \
       "$RUNS/415-v011-conjur-resolve.log" 'conjur-dev'
+fi
+
+# ---------------------------------------------------------------
+# 28 — v0.12: Bitwarden Secrets Manager backend
+# ---------------------------------------------------------------
+section_begin 28 "v0.12 Bitwarden Secrets Manager backend"
+# Self-contained: dedicated mini-config + mini-registry point at the
+# operator's Bitwarden Secrets Manager cloud account (US default; EU
+# / self-hosted via SECRETENV_TEST_BWS_SERVER_URL). Skipped if `bws`
+# is missing OR `bws project list` fails (token unset/invalid/scoped
+# to zero projects) — same SKIP discipline as the other wrap-a-CLI
+# backends.
+#
+# Bitwarden Secrets Manager addresses every secret by UUID (32-char
+# simple form), so the smoke run depends on operator-pre-seeded
+# fixtures. Pass the UUIDs via env:
+#   SECRETENV_TEST_BWS_SCALAR_UUID    — scalar fixture value
+#   SECRETENV_TEST_BWS_JSON_UUID      — value is JSON-encoded
+#                                       {"username":"...","password":"smoke-pw"}
+#   SECRETENV_TEST_BWS_REGISTRY_UUID  — value is JSON alias→URI map
+#                                       carrying SMOKE_REGISTRY_ALIAS
+#   SECRETENV_TEST_BWS_CYCLE_UUID     — pre-seeded mutable secret for
+#                                       the unsafe-set + delete-cycle
+#                                       round-trip
+#
+# All UUIDs are operator-issued (out-of-band web-UI provisioning);
+# the wrapper has no `secret create` path. See
+# `kb/raw/reference_v0.12_bitwarden_prep.md` for the seeding script.
+
+V012_BWS_SCALAR_UUID="${SECRETENV_TEST_BWS_SCALAR_UUID:-}"
+V012_BWS_JSON_UUID="${SECRETENV_TEST_BWS_JSON_UUID:-}"
+V012_BWS_REGISTRY_UUID="${SECRETENV_TEST_BWS_REGISTRY_UUID:-}"
+V012_BWS_CYCLE_UUID="${SECRETENV_TEST_BWS_CYCLE_UUID:-}"
+V012_BWS_SERVER_URL="${SECRETENV_TEST_BWS_SERVER_URL:-}"
+
+if ! command -v bws >/dev/null 2>&1; then
+    record "420 v0.12 bitwarden-sm section skipped — bws CLI not installed" "SKIP" \
+           "install: brew install bitwarden-secrets-manager"
+elif [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
+    record "420 v0.12 bitwarden-sm section skipped — BWS_ACCESS_TOKEN unset" "SKIP" \
+           "export the machine-account access token before running smoke"
+elif [ -z "$V012_BWS_SCALAR_UUID" ] || [ -z "$V012_BWS_JSON_UUID" ] \
+     || [ -z "$V012_BWS_REGISTRY_UUID" ] || [ -z "$V012_BWS_CYCLE_UUID" ]; then
+    record "420 v0.12 bitwarden-sm section skipped — required fixture UUIDs missing" "SKIP" \
+           "set SECRETENV_TEST_BWS_{SCALAR,JSON,REGISTRY,CYCLE}_UUID — see kb/raw/reference_v0.12_bitwarden_prep.md"
+elif ! bws --output json project list >/dev/null 2>&1; then
+    record "420 v0.12 bitwarden-sm section skipped — bws project list failed" "SKIP" \
+           "auth: token is unset/invalid/revoked or has no project access"
+else
+    # Build optional `bitwarden_server_url = "..."` line for non-default
+    # cloud regions. Empty for US default.
+    if [ -n "$V012_BWS_SERVER_URL" ]; then
+        V012_BWS_URL_LINE="bitwarden_server_url = \"${V012_BWS_SERVER_URL}\""
+    else
+        V012_BWS_URL_LINE=""
+    fi
+
+    V012_BWSREG="$RUNS/420-bws-registry.toml"
+    cat > "$V012_BWSREG" <<EOF
+bws_secret = "bws-dev://${V012_BWS_SCALAR_UUID}"
+bws_json_pw = "bws-dev://${V012_BWS_JSON_UUID}#json-key=password"
+EOF
+
+    V012_BWSCFG="$RUNS/420-bws-config.toml"
+    cat > "$V012_BWSCFG" <<EOF
+[registries.default]
+sources = ["local-main://${V012_BWSREG}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.bws-dev]
+type = "bitwarden-sm"
+${V012_BWS_URL_LINE}
+EOF
+
+    V012_BWSPROJ="$RUNS/420-bws-project"
+    mkdir -p "$V012_BWSPROJ"
+    cat > "$V012_BWSPROJ/secretenv.toml" <<EOF
+[secrets]
+BWS_SECRET = { from = "secretenv://bws_secret" }
+BWS_PASSWORD = { from = "secretenv://bws_json_pw" }
+EOF
+
+    # 28a — doctor sees the bitwarden-sm backend authenticated.
+    run_test "420 v0.12 bws doctor sees backend" 0 "$RUNS/420-v012-bws-doctor.log" \
+      "$BIN" --config "$V012_BWSCFG" doctor
+    assert_contains "421 bws doctor lists instance"   "$RUNS/420-v012-bws-doctor.log" 'bws-dev'
+    assert_contains "422 bws doctor identity names env-var" "$RUNS/420-v012-bws-doctor.log" 'token=$BWS_ACCESS_TOKEN'
+    assert_contains "423 bws doctor identity surfaces project count" "$RUNS/420-v012-bws-doctor.log" 'projects='
+
+    # 28b — round-trip get of the scalar fixture.
+    run_test "424 v0.12 bws get scalar round-trip" 0 "$RUNS/424-v012-bws-get.log" \
+      "$BIN" --config "$V012_BWSCFG" get bws_secret --yes
+    assert_contains "425 bws get returns seeded scalar" "$RUNS/424-v012-bws-get.log" 'smoke-scalar-v0.12'
+
+    # 28c — `#json-key=password` fragment extracts the password field.
+    run_test "426 v0.12 bws json-key fragment extracts field" 0 "$RUNS/426-v012-bws-jsonkey.log" \
+      "$BIN" --config "$V012_BWSCFG" get bws_json_pw --yes
+    assert_contains "427 bws fragment returns password field" "$RUNS/426-v012-bws-jsonkey.log" 'smoke-pw'
+    assert_not_contains "428 bws fragment does not leak username" "$RUNS/426-v012-bws-jsonkey.log" 'smoke-user'
+
+    # 28d — end-to-end `run` injects both scalar + JSON-extracted env vars.
+    run_test "429 v0.12 bws run injects env vars" 0 "$RUNS/429-v012-bws-run.log" \
+      bash -c "cd '$V012_BWSPROJ' && '$BIN' --config '$V012_BWSCFG' run -- sh -c 'echo s=\$BWS_SECRET p=\$BWS_PASSWORD'"
+    assert_contains "430 bws run renders scalar"              "$RUNS/429-v012-bws-run.log" 's=smoke-scalar-v0.12'
+    assert_contains "431 bws run renders fragment-extracted"  "$RUNS/429-v012-bws-run.log" 'p=smoke-pw'
+
+    # 28e — set is BLOCKED by default (defense-in-depth gate).
+    # The default-refuse path must NOT shell out to bws — the
+    # rejection is local. `secretenv registry set` writes the
+    # registry doc through the backend; bitwarden-sm refuses.
+    V012_BWSREG_DEFAULT="$RUNS/432-bws-default-registry.toml"
+    cat > "$V012_BWSREG_DEFAULT" <<EOF
+[registries.bws_default_set]
+sources = ["bws-dev://${V012_BWS_CYCLE_UUID}"]
+
+[backends.bws-dev]
+type = "bitwarden-sm"
+${V012_BWS_URL_LINE}
+EOF
+    run_test "432 v0.12 bws set blocked when unsafe_set false" 1 "$RUNS/432-v012-bws-set-blocked.log" \
+      "$BIN" --config "$V012_BWSREG_DEFAULT" registry set blocked_alias \
+        "bws-dev://${V012_BWS_SCALAR_UUID}" --registry bws_default_set
+    assert_contains "433 bws set-block names bitwarden_unsafe_set" \
+      "$RUNS/432-v012-bws-set-blocked.log" 'bitwarden_unsafe_set'
+    assert_contains "434 bws set-block names disabled-by-default reason" \
+      "$RUNS/432-v012-bws-set-blocked.log" 'disabled by default'
+
+    # 28f — set + list + unset cycle with `bitwarden_unsafe_set = true`.
+    # The cycle UUID points at a pre-seeded mutable secret. We
+    # pre-seed `{}` via `bws secret edit --value '{}'` BEFORE
+    # `registry set` so the read-then-write merge has a valid empty
+    # starting point (per feedback_smoke_section_design Rule 1).
+    bws --output json secret edit --value '{}' "$V012_BWS_CYCLE_UUID" >/dev/null 2>&1
+    V012_BWSCYCLE_REG="$RUNS/435-bws-cycle-registry.toml"
+    cat > "$V012_BWSCYCLE_REG" <<EOF
+[registries.bws_cycle]
+sources = ["bws-dev://${V012_BWS_CYCLE_UUID}"]
+
+[backends.bws-dev]
+type = "bitwarden-sm"
+bitwarden_unsafe_set = true
+${V012_BWS_URL_LINE}
+EOF
+    run_test "435 v0.12 bws registry set with unsafe_set" 0 "$RUNS/435-v012-bws-set.log" \
+      "$BIN" --config "$V012_BWSCYCLE_REG" registry set cycle_alias \
+        "bws-dev://${V012_BWS_SCALAR_UUID}" --registry bws_cycle
+    run_test "436 v0.12 bws registry list reads back" 0 "$RUNS/436-v012-bws-list.log" \
+      "$BIN" --config "$V012_BWSCYCLE_REG" registry list --registry bws_cycle
+    assert_contains "437 bws list surfaces written alias" \
+      "$RUNS/436-v012-bws-list.log" 'cycle_alias'
+    run_test "438 v0.12 bws registry unset" 0 "$RUNS/438-v012-bws-unset.log" \
+      "$BIN" --config "$V012_BWSCYCLE_REG" registry unset cycle_alias --registry bws_cycle
+    run_test "439 v0.12 bws list after unset" 0 "$RUNS/439-v012-bws-list2.log" \
+      "$BIN" --config "$V012_BWSCYCLE_REG" registry list --registry bws_cycle
+    assert_not_contains "440 bws list no longer shows unset alias" \
+      "$RUNS/439-v012-bws-list2.log" 'cycle_alias'
+    # Reset cycle secret to `{}` to keep namespace tidy.
+    bws --output json secret edit --value '{}' "$V012_BWS_CYCLE_UUID" >/dev/null 2>&1 || true
+
+    # 28g — fragment-reject on registry list. Fragments only on `get`.
+    V012_BWSREG_FRAG="$RUNS/441-bws-registry-frag.toml"
+    cat > "$V012_BWSREG_FRAG" <<EOF
+[registries.default]
+sources = ["bws-dev://${V012_BWS_REGISTRY_UUID}#json-key=foo"]
+
+[backends.bws-dev]
+type = "bitwarden-sm"
+${V012_BWS_URL_LINE}
+EOF
+    run_test "441 v0.12 bws registry list rejects fragment" 1 "$RUNS/441-v012-bws-frag-list.log" \
+      "$BIN" --config "$V012_BWSREG_FRAG" registry list --registry default
+    assert_contains "442 bws fragment-reject surfaces fragment-rejection error" \
+      "$RUNS/441-v012-bws-frag-list.log" 'fragment'
+
+    # 28h — history surfaces the trait-default "not implemented"
+    # message. Bitwarden Secrets Manager surfaces revisions in the
+    # web UI but the CLI exposes no history subcommand. Trait
+    # default; out of scope until vendor exposes versioning.
+    run_test "443 v0.12 bws history bails not implemented" 1 "$RUNS/443-v012-bws-history.log" \
+      "$BIN" --config "$V012_BWSCFG" registry history bws_secret
+    assert_contains "444 bws history names 'not implemented'" \
+      "$RUNS/443-v012-bws-history.log" 'not implemented'
+
+    # 28i — registry-source path: read alias map from the
+    # registry fixture, resolve through the cross-backend chain.
+    V012_BWSREGSRC="$RUNS/445-bws-regsrc-config.toml"
+    cat > "$V012_BWSREGSRC" <<EOF
+[registries.default]
+sources = ["bws-dev://${V012_BWS_REGISTRY_UUID}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.bws-dev]
+type = "bitwarden-sm"
+${V012_BWS_URL_LINE}
+EOF
+    run_test "445 v0.12 bws registry-source list" 0 "$RUNS/445-v012-bws-reglist.log" \
+      "$BIN" --config "$V012_BWSREGSRC" registry list --registry default
+    assert_contains "446 bws registry-source surfaces SMOKE_REGISTRY_ALIAS" \
+      "$RUNS/445-v012-bws-reglist.log" 'SMOKE_REGISTRY_ALIAS'
+
+    # 28j — URI parser rejects non-UUID path locally (no subprocess).
+    V012_BWSREG_BADURI="$RUNS/447-bws-baduri-registry.toml"
+    cat > "$V012_BWSREG_BADURI" <<EOF
+bad_uuid = "bws-dev://not-a-valid-uuid"
+
+EOF
+    V012_BWSCFG_BADURI="$RUNS/447-bws-baduri-config.toml"
+    cat > "$V012_BWSCFG_BADURI" <<EOF
+[registries.default]
+sources = ["local-main://${V012_BWSREG_BADURI}"]
+
+[backends.local-main]
+type = "local"
+
+[backends.bws-dev]
+type = "bitwarden-sm"
+${V012_BWS_URL_LINE}
+EOF
+    run_test "447 v0.12 bws rejects non-UUID URI path" 1 "$RUNS/447-v012-bws-baduri.log" \
+      "$BIN" --config "$V012_BWSCFG_BADURI" get bad_uuid --yes
+    assert_contains "448 bws non-UUID error names Bitwarden UUID constraint" \
+      "$RUNS/447-v012-bws-baduri.log" 'Bitwarden UUID'
 fi
 
 # ---------------------------------------------------------------

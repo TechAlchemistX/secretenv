@@ -8,6 +8,29 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-05
+
+**Headline:** seventh release of the single-backend-per-release cycle; seventh [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Bitwarden Secrets Manager** (the developer/CI product, distinct from Bitwarden Password Manager) via the `bws` CLI v2.x — brings the total to **15**. First cycle to pull a backend forward in the queue (was v0.13 per [[roadmap]]; Delinea Secret Server slipped to v0.13 pending invite-only trial access). Tag absorbs the v0.11.x merged-not-tagged hygiene cycle below.
+
+v0.11.0 → v0.12.0: workspace unit tests **830 → 876** (+46 from the new bitwarden-sm crate). Live smoke matrix Section 28 (bitwarden-sm): **29/29 PASS** against operator's live cloud account. Phase 7 closing trio (security + code + rust) surfaced 3 HIGH findings (1 security, 2 code-reviewer) — all landed inline before tag; 7 MEDIUM + 10 LOW deferred to v0.12.x hygiene queue per [[feedback_pr_scoping_hygiene_carrier]] ([[v0.12-issues/02-phase-7-deferred-chips]]). Phase 8 live smoke caught two production bugs that Phase 7 audit-only would have missed (envelope-shape `deny_unknown_fields` + UUID dual-form parser) — vindicates the audit-then-smoke-then-audit-again sequence from [[feedback_audit_after_release_prep]].
+
+The full-matrix smoke run additionally surfaced 51 cascading FAILs from pre-existing **GCP environment debt** ([[v0.12-issues/01-gcp-env-debt]]) — `eva-dev-490220` hardcoded in `run-tests.sh` + `gcloud` reauth needed. NOT v0.12-introduced; deferred to v0.12.x hygiene cycle. Section 28's bitwarden-sm work sits in a self-contained config and was unaffected.
+
+### Added — Bitwarden Secrets Manager backend (v0.12)
+
+- **`secretenv-backend-bitwarden-sm` crate** — `BitwardenSmFactory` registered unconditionally in `secretenv-cli/src/backends_init.rs`. URI shape `bitwarden-sm-<instance>://<uuid>[#json-key=<field>]` where `<uuid>` is either the 36-char canonical hyphenated form (`8-4-4-4-12`, what `bws` emits + what users copy from the web UI) OR the 32-char simple form (no hyphens). Bitwarden Secrets Manager addresses every secret by server-generated UUID — `bws secret get` accepts UUID only, and the server allows duplicate KEY names within a project, so key-name addressing would be both ambiguous and costlier. Human-readable aliases live in the SecretEnv registry layer. **46 unit tests** via the strict-mock harness.
+- **`bitwarden_unsafe_set` defense-in-depth gate** — `bws` v2.0.0 has NO stdin path for `secret create` / `secret edit` (live-probed against `bws 2.0.0` 2026-05-05); the value is on argv via `--value <VALUE>`. Default posture: `set` and `delete` REFUSE with a clear error pointing operators at the Bitwarden web UI. Setting `bitwarden_unsafe_set = true` opens the argv path explicitly. Same precedent as `op_unsafe_set` / `bao_unsafe_set` / `conjur_unsafe_set`. Both `set` AND `delete` gated by the same flag (the threat model is "destructive write operations from a wrapped CLI", not argv-leak risk specifically).
+- **`set` updates only — never creates** — the URI is a UUID, which can only refer to a secret that already exists; `set` always invokes `bws secret edit --value <value> <uuid>` and never `bws secret create`. Secret provisioning is an out-of-band web-UI workflow that returns a UUID; the operator then writes that UUID into the registry.
+- **Token routing via env** — `BWS_ACCESS_TOKEN` is the canonical env var `bws` reads; multi-instance setups rename via `bitwarden_access_token_env` (e.g. `BWS_ACCESS_TOKEN_PROD`). The wrapper sources the token from the operator shell at command time and sets `BWS_ACCESS_TOKEN` on the child env only — never on argv, never in the registry doc, never logged. Token VALUE never echoed by `doctor`; only the env-var NAME and project COUNT appear.
+- **Server URL — omit when default** — `bitwarden_server_url` is optional; when unset the wrapper actively REMOVES `BWS_SERVER_URL` from the child env (so the CLI's built-in US-cloud default applies, even if the operator's parent shell has it set globally). EU / self-hosted operators set the field explicitly.
+- **`#json-key=<field>` fragment on `get`** — extracts a top-level scalar from a JSON-encoded `value`. Mirrors `aws-secrets` / `openbao` / `conjur`. `set` / `delete` / `list` / `history` reject any fragment.
+- **URI parser strict UUID validation** — 32-char `[0-9a-f]+` enforced at parse time; hyphenated UUIDs (36-char canonical form) rejected with a clear error naming the constraint, rather than letting `bws` produce a cryptic "invalid length" message later. Mixed-case hex normalized to lowercase so registry documents written either way round-trip.
+- **`history` returns trait-default "not implemented"** — Bitwarden Secrets Manager surfaces secret revisions in the web UI (every `secret edit` bumps `revisionDate`) but the CLI exposes no `secret history` subcommand. Out of scope until vendor exposes versioning.
+- **`bitwarden-sm` added to `serialize_registry` JSON arm** in `secretenv-cli/src/cli.rs` so `registry set` / `unset` write through the JSON-string-in-`value` shape (matching `aws-secrets` / `openbao` / `conjur`).
+- **Smoke harness Section 28** — 29 records (13 `run_test` + 16 `assert_*`) covering doctor Level 1+2 (with `server=` / `token=$BWS_ACCESS_TOKEN` / `projects=` checks), scalar round-trip, `#json-key=password` fragment extraction, end-to-end `run`, set-blocked-by-default + opt-in cycle, fragment-reject on registry list, history-not-implemented surface, registry-source cross-backend chain, and URI-parser non-UUID rejection. Phase 8 live-cloud run: 29/29 PASS against the operator's live Bitwarden Secrets Manager account. Skipped when `bws` missing OR `BWS_ACCESS_TOKEN` unset OR `bws project list` fails OR fixture UUIDs missing.
+- **Backend total 14 → 15.** README backend table flipped Bitwarden Secrets Manager from "Coming Soon" to "Available" and corrected the row's `type` string to `bitwarden-sm` (leaves the `bitwarden` namespace open for a future Password Manager `bw` wrapper without rename pain).
+- **Roadmap swap (2026-05-05)** — v0.12 was originally Delinea Secret Server. Delinea's local-stack provisioning requires an invite-only trial (vendor-side); Bitwarden Secrets Manager is publicly available, so the cycle order swaps: **v0.12 = Bitwarden Secrets Manager**, **v0.13 = Delinea Secret Server (deferred pending invite)**.
+
 ### v0.11.x hygiene — closing-audit deferred LOW chips (merged-not-tagged)
 
 Sixth merged-not-tagged hygiene cycle (v0.7.1 / v0.7.2 / v0.9.1 / v0.9.2 / v0.10.x → **v0.11.x**) per the rolling-backlog pattern: merged to `main`, workspace `version` stays at `0.11.0`, no tag pushed. Triggered by routine post-cycle slack and a desire to clean the v0.11 carry-forward queue before v0.12 (Delinea Secret Server) opens. Every chip below was already audited during v0.10's or v0.11's closing trio — the hygiene cycle just lands the deferred LOW fixes that were explicitly punted to keep the v0.11 PR scoped per [[feedback_pr_scoping_hygiene_carrier]].
@@ -819,7 +842,8 @@ First public release of SecretEnv.
 - Errors include alias + URI + instance name + trimmed backend stderr,
   never the secret value.
 
-[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/TechAlchemistX/secretenv/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.12.0
 [0.2.3]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.3
 [0.2.2]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.2
 [0.2.1]: https://github.com/TechAlchemistX/secretenv/releases/tag/v0.2.1

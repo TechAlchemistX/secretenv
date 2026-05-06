@@ -166,11 +166,14 @@ struct SecretGetResponse {
 }
 
 /// `bws project list` element. We only need the project count for
-/// the identity line, but the field is named here so a non-array
-/// response (e.g. an error JSON object) deserializes-fails cleanly
-/// rather than silently parsing as `[]`.
+/// the identity line; `id` is named just to anchor the shape (so a
+/// non-`id`-shaped element fails parse cleanly rather than silently
+/// counting). We deliberately do NOT use `deny_unknown_fields`
+/// because real `bws project list` returns the full envelope
+/// (`organizationId`, `name`, `creationDate`, `revisionDate`, ...).
+/// Phase 8 smoke caught this when strict-mock tests, which returned
+/// only `{"id":"..."}`, missed the field-set drift.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ProjectListElement {
     #[serde(default)]
     #[allow(dead_code)]
@@ -189,31 +192,29 @@ impl BitwardenSmBackend {
 
     /// Validate the URI path is a Bitwarden simple-format UUID
     /// (`[0-9a-f]{32}`) and return the canonical lowercase form.
-    /// Bitwarden's API and CLI both render the simple form; rejecting
-    /// hyphenated UUIDs here yields a clear local error rather than a
-    /// cryptic CLI failure later.
+    /// `bws` v2.0.0 accepts BOTH the 36-char hyphenated canonical
+    /// form (`8-4-4-4-12`) AND the 32-char "simple" form (no
+    /// hyphens), and emits the hyphenated form on output — so
+    /// users copying from the web UI or `bws secret list` get
+    /// hyphenated by default. The wrapper accepts either; passes
+    /// through verbatim since `bws` decodes both. Mixed case
+    /// normalized to lowercase so registry documents written
+    /// either way round-trip.
     fn secret_uuid(&self, uri: &BackendUri) -> Result<String> {
         let raw = Self::raw_secret_id(uri);
-        if raw.len() != 32 {
-            bail!(
-                "bitwarden-sm backend '{}': URI '{}' path must be a 32-character Bitwarden \
-                 simple-format UUID (no hyphens); got length {}",
+        let lower = raw.to_ascii_lowercase();
+        match lower.len() {
+            32 if lower.chars().all(|c| c.is_ascii_hexdigit()) => Ok(lower),
+            36 if is_hyphenated_uuid(&lower) => Ok(lower),
+            _ => bail!(
+                "bitwarden-sm backend '{}': URI '{}' path must be a Bitwarden UUID — either the \
+                 36-char hyphenated form (`8-4-4-4-12` lowercase hex, what `bws` emits) or the \
+                 32-char simple form (no hyphens); got length {}",
                 self.instance_name,
                 uri.raw,
                 raw.len()
-            );
+            ),
         }
-        if !raw.chars().all(|c| c.is_ascii_hexdigit()) {
-            bail!(
-                "bitwarden-sm backend '{}': URI '{}' path is not a valid Bitwarden simple-format \
-                 UUID (expected 32 lowercase hex chars; hyphenated UUIDs are not accepted)",
-                self.instance_name,
-                uri.raw
-            );
-        }
-        // Bitwarden renders UUIDs lowercase; normalize so registry
-        // documents written with mixed case still round-trip.
-        Ok(raw.to_ascii_lowercase())
     }
 
     fn cli_missing() -> BackendStatus {
@@ -731,6 +732,20 @@ impl BitwardenSmFactory {
     }
 }
 
+/// True when `s` matches the canonical hyphenated UUID pattern
+/// `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`.
+/// Caller is responsible for already lowercasing.
+fn is_hyphenated_uuid(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(i, &b)| matches!(i, 8 | 13 | 18 | 23) || b.is_ascii_hexdigit())
+}
+
 /// POSIX env var name shape. The factory rejects custom token-env
 /// names that wouldn't survive a shell `export NAME=...` round-trip
 /// — without this check, a config field of `"BWS TOKEN"` (with
@@ -1039,19 +1054,42 @@ mod tests {
     }
 
     #[test]
-    fn secret_uuid_rejects_hyphenated_uuid() {
+    fn secret_uuid_accepts_hyphenated_form() {
+        // `bws` v2.0.0 accepts both forms and EMITS the hyphenated
+        // 36-char canonical form on every output (`secret list`,
+        // `secret get`, `project list`). Live-probed 2026-05-05.
+        // Users copying UUIDs from the web UI / `bws` output get
+        // hyphenated by default.
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("bws").install(dir.path());
         let b = backend(&mock);
-        // Bitwarden uses simple format (32 chars no hyphens). A
-        // hyphenated UUID is 36 chars — wrong length, surfaces the
-        // "32-character" message.
-        let uri = BackendUri::parse("bws-dev://abcdef01-2345-6789-abcd-ef0123456789").unwrap();
+        let hyphenated = "abcdef01-2345-6789-abcd-ef0123456789";
+        let uri = BackendUri::parse(&format!("bws-dev://{hyphenated}")).unwrap();
+        assert_eq!(b.secret_uuid(&uri).unwrap(), hyphenated);
+    }
+
+    #[test]
+    fn secret_uuid_normalizes_uppercase_hyphenated() {
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("bws").install(dir.path());
+        let b = backend(&mock);
+        let upper = "ABCDEF01-2345-6789-ABCD-EF0123456789";
+        let uri = BackendUri::parse(&format!("bws-dev://{upper}")).unwrap();
+        assert_eq!(b.secret_uuid(&uri).unwrap(), upper.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn secret_uuid_rejects_hyphenated_with_misplaced_dashes() {
+        // Right length (36) and right char set, wrong dash positions.
+        let dir = TempDir::new().unwrap();
+        let mock = StrictMock::new("bws").install(dir.path());
+        let b = backend(&mock);
+        let bogus = "abcdef0-12345-6789-abcd-ef0123456789a"; // dashes at 7/13/18/23
+        let uri = BackendUri::parse(&format!("bws-dev://{bogus}")).unwrap();
         let Err(err) = b.secret_uuid(&uri) else {
-            panic!("expected error for hyphenated UUID");
+            panic!("expected error for misplaced-dash UUID");
         };
-        let msg = format!("{err:#}");
-        assert!(msg.contains("32-character"), "names the constraint: {msg}");
+        assert!(format!("{err:#}").contains("Bitwarden UUID"));
     }
 
     #[test]
@@ -1065,7 +1103,7 @@ mod tests {
             panic!("expected error for non-hex UUID");
         };
         let msg = format!("{err:#}");
-        assert!(msg.contains("simple-format UUID"), "names the constraint: {msg}");
+        assert!(msg.contains("Bitwarden UUID"), "names the constraint: {msg}");
     }
 
     #[test]
@@ -1132,9 +1170,15 @@ mod tests {
     async fn check_level1_version_parses_v2() {
         let _env = env_with(DEFAULT_TOKEN_ENV, TEST_TOKEN, None);
         let dir = TempDir::new().unwrap();
+        // Use the FULL `bws project list` envelope shape (Phase 8
+        // smoke caught a `deny_unknown_fields` regression where
+        // minimal `{"id":"x"}` mocks passed but real `bws` output
+        // failed to parse). This shape mirrors what `bws 2.0.0`
+        // actually returns.
+        let real_envelope = r#"[{"id":"7c6991ce-1beb-40a4-85de-b4410182bfbf","organizationId":"fb710ff6-1692-4d75-99dc-b435003384b7","name":"SecretEnv","creationDate":"2026-05-05T23:28:06.581277600Z","revisionDate":"2026-05-05T23:28:14.912241300Z"}]"#;
         let mock = StrictMock::new("bws")
             .on(&["--version"], Response::success("bws 2.0.0\n"))
-            .on(&["--output", "json", "project", "list"], ok(r#"[{"id":"abc"}]"#))
+            .on(&["--output", "json", "project", "list"], ok(real_envelope))
             .install(dir.path());
         let b = backend(&mock);
         match b.check().await {

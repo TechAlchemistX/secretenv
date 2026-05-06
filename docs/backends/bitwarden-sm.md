@@ -103,7 +103,7 @@ bws-prod://abcdef0123456789abcdef0123456789
 bws-prod://abcdef0123456789abcdef0123456789#json-key=password
 ```
 
-The path is the secret's UUID in **Bitwarden simple format** (32 hex chars, no hyphens — that's the form `bws secret list` returns). The wrapper rejects hyphenated UUIDs (the 36-char canonical form) at parse time with a clear error naming the constraint, rather than letting `bws` produce a cryptic length-error later. Mixed-case hex is normalized to lowercase, so registry documents written either way round-trip.
+The path is the secret's UUID. `bws` accepts (and emits) the **canonical hyphenated form** (`8-4-4-4-12`, 36 chars including hyphens — what you get when you copy from the web UI or `bws secret list`); the wrapper also accepts the 32-char "simple" form (no hyphens) for operators round-tripping data through systems that strip hyphens. Mixed case is normalized to lowercase. Anything else is rejected at URI-parse time with a clear error.
 
 ### Why UUID, not key-name
 
@@ -249,9 +249,13 @@ If you've renamed the env var per-instance, check the `bitwarden_access_token_en
 
 You hit the defense-in-depth gate. Either provision the secret via the web UI (preferred) or set `bitwarden_unsafe_set = true` per-instance. Re-read "Why `set` is disabled by default" above before flipping the flag.
 
-### `URI '...' path must be a 32-character Bitwarden simple-format UUID`
+### `URI '...' path must be a Bitwarden UUID`
 
-You wrote a hyphenated UUID. Bitwarden uses the simple form (no hyphens). Get the correct form from `bws secret list --output json | jq -r '.[].id'`.
+The path is neither a 36-char hyphenated UUID nor a 32-char simple UUID. Get the canonical UUID from `bws secret list --output json | jq -r '.[].id'` (returns hyphenated form).
+
+### `Cipher MAC doesn't match` from `bws`
+
+`bws` doesn't strip surrounding double-quotes from `BWS_ACCESS_TOKEN`. If you exported `BWS_ACCESS_TOKEN="..."` (literal quotes), the quote characters become part of the token bytes and decryption fails. Re-export bare: `export BWS_ACCESS_TOKEN=0.uuid.base64:mac` (no quotes). Verify with `echo "len=${#BWS_ACCESS_TOKEN}"` — a clean token is 94 chars; quoted reads 96.
 
 ### Doctor returns `projects=0`
 

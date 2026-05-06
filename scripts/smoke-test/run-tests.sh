@@ -2751,8 +2751,8 @@ ${V012_BWS_URL_LINE}
 EOF
     run_test "447 v0.12 bws rejects non-UUID URI path" 1 "$RUNS/447-v012-bws-baduri.log" \
       "$BIN" --config "$V012_BWSCFG_BADURI" get bad_uuid --yes
-    assert_contains "448 bws non-UUID error names 32-character constraint" \
-      "$RUNS/447-v012-bws-baduri.log" '32-character'
+    assert_contains "448 bws non-UUID error names Bitwarden UUID constraint" \
+      "$RUNS/447-v012-bws-baduri.log" 'Bitwarden UUID'
 fi
 
 # ---------------------------------------------------------------

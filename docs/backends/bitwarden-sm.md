@@ -201,6 +201,8 @@ The wrapper omits `BWS_SERVER_URL` from the child env when no override is config
 
 The wrapper enforces a control-character check on the URL but does not restrict the scheme, host, or TLD; that remains the operator's responsibility.
 
+TLS trust is delegated to the system CA bundle the `bws` binary loads at runtime — typically the platform default (macOS Keychain trust roots, Linux `/etc/ssl/certs/`). On corporate networks with TLS-intercepting proxies that install a private CA, `bws` will quietly trust the intercepted endpoint, exposing the access token to the proxy. If you operate behind such a proxy, audit your CA bundle and lock `bitwarden_server_url` to a server you control end-to-end.
+
 ---
 
 ## `bws run` is not a SecretEnv backend

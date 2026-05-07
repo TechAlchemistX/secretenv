@@ -789,11 +789,17 @@ section_begin 15 "v0.3 Phase 1 — GCP Secret Manager live integration"
 # default here, so a wrong-shell setup fails loudly + early instead of
 # silently targeting a stale project ID.
 if ! command -v gcloud >/dev/null 2>&1; then
-    record "118 v0.3 gcp section skipped — gcloud CLI not installed" "SKIP" \
+    record "119 v0.3 gcp section skipped — gcloud CLI not installed" "SKIP" \
            "install: brew install --cask google-cloud-sdk"
 elif ! gcloud secrets list --project "$GCP_PROJECT" --limit 1 --quiet >/dev/null 2>&1; then
-    record "118 v0.3 gcp section skipped — gcloud unreachable / reauth needed" "SKIP" \
-           "fix: gcloud auth login && gcloud auth application-default login && gcloud config set project $GCP_PROJECT (or export SECRETENV_TEST_GCP_PROJECT=...)"
+    # Catch-all SKIP: any non-zero exit from `gcloud secrets list` (auth
+    # expiry, IAM denial, project-not-found, transient API 5xx, ADC missing,
+    # etc.). Hint biases toward the most common cause (reauth) but a
+    # transient blip will SKIP this section too — same skip-discipline as
+    # sibling sections (Doppler, Keeper, openbao, conjur, bitwarden-sm),
+    # which prefer cleanly skipping over false-positive cascading FAILs.
+    record "119 v0.3 gcp section skipped — gcloud secrets list failed" "SKIP" \
+           "common cause: stale auth (run: gcloud auth login && gcloud auth application-default login). other causes: project unreachable / no IAM access / transient API error. project=$GCP_PROJECT"
 else
 
 # 15a — `get` via secretenv through the gcp backend (latest version).

@@ -8,6 +8,54 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-06
+
+**Headline:** **hygiene + docs release** absorbing both v0.12.x carry-forward queues. Originally queued as Delinea Secret Server (per [[roadmap]]); Delinea remains blocked on invite-only trial access (vendor-side), so v0.13 fills the slot with the merged-not-tagged hygiene work that would otherwise have rolled forward to the next backend cycle. **No new backend, no new platform, no schema change.** Backend total stays at **15**.
+
+v0.12.0 → v0.13.0: workspace unit tests **876 → 893** (+17 from new bitwarden-sm regression coverage). Live full-matrix smoke against operator's real backends: **508/508 PASS** (was 454/508 at the v0.12.0 baseline; +54 cleared by the GCP env-debt fixes — Section 15 SKIP-on-precondition guard, env-driven `GCP_PROJECT`, and `CLOUDSDK_CORE_DISABLE_PROMPTS=1` global). Phase 9 release-prep audit trio (security-auditor + code-reviewer + deployment-engineer) ran clean: 0 BLOCKING + 0 HIGH from security; 0 BLOCKING + 1 HIGH (doc-comment LIMITATION note for `parse_version_token` — landed inline) from code-reviewer; 1 BLOCKING from deployment (workspace version bump — landed inline as part of release prep) — **Phase 9 paid for itself a third consecutive cycle** per [[feedback_audit_after_release_prep]].
+
+### Fixed — GCP environment debt (smoke harness)
+
+Closes [[v0.12-issues/01-gcp-env-debt]]. Surfaced by the v0.12 Phase 8 full-matrix smoke as 51 cascading FAILs unrelated to v0.12 feature work; rooted in two distinct issues in `scripts/smoke-test/run-tests.sh`.
+
+- **Drop redundant `GCP_PROJECT="${SECRETENV_TEST_GCP_PROJECT:-eva-dev-490220}"` shadow** (`scripts/smoke-test/run-tests.sh`) — `lib/common.sh` already exports the env-driven value, and `require_cloud_env()` already enforces non-empty before any cloud section runs. The line was dead at best, silently retargeting a long-decommissioned project at worst. Single source of truth: `SECRETENV_TEST_GCP_PROJECT`. No fallback.
+- **Test-150 assertion `project=eva-dev-490220` interpolates `${GCP_PROJECT}`** (`scripts/smoke-test/run-tests.sh:917`) — was a hardcoded literal that would FAIL even with the right env exported.
+- **Section 15 wrapped in standard SKIP-on-precondition** mirroring sections 21+ (Doppler, Keeper, openbao, conjur, bitwarden-sm). Probes `gcloud secrets list --project ... --limit 1` before running the body; on failure records a single `119 v0.3 gcp section skipped — gcloud secrets list failed` SKIP with operator hint instead of cascading 12+ FAILs through doctor + cross-backend resolver. SKIP-record number `119` matches the section's first test ID per the established convention.
+- **Global `export CLOUDSDK_CORE_DISABLE_PROMPTS=1`** at the top of `scripts/smoke-test/run-tests.sh` — `secretenv doctor --fix` against a NotAuth GCP backend can no longer spawn `gcloud auth login` and hang the whole matrix on a browser callback (live-observed during v0.12 Phase 8: section 19a stalled with the gcloud PID parked on stdin). With the prompt suppressed, gcloud fails fast with a clean error and the test proceeds.
+- **Pre-smoke runbook step** added to `kb/wiki/parallel-backend-workflow.md` (operator-facing) — `gcloud auth list` + ADC verification + project-match check, mirroring the existing `op signin` priming pattern.
+
+Cross-backend cascade FAILs (sections 7 / 8 / 9 / 17 / 22 azure-reg) when one backend in the alias map is NotAuth — NOT addressed; that requires an architectural change to the cross-backend resolver's behavior on partial-readiness manifests. Out of scope for this hygiene cycle. Captured for a future polish cycle.
+
+### Fixed — bitwarden-sm Phase 7 deferred chips
+
+Closes [[v0.12-issues/02-phase-7-deferred-chips]]. Phase 7 closing-audit MEDIUM/LOW findings deferred from v0.12.0 per [[feedback_pr_scoping_hygiene_carrier]]. The Phase 7 HIGH chips landed inline before v0.12.0; this cycle absorbs the deferred residue.
+
+- **`bitwarden_bin` control-character validation parity** (`crates/backends/secretenv-backend-bitwarden-sm/src/lib.rs`) — `bitwarden_server_url` and `bitwarden_access_token_env` already ran through `has_forbidden_control_char`; `bitwarden_bin` did not. Inconsistent hardening; a NUL byte in the binary path produced a confusing OS-level error far from the config site instead of a typed config-site message. Now mirrors the sibling check + new `factory_rejects_control_char_in_bitwarden_bin` regression test.
+- **`bitwarden_access_token_env` validation order** (`create_concrete`) — the `unwrap_or_else(|| DEFAULT_TOKEN_ENV.to_owned())` default path was running the control-char + POSIX-name checks against a `&'static str` constant (dead code on the common path). Validation now lives inside the `if let Some(env) = ...` branch; default branch returns the const directly. Existing tests confirm both paths still round-trip cleanly.
+- **`parse_version_token` permissive scanner** — was anchored on the literal `bws ` prefix, so a future rebrand (`bws-cli`, `bitwarden-sm-cli`, etc.) would have failed Level 1 opaquely. New scanner finds the first `<X.Y.Z>` whitespace token; tolerates rebrands and trailing build metadata; defends against pathological double-prefix input (`bws bws 0.5.0`). Doc-comment names the trust boundary (`bws --version` stdout sits inside the `bitwarden_bin` trust envelope) and the LIMITATION (first numeric triple wins; an embedded IPv4 fragment BEFORE the version would misparse). Six new regression tests cover canonical, rebrand, trailing-metadata, no-numeric-triple, two-component-rejection, and the "first triple wins" tie-break.
+- **`SecretGetResponse.value` doc-comment hardened** — names the `#[serde(default)]` rationale (forward-compat with future `bws` schema drift) and the section-28 smoke assertion that catches the silent-empty-value drift.
+- **`ProjectListElement.id` no longer `#[serde(default)]`** — the doc-comment claimed `id` "anchors the shape" but `default` let `[{}]` parse fine, contradicting the claim. Field is now REQUIRED; an envelope shape that omits it surfaces as a parse error at Level 2.
+- **`extract_json_field` array/object rejection** — split the combined `ref v @ (Array | Object)` arm into two explicit arms (one per JSON kind). Same error wording, less indirection.
+- **`set_uses_secret_edit_not_create` mock body `ok("{}")` → `ok("")`** — the `secret edit` stdout is unread by the wrapper (only `status.success()` and `stderr` are inspected); empty body is honest about that vs. a misleading-looking JSON object.
+- **`set_rejects_fragment` test** — added positive `assert!(msg.contains("fragment"))` alongside the existing absence-of-`disabled by default` check, verifying the fragment-reject branch fired (not just that the unsafe-set branch didn't).
+- **6 new `extract_json_field` variant tests** covering string / number / boolean / null / array-rejection / object-rejection branches — pin the exact bail wording so a future refactor surfaces unintended message changes.
+
+### Fixed — `bitwarden_server_url` documentation
+
+- **Security note added** (`docs/backends/bitwarden-sm.md`) on `bitwarden_server_url` token-forwarding risk — naming the typo-squat / poisoned-template threat model and three concrete operator mitigations. Includes a TLS-trust-delegation paragraph for operators on corporate networks with intercepting proxies (private CA bundles).
+
+### Process
+
+- **Phase 9 audit trio (security + code + deployment) made default cadence** for the third consecutive cycle. Security: APPROVE outright (0 BLOCK + 0 HIGH + 0 MED + 2 LOW polish). Code-reviewer: APPROVE w/ HIGH (`parse_version_token` doc-comment LIMITATION note — landed inline). Deployment: REJECT-then-APPROVE (workspace version bump pre-tag — landed inline). Every BLOCKING + HIGH + MEDIUM + LOW finding closed in this cycle (no carry-forward to v0.13.x).
+- **No three-agent feature-cycle audit (Phase 7) run** — this cycle introduces no new backend / no new feature surface; the bitwarden-sm changes are direct closures of audited findings, and the smoke-harness changes are bash-script hygiene. Phase 9 is the appropriate gate for hygiene + docs cycles.
+
+### Deferred / declined
+
+- **Drop dead `backend_type: &'static str` field on `BitwardenSmBackend`** — flagged by the v0.12 Phase 7 code-reviewer as a "minor maintainability nit." Declined here for two reasons: (1) clippy `unnecessary_literal_bound` flags the resulting `fn backend_type(&self) -> &str { "bitwarden-sm" }` shape against the trait's elided-lifetime return signature; (2) every other backend in the family (14 of them) keeps the same field. Family consistency wins over the local cleanup.
+- **Cross-backend cascade resolver behavior on partial-readiness manifests** (sections 7 / 8 / 9 / 17 / 22 azure-reg in the smoke matrix) — when one backend in an alias map is NotAuth, `secretenv run` aborts the whole resolution. Architectural; not a hygiene-cycle change.
+- **`bws_command` / `bws_secret_command` DRY merge** — the two helpers are near-duplicates but the deduplication is taste-driven, not correctness-driven. Defer until naturally touched by a future change.
+- **Four LOW style nits** carried into a future polish cycle (no v0.13.x queue opened — the hygiene/docs scope is fully closed): `unsafe_set_refused` hint phrasing, `secret_uuid` `Cow<'_, str>` allocation, `drop(lock)` style consistency, `apply_env` rename to `apply_env_with_token_required`.
+
 ## [0.12.0] - 2026-05-05
 
 **Headline:** seventh release of the single-backend-per-release cycle; seventh [[project_cycle_execution_model|solo-fresh-session]] release. One new backend — **Bitwarden Secrets Manager** (the developer/CI product, distinct from Bitwarden Password Manager) via the `bws` CLI v2.x — brings the total to **15**. First cycle to pull a backend forward in the queue (was v0.13 per [[roadmap]]; Delinea Secret Server slipped to v0.13 pending invite-only trial access). Tag absorbs the v0.11.x merged-not-tagged hygiene cycle below.

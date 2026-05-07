@@ -154,17 +154,10 @@ pub struct BitwardenSmBackend {
     timeout: Duration,
 }
 
-/// `bws secret get` JSON envelope. Only the `value` field is read at
-/// runtime; the rest are deserialized to validate shape and ignored.
-///
-/// `value` is `#[serde(default)]` because in `bws` v2.0.0 the field is
-/// always present on a successful `secret get` (verified by Phase 8
-/// live-cloud smoke + section 28's scalar fixture round-trip), but a
-/// future `bws` version could rename or drop the field — `default`
-/// makes that surface as a silent empty value rather than a parse
-/// error. Section 28's `assert_contains "<value>"` catches the silent
-/// drift. If a future cycle drops the smoke assertion, drop
-/// `#[serde(default)]` here so the parser fails loudly instead.
+/// `bws secret get` JSON envelope. Only `value` is read; siblings are
+/// deserialized for shape validation and ignored. `#[serde(default)]`
+/// tolerates a future `bws` schema change that drops the field —
+/// section 28's smoke assertion catches the silent-drift counterpart.
 #[derive(Deserialize)]
 struct SecretGetResponse {
     #[serde(default)]
@@ -621,6 +614,20 @@ impl Backend for BitwardenSmBackend {
 /// `bitwarden-sm-cli 2.0.1`, or `bws 2.0.0 (build abc123)`) — anchoring
 /// on the literal `bws ` prefix would have failed any of those opaquely
 /// at Level 1. Mirrors the openbao backend's permissive scanner.
+///
+/// Trust boundary: input is `bws --version` stdout, sourced from the
+/// configured `bitwarden_bin`. The binary is already an authentication
+/// trust root (it handles the access token), so version-string spoofing
+/// is not in the threat model — a hostile substitute could just lie
+/// about anything else too.
+///
+/// LIMITATION: returns the FIRST `<X.Y.Z>` whitespace token. A future
+/// `--version` line that embeds an unrelated three-component dotted
+/// number BEFORE the real version (e.g. `bws built on host 192.168.1
+/// version 2.5.0` would misparse `192.168.1` as the version, then fail
+/// the major-floor check opaquely) would misparse. If `bws --version`
+/// ever grows that shape, switch to anchoring on a known-stable prefix
+/// substring.
 fn parse_version_token(line: &str) -> Option<&str> {
     fn is_three_dot_numeric(tok: &str) -> bool {
         let mut parts = tok.split('.');
@@ -675,10 +682,13 @@ fn extract_json_field(
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::Bool(b) => Ok(b.to_string()),
         serde_json::Value::Null => Ok("null".to_owned()),
-        ref v @ (serde_json::Value::Array(_) | serde_json::Value::Object(_)) => bail!(
-            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON {} \
-             — only scalar fields (string/number/boolean/null) can be extracted",
-            if v.is_array() { "array" } else { "object" }
+        serde_json::Value::Array(_) => bail!(
+            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON \
+             array — only scalar fields (string/number/boolean/null) can be extracted"
+        ),
+        serde_json::Value::Object(_) => bail!(
+            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON \
+             object — only scalar fields (string/number/boolean/null) can be extracted"
         ),
     }
 }
@@ -1018,6 +1028,7 @@ mod tests {
             panic!("expected error for control char in server url");
         };
         let msg = format!("{err:#}");
+        assert!(msg.contains("bitwarden_server_url"), "names the field: {msg}");
         assert!(msg.contains("control character"), "names the issue: {msg}");
     }
 
@@ -1687,6 +1698,18 @@ mod tests {
         // would propagate as garbage downstream.
         assert_eq!(parse_version_token("bws 2.0"), None);
         assert_eq!(parse_version_token("bws 2.0.0.0"), None);
+    }
+
+    #[test]
+    fn parse_version_token_first_numeric_triple_wins() {
+        // Pins the documented "first <X.Y.Z> token wins" semantics.
+        // If `bws --version` ever grows a shape that puts an unrelated
+        // dotted-numeric BEFORE the real version (e.g. a build host
+        // IPv4 fragment), this test catches the misparse — and the
+        // doc-comment LIMITATION block names that exact failure mode.
+        assert_eq!(parse_version_token("bws built on 1.2.3 version 2.5.0"), Some("1.2.3"));
+        // Real-world clean case: `2.0.0` is first, sha second.
+        assert_eq!(parse_version_token("bws 2.0.0 sha 9.9.9"), Some("2.0.0"));
     }
 
     // ---- extract_json_field: scalar variants ----

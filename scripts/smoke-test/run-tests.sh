@@ -18,6 +18,15 @@
 
 set -u
 
+# Force gcloud (and ADC) to be strictly non-interactive throughout the
+# smoke matrix. Without this, `secretenv doctor --fix` against a NotAuth
+# GCP backend spawns `gcloud auth login` which waits for an OAuth browser
+# callback and hangs the whole matrix indefinitely (live-observed during
+# v0.12 Phase 8 — section 19a stalled with the gcloud PID parked on
+# stdin). With the prompt suppressed, gcloud fails fast with a
+# "Reauthentication failed" error that the test treats as a normal FAIL.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+
 _here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$_here/lib/common.sh"
@@ -766,7 +775,26 @@ section_begin 15 "v0.3 Phase 1 — GCP Secret Manager live integration"
 # layer; this section proves the production code path doesn't leak
 # either. Fixtures: `secretenv_validation_registry` (JSON alias map)
 # + `secretenv_validation_gcp_secret` (scalar `gsk_gcp_55555`).
-GCP_PROJECT="eva-dev-490220"
+#
+# Skipped if `gcloud` is missing OR `gcloud secrets list --project ...`
+# fails (project unreachable, ADC missing, session expired) — same
+# SKIP discipline as the other live-cloud sections (Doppler, Infisical,
+# Keeper, cf-kv, openbao, conjur, bitwarden-sm). Without this guard, a
+# stale gcloud session or wrong-project setup cascades 12+ FAILs that
+# look like product regressions but are environmental.
+#
+# `GCP_PROJECT` is sourced from `lib/common.sh` (via `SECRETENV_TEST_GCP_PROJECT`).
+# `require_cloud_env` at the top of this script already enforces that
+# the env var is non-empty before any cloud section runs — no fallback
+# default here, so a wrong-shell setup fails loudly + early instead of
+# silently targeting a stale project ID.
+if ! command -v gcloud >/dev/null 2>&1; then
+    record "118 v0.3 gcp section skipped — gcloud CLI not installed" "SKIP" \
+           "install: brew install --cask google-cloud-sdk"
+elif ! gcloud secrets list --project "$GCP_PROJECT" --limit 1 --quiet >/dev/null 2>&1; then
+    record "118 v0.3 gcp section skipped — gcloud unreachable / reauth needed" "SKIP" \
+           "fix: gcloud auth login && gcloud auth application-default login && gcloud config set project $GCP_PROJECT (or export SECRETENV_TEST_GCP_PROJECT=...)"
+else
 
 # 15a — `get` via secretenv through the gcp backend (latest version).
 #   Already covered by tests 27b/32b, but re-asserted here as part of
@@ -886,7 +914,9 @@ grep -q "ya29\\." "$RUNS/22-doctor.log" \
 # 15k — identity format sanity: gcp-prod identity should include
 # `account=` and `project=` fields (human doctor output).
 assert_contains "149 gcp identity names account" "$RUNS/22-doctor.log" 'account='
-assert_contains "150 gcp identity names project" "$RUNS/22-doctor.log" 'project=eva-dev-490220'
+assert_contains "150 gcp identity names project" "$RUNS/22-doctor.log" "project=${GCP_PROJECT}"
+
+fi  # end section 15 SKIP guard
 
 # ---------------------------------------------------------------
 # 16. v0.3 Phase 2 — Azure Key Vault live integration

@@ -191,6 +191,16 @@ This separation matches Bitwarden's own intended workflow: long-lived secrets ar
 
 The wrapper omits `BWS_SERVER_URL` from the child env when no override is configured, so `bws`'s built-in US-cloud default applies. This survives a host where the operator's parent shell has `BWS_SERVER_URL` set globally to something else — useful when running smoke tests against a known-good cloud instance from a workstation pre-configured for self-hosted.
 
+### Security note — `bitwarden_server_url` forwards your access token
+
+`bitwarden_server_url` accepts any URL the operator configures and the wrapper forwards `BWS_ACCESS_TOKEN` to whatever server is at that URL on the next `secretenv doctor` / `get` / `set`. This is the intended behavior for legitimate self-hosted and EU deployments, but it also means a typo-squatted or attacker-supplied URL pasted into a starter config or pull-request template hands the access token to the attacker. Validate the URL before pasting it into a config you commit:
+
+- Compare the URL letter-by-letter against the value in your Bitwarden web UI's organization settings.
+- Prefer hard-coded constants (`https://vault.bitwarden.com`, `https://vault.bitwarden.eu`) over copy-paste from chat / tickets / templates.
+- Treat any change to `bitwarden_server_url` in a code review with the same scrutiny as a change to an `aws-secrets` `region` or a `vault` `address` — wrong target servers can exfiltrate the token without any other code change.
+
+The wrapper enforces a control-character check on the URL but does not restrict the scheme, host, or TLD; that remains the operator's responsibility.
+
 ---
 
 ## `bws run` is not a SecretEnv backend

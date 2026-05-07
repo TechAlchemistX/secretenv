@@ -40,6 +40,16 @@ Closes [[v0.12-issues/02-phase-7-deferred-chips]]. Phase 7 closing-audit MEDIUM/
 - **`set_rejects_fragment` test** — added positive `assert!(msg.contains("fragment"))` alongside the existing absence-of-`disabled by default` check, verifying the fragment-reject branch fired (not just that the unsafe-set branch didn't).
 - **6 new `extract_json_field` variant tests** covering string / number / boolean / null / array-rejection / object-rejection branches — pin the exact bail wording so a future refactor surfaces unintended message changes.
 
+### Fixed — `infisical` backend doctor false-NotAuthenticated under `infisical` 0.43.79
+
+Surfaced during the v0.13.0 hygiene-cycle live smoke (post-`infisical login`, with a valid cached JWT). `secretenv doctor` reported `infisical` as `not authenticated` even though `infisical user get token --plain` returned exit 0 with a valid token in the operator's shell.
+
+Root cause: `Backend::check()` configured the `infisical user get token --plain` probe with `Stdio::piped()` for stderr but waited via `.status()`, which does not drain piped streams. Once the `infisical` CLI's stderr output (upgrade-available notice + auth-state lines) exceeded the OS pipe buffer, the child blocked on stderr write and exited abnormally — surfacing as a spurious `NotAuthenticated` from a logged-in CLI. The bug was always present but only manifested as the CLI's notice payload grew with releases (last reproduced against `infisical` 0.43.79 with the `0.43.79 -> 0.43.80` upgrade banner).
+
+Fix: change `probe.stderr(Stdio::piped())` to `probe.stderr(Stdio::null())` (`crates/backends/secretenv-backend-infisical/src/lib.rs:454`). The probe's documented intent — per its own comment — is "we don't need its value, only exit status," so dropping the pipe matches stated behavior. Code-comment expanded to call out the pipe-buffer-vs-`.status()` interaction so a future maintainer doesn't reintroduce the pattern.
+
+Caught only because the v0.13 hygiene cycle re-ran the full smoke matrix end-to-end against the operator's live backends; standalone unit tests with strict mocks could not have surfaced this (the mock CLI emits no stderr).
+
 ### Fixed — `bitwarden_server_url` documentation
 
 - **Security note added** (`docs/backends/bitwarden-sm.md`) on `bitwarden_server_url` token-forwarding risk — naming the typo-squat / poisoned-template threat model and three concrete operator mitigations. Includes a TLS-trust-delegation paragraph for operators on corporate networks with intercepting proxies (private CA bundles).

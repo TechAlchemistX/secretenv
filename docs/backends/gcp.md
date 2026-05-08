@@ -1,10 +1,21 @@
 # GCP Secret Manager
 
-**Type:** `gcp`  
-**CLI required:** `gcloud` (Google Cloud SDK 380+)  
-**URI scheme:** `<instance-name>:///<secret-name>[#version=<n>]`
+**Type:** `gcp`
+**CLI required:** [`gcloud`](https://cloud.google.com/sdk/docs/install) (Google Cloud SDK 380+)
+**URI scheme:** `<instance>:///<secret-name>[#version=<n>]`
+**Platform:** all (macOS, Linux, Windows)
+**Tested:** `Google Cloud SDK 560.0.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
----
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `gcp` backend. New here? See the [main README](../../README.md).
+
+GCP Secret Manager is Google Cloud's native secrets store, deeply integrated with GCP identity and access management. It offers fine-grained IAM roles, version management, and seamless authentication on GCP compute (Workload Identity on GKE, instance metadata on Compute Engine). Pick Secret Manager when you're on Google Cloud and want the simplest, tightest integration path.
+
+## When to pick this
+
+- **You're on Google Cloud:** native integration, automatic credential discovery via ADC
+- **Workload Identity (GKE):** Pod-mounted service account tokens; zero config
+- **Service account impersonation:** Optional per-operation impersonation for privilege escalation
+- **Version management:** Pin to specific secret versions for canary testing or rollbacks
 
 ## Configuration
 
@@ -21,24 +32,21 @@ gcp_project = "my-project-prod"
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"gcp"` |
-| `gcp_project` | Yes | GCP project ID where the secrets live |
-| `gcp_impersonate_service_account` | No | Service account email to impersonate for every operation. Requires `roles/iam.serviceAccountTokenCreator` on the target SA. |
-
----
+| `gcp_project` | Yes | GCP project ID where secrets live |
+| `gcp_impersonate_service_account` | No | Service account email to impersonate. Caller must have `roles/iam.serviceAccountTokenCreator` on this SA. |
+| `timeout_secs` | No | Per-instance fetch timeout override. Default: 30s. |
 
 ## URI Format
 
 ```
 gcp-prod:///stripe_api_key
-└────────┘   └───────────┘
-instance      secret name
+└────────┘   └─────────────┘
+instance     secret name
 ```
 
-Use triple-slash (`gcp-prod:///stripe_key`) — the project is always in config, never the URI. This matches the convention across all cloud backends.
+Use triple-slash (`gcp-prod:///secret-name`) — the project is always in config, never in the URI. Secret names follow GCP rules: `[a-zA-Z0-9_-]{1,255}`.
 
-### Fragment directives
-
-Append `#version=<n>` to pin a specific secret version:
+For version pinning:
 
 ```
 gcp-prod:///stripe_api_key#version=5          # Pin to version 5
@@ -46,52 +54,29 @@ gcp-prod:///stripe_api_key#version=latest     # Explicit latest (same as omittin
 gcp-prod:///stripe_api_key                    # Default: latest enabled version
 ```
 
-| URI | Result |
-|---|---|
-| `gcp-prod:///my-secret` | Latest enabled version |
-| `gcp-prod:///my-secret#version=latest` | Same as above |
-| `gcp-prod:///my-secret#version=5` | Version 5 explicitly |
-| `gcp-prod:///my-secret#version=abc` | **Rejected** — version must be a positive integer or `latest` |
-| `gcp-prod:///my-secret#secret` | **Rejected** — legacy shorthand; use `#version=...` |
-| `gcp-prod:///my-secret#scope=ro` | **Rejected** — `scope` is not a gcp directive |
-
-`version` is the only fragment directive the gcp backend recognizes. See [../fragment-vocabulary.md](../fragment-vocabulary.md) for the full grammar.
-
----
+**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
-secretenv delegates entirely to the `gcloud` CLI. All of these work:
+SecretEnv delegates entirely to the `gcloud` CLI. All of these work:
 
-- **User account** — `gcloud auth login` (browser OAuth).
-- **Service account key file** — set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`, or run `gcloud auth activate-service-account --key-file /path/to/key.json`.
-- **Workload Identity (GKE)** — pod-mounted credentials; zero config.
-- **Compute Engine metadata** — VM-attached service account; zero config.
-- **Cloud Shell** — pre-authenticated.
-- **Impersonation** — set `gcp_impersonate_service_account` in the backend config; every call adds `--impersonate-service-account`.
+- **Application Default Credentials (ADC):** `gcloud auth application-default login` or automatic on GCP compute
+- **User account:** `gcloud auth login` (browser OAuth)
+- **Service account key file:** `gcloud auth activate-service-account --key-file /path/to/key.json`
+- **Workload Identity (GKE):** Pod-mounted service account tokens; zero config
+- **Compute Engine metadata:** VM-attached service account; zero config
+- **Cloud Shell:** Pre-authenticated
 
-secretenv has zero auth code. If `gcloud <any-command>` works in your shell, the backend will too.
-
----
+If `gcloud <any-command>` works in your shell, the backend will too.
 
 ## IAM Permissions
 
 ### Read-only (for `secretenv run`)
 
-Grant `roles/secretmanager.secretAccessor` at the secret or project level.
-
-Per-secret (least privilege):
+Grant `roles/secretmanager.secretAccessor` at the secret or project level:
 
 ```bash
 gcloud secrets add-iam-policy-binding stripe_api_key \
-  --role=roles/secretmanager.secretAccessor \
-  --member=user:alice@example.com
-```
-
-Project-wide:
-
-```bash
-gcloud projects add-iam-policy-binding my-project-prod \
   --role=roles/secretmanager.secretAccessor \
   --member=user:alice@example.com
 ```
@@ -102,13 +87,12 @@ Grant `roles/secretmanager.admin` OR a custom role with:
 
 - `secretmanager.versions.add` (for `set`)
 - `secretmanager.secrets.delete` (for `delete`)
-- `secretmanager.secrets.get` + `secretmanager.versions.access` (for read, inherited from accessor)
 
-**Note on `set`:** secretenv's `set` is **update-only** — it adds a new version to an existing secret. Create the secret first with `gcloud secrets create <name>` (one-time setup); afterwards `registry set` adds versions.
+**Note on `set`:** the secret must exist first. Create with `gcloud secrets create <name>` once; afterwards `registry set` adds versions.
 
 ### Impersonation
 
-If `gcp_impersonate_service_account` is configured, the CALLER needs `roles/iam.serviceAccountTokenCreator` on the target SA:
+If `gcp_impersonate_service_account` is configured, the caller needs `roles/iam.serviceAccountTokenCreator` on the target SA:
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding \
@@ -119,52 +103,101 @@ gcloud iam service-accounts add-iam-policy-binding \
 
 The impersonated SA then needs the accessor role on the secrets.
 
----
+## doctor Output
 
-## How `secretenv doctor` reports GCP status
+Healthy state:
 
 ```
-├── gcp-prod [gcp]
-│   ✓ ready
-│     cli:      Google Cloud SDK 458.0.1
-│     identity: account=alice@example.com project=my-project-prod
+gcp-prod                                                          (gcp)
+  ✓ gcloud CLI v560.0.0
+  ✓ authenticated  account=alice@example.com  project=my-project-prod
 ```
 
 With impersonation:
 
 ```
-├── gcp-prod [gcp]
-│   ✓ ready
-│     cli:      Google Cloud SDK 458.0.1
-│     identity: account=alice@example.com project=my-project-prod impersonate=secretenv-reader@my-project-prod.iam.gserviceaccount.com
+gcp-prod                                                          (gcp)
+  ✓ gcloud CLI v560.0.0
+  ✓ authenticated  account=alice@example.com  project=my-project-prod  impersonate=secretenv-reader@my-project.iam.gserviceaccount.com
 ```
 
-If not authenticated:
+## Fragment directives
 
-```
-├── gcp-prod [gcp]
-│   ✗ not authenticated
-│     run: gcloud auth login  OR  gcloud auth activate-service-account --key-file <path>
-```
+`#version=<n>` pins a specific version. Version IDs are positive integers:
 
----
+| Directive | Effect | Example |
+|---|---|---|
+| `#version=5` | Fetch version 5 explicitly | `gcp-prod:///stripe_key#version=5` |
+| `#version=latest` | Explicit latest (same as omitting) | `gcp-prod:///stripe_key#version=latest` |
+| (no fragment) | Fetch the latest enabled version | `gcp-prod:///stripe_key` |
 
-## Known Limitations
+Shorthand fragments and non-integer versions are rejected with a migration hint.
+
+## History API support
+
+Partial. `secretenv registry history <alias>` surfaces version number and creation timestamp via `gcloud secrets versions list`. Actor name and change descriptions are not available via the `gcloud` CLI.
+
+## Limitations
 
 - **Update-only `set`.** The secret must exist before `registry set` can add a version. Create with `gcloud secrets create <name>` first.
-- **Delete removes the whole secret.** No soft-delete / recovery window (matches aws-secrets and vault). All versions are destroyed.
-- **Multi-region only.** Regional secrets (launched late 2024) require `--location <region>`; not supported in v0.3. Will add in a follow-up.
-- **`latest` is a keyword.** `#version=latest` behaves identically to omitting the fragment. Future-proofs readability in registry documents.
-- **No binary secret support.** GCP Secret Manager stores bytes; the `gcloud` CLI decodes on read. Strings only for v0.3.
+- **Delete removes entire secret.** `secretenv registry delete` removes all versions. Use `gcloud secrets versions destroy` for per-version destruction.
+- **Secret names are case-sensitive.** `stripe-key` ≠ `stripe-Key`.
+- **No regional secrets.** Regional secrets (launched late 2024) require `--location <region>`; v0.13 always uses multi-region (the default).
+- **No binary secret support.** GCP Secret Manager stores bytes; the `gcloud` CLI decodes on read. Strings only for v0.13.
 
----
+## Examples
+
+### Single project, local development
+
+```toml
+[backends.gcp-dev]
+type        = "gcp"
+gcp_project = "my-project-dev"
+
+[registries.default]
+sources = ["gcp-dev:///myapp_registry"]
+```
+
+```bash
+secretenv run -- npm start
+```
+
+### Multi-project with impersonation
+
+```toml
+[backends.gcp-prod-ci]
+type        = "gcp"
+gcp_project = "my-project-prod"
+gcp_impersonate_service_account = "ci-runner@my-project-prod.iam.gserviceaccount.com"
+
+[registries.prod]
+sources = ["gcp-prod-ci:///myapp_registry"]
+```
+
+### Version pinning for canary testing
+
+Pin a specific version via the registry:
+
+```bash
+secretenv registry set db-pass "gcp-prod:///db_password#version=3"
+```
 
 ## Troubleshooting
 
-| Error | Cause | Fix |
-|---|---|---|
-| `NOT_FOUND: Secret [...]` | Secret doesn't exist or typo'd | Check `gcloud secrets list --project <p>` |
-| `PERMISSION_DENIED` | Missing accessor role | `gcloud secrets add-iam-policy-binding ... --role=roles/secretmanager.secretAccessor` |
-| `FAILED_PRECONDITION: ... DESTROYED` | Version explicitly destroyed | Access a different version or restore |
-| `NotAuthenticated` on `doctor` | `gcloud` session expired | `gcloud auth login` |
-| `strict-mock-no-match` in unit tests | Developer-facing — see [../fragment-vocabulary.md](../fragment-vocabulary.md) |
+**"NOT_FOUND: Secret [...]"**
+Verify the secret exists and is in the correct project. Use `gcloud secrets list --project <project>` to list all secrets.
+
+**"PERMISSION_DENIED"**
+Check your IAM role. Run `gcloud projects get-iam-policy <project>` to see your current roles, and grant `roles/secretmanager.secretAccessor` if needed.
+
+**"NotAuthenticated" on `secretenv doctor`**
+Run `gcloud auth login` or `gcloud auth activate-service-account --key-file <path>` to set up credentials.
+
+## See Also
+
+- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#version` directive reference
+- [GCP Secret Manager documentation](https://cloud.google.com/secret-manager/docs) — permissions, versions, replication
+- [All backends](README.md) — pick a different backend
+- [Main README](../../README.md) — overview + workflows

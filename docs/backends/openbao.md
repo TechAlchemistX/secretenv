@@ -1,36 +1,29 @@
 # OpenBao
 
 **Type:** `openbao`
-**CLI required:** `bao`
+**CLI required:** [`bao`](https://openbao.org/docs/install/) v2+
 **URI scheme:** `<instance-name>://mount/path/to/secret[#json-key=<field>]`
+**Platform:** all (macOS, Linux, Windows)
+**Tested:** `bao v2.5.3` (build 2026-04-20) on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-OpenBao is the [Linux Foundation MPL-2.0 fork of HashiCorp Vault](https://openbao.org/). The wire protocol, KV semantics, and auth methods are identical to Vault — the SecretEnv `openbao` backend is a near-clone of [`vault`](./vault.md) with three concrete differences: binary name, env-var prefix, and install path.
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `openbao` backend. New here? See the [main README](../../README.md).
 
-If you are already using the SecretEnv Vault backend, the migration is a one-line config swap and a rerun of `bao login`.
+OpenBao is the Linux Foundation MPL-2.0 fork of HashiCorp Vault — same wire protocol, KV semantics, and auth methods. Pick OpenBao if you're already running a Vault-compatible instance and want the open-source governance model. Migration from Vault is a one-line config swap.
 
----
+## When to pick this
 
-## Install
-
-OpenBao is in homebrew-core — no tap dance, no BSL gymnastics:
-
-```bash
-brew install openbao
-```
-
-For Linux / Windows / manual binaries, see <https://openbao.org/docs/install/>.
-
-> **Vault contrast:** HashiCorp Vault moved out of homebrew-core after the August 2023 BSL relicense, so its install path is the longer `brew tap hashicorp/tap && brew install hashicorp/tap/vault`. OpenBao avoids this entirely.
-
----
+- **Vault-compatible instances:** OpenBao understands the Vault API; use it with Vault servers
+- **Open source governance:** MPL-2.0 licensed, Linux Foundation governed
+- **Self-hosted or cloud:** run your own instance or use a managed provider
+- **Enterprise features via OSS:** namespaces are free in OpenBao 2.x (Enterprise-gated in Vault)
 
 ## Configuration
 
 ```toml
 [backends.openbao-dev]
-type        = "openbao"
-bao_address = "http://127.0.0.1:8300"     # required
-bao_namespace = "team-engineering"         # optional
+type            = "openbao"
+openbao_address = "http://127.0.0.1:8300"   # required
+# openbao_namespace = "team-engineering"    # optional
 ```
 
 ### Fields
@@ -38,62 +31,45 @@ bao_namespace = "team-engineering"         # optional
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"openbao"` |
-| `bao_address` | Yes | Full URL of the OpenBao instance. Set per-instance even though the `bao` CLI itself reads `BAO_ADDR` — the registry document must deterministically point at the same cluster regardless of operator shell state. |
-| `bao_namespace` | No | OpenBao namespace (a free OSS feature in OpenBao 2.x, unlike Vault's Enterprise gating). Omit if not in use; the backend will not pass `-namespace` to the CLI. |
-| `bao_bin` | No | Override the `bao` binary path. Defaults to `"bao"` (resolved via `$PATH`). Primarily a test hook. |
-| `bao_unsafe_set` | No | Defense-in-depth opt-in for an argv-based `set` path. v0.10 always uses the `value=-` stdin form, so this flag is reserved for forward-compatibility — leave at the default `false`. |
-| `timeout_secs` | No | Per-instance fetch timeout in seconds. Defaults to 30. |
+| `openbao_address` | Yes | Full URL of the OpenBao instance (include scheme). Dev mode listens on **HTTP** (`http://127.0.0.1:8300`), not HTTPS. Set explicitly to keep registry portable. |
+| `openbao_namespace` | No | OpenBao namespace (free OSS feature in 2.x). Omit if not in use. |
+| `bao_unsafe_set` | No | Defense-in-depth opt-in. Defaults to `false`; the safe `value=-` stdin form is used regardless. Reserved for forward-compatibility. |
+| `timeout_secs` | No | Per-instance fetch timeout. Default: 30s. |
 
-### `BAO_ADDR` HTTP/HTTPS gotcha
-
-The single most common first-use stumble: the `bao` CLI defaults to `https://127.0.0.1:8200`, but `bao server -dev` listens on **HTTP**. Mismatched schemes yield `Error reading secret: http: server gave HTTP response to HTTPS client` from the CLI.
-
-Always set `bao_address` explicitly (including the scheme):
-
-```toml
-bao_address = "http://127.0.0.1:8300"   # dev mode
-bao_address = "https://bao.company.com" # production
-```
-
-The factory rejects a missing `bao_address` to keep the registry document portable across operator shells.
-
-### Multiple OpenBao instances or namespaces
+### Multiple instances or namespaces
 
 ```toml
 [backends.bao-eng]
-type          = "openbao"
-bao_address   = "https://bao.company.com"
-bao_namespace = "engineering"
+type              = "openbao"
+openbao_address   = "https://bao.company.com"
+openbao_namespace = "engineering"
 
 [backends.bao-payments]
-type          = "openbao"
-bao_address   = "https://bao.company.com"
-bao_namespace = "engineering/payments"
+type              = "openbao"
+openbao_address   = "https://bao.company.com"
+openbao_namespace = "engineering/payments"
 ```
-
----
 
 ## URI Format
 
 ```
-openbao-dev://secret/myapp/db_password
+openbao-dev://secret/prod/db_password
 └─────────┘  └─────┘ └──────────────┘
- instance    mount   path within mount
+instance    mount   path within mount
 ```
 
-The unified `bao kv` CLI handles KV v1 and v2 transparently — SecretEnv does not inject `data/` itself.
+The unified `bao kv` CLI handles KV v1 and v2 transparently. The mount is the KV backend's name (typically `secret`); the path is the secret's location within it.
 
 ### `#json-key=<field>` fragment
 
-When a single secret holds multiple values encoded as a JSON object in the canonical `value` field, the `#json-key=<field>` fragment selects one top-level scalar:
+When a single secret holds a JSON object in the `value` field, `#json-key=<field>` selects one top-level scalar:
 
 ```toml
-[registries.default.aliases]
 db_password = "openbao-dev://secret/prod/db_creds#json-key=password"
 db_username = "openbao-dev://secret/prod/db_creds#json-key=username"
 ```
 
-Provision side:
+Provision the secret:
 
 ```bash
 echo -n '{"username":"app","password":"sk_live_abc"}' \
@@ -102,28 +78,17 @@ echo -n '{"username":"app","password":"sk_live_abc"}' \
 
 The fragment is recognized only on `get`. `set`, `delete`, `list`, and `history` reject any fragment.
 
----
-
-## Storage model
-
-This backend writes every secret to the single `value` field of a KV v2 entry (`bao kv put <path> value=-` from stdin). Multi-field secrets are not produced — if you have an existing multi-field secret written out-of-band, only the `value` field is read.
-
-Registry documents are stored as a JSON alias→URI map serialized to a string in the `value` field, matching the [`aws-secrets`](./aws-secrets.md) and [`aws-ssm`](./aws-ssm.md) shape. `secretenv registry set` produces this layout automatically.
-
----
+**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
 SecretEnv delegates to the `bao` CLI. Any auth method the CLI supports works:
 
-- `BAO_TOKEN` environment variable (the CLI also accepts `VAULT_TOKEN` for transition compatibility)
-- `bao login` → token persisted at `~/.vault-token` (the filename is intentionally retained for transition compat from Vault)
-- AppRole (`bao login -method=approle`)
-- OIDC / JWT (`bao login -method=oidc`)
-- Kubernetes (`bao login -method=kubernetes`)
-- AWS IAM (`bao login -method=aws`)
+- `BAO_TOKEN` environment variable (CLI also reads `VAULT_TOKEN` for transition compat)
+- `bao login` → token persisted at `~/.vault-token`
+- AppRole, OIDC/JWT, Kubernetes, AWS IAM
 
-The minimum policy a SecretEnv user needs is identical to Vault's — OpenBao consumes Vault HCL policies unchanged:
+The minimum read policy is:
 
 ```hcl
 path "secret/data/myapp/*" {
@@ -131,33 +96,116 @@ path "secret/data/myapp/*" {
 }
 ```
 
-`set` additionally needs `update`/`create`. `delete` needs `delete`.
-
----
+`set` additionally needs `update` / `create`. `delete` needs `delete`.
 
 ## doctor Output
 
+Healthy:
+
 ```
-openbao-dev                                                  (openbao)
+openbao-dev                                                     (openbao)
   ✓ bao CLI OpenBao v2.5.3
   ✓ authenticated  addr=http://127.0.0.1:8300  namespace=(none)
 ```
 
+Not authenticated (token missing or expired):
+
 ```
-openbao-dev                                                  (openbao)
+openbao-dev                                                     (openbao)
   ✓ bao CLI OpenBao v2.5.3
-  ✗ not authenticated — token expired
+  ✗ not authenticated
       → run: bao login  (or set BAO_TOKEN, or place a token in ~/.vault-token)
 ```
 
+## Fragment directives
+
+| Directive | Effect | Example |
+|---|---|---|
+| `json-key=<field>` | Extract top-level JSON field | `openbao-dev://secret/prod/creds#json-key=password` |
+
+Other fragments are rejected with a specific error.
+
+## History API support
+
+Not implemented (planned for future). The `bao` CLI (v2.5.3) has no per-secret history subcommand. Version history is available via the REST API and the web UI; this backend will flip to a native implementation once the CLI supports it.
+
+## Limitations
+
+- **Storage model.** Every secret is stored in the `value` field of a KV v2 entry (`bao kv put <path> value=-`). Multi-field secrets are not produced by this backend.
+- **Scheme mismatch gotcha.** Dev mode (`bao server -dev`) listens on **HTTP**, but the CLI defaults to **HTTPS**. Always set `openbao_address` explicitly with the correct scheme.
+- **KV v1 vs v2.** `bao kv` CLI is transparent, but if you're migrating from Vault, verify your mount type in OpenBao (run `bao secrets list` to see mount types).
+
+## Examples
+
+### Local dev instance
+
+```toml
+[backends.openbao-dev]
+type            = "openbao"
+openbao_address = "http://127.0.0.1:8300"
+
+[registries.default]
+sources = ["openbao-dev://secret/registry"]
 ```
-openbao-dev                                                  (openbao)
-  ✗ bao CLI not found
-      → install: brew install openbao  OR  https://openbao.org/docs/install/
+
+```bash
+secretenv run -- npm start
 ```
 
----
+### Multi-namespace production
 
-## License note
+```toml
+[backends.bao-eng]
+type              = "openbao"
+openbao_address   = "https://bao.company.com"
+openbao_namespace = "engineering"
 
-OpenBao is MPL-2.0 (Linux Foundation, post-fork). HashiCorp Vault is BSL post-2023. Both ship the same wire protocol, but OpenBao is the open-source-first option for users who want the CNCF / Linux Foundation governance trajectory. SecretEnv treats the two backends peer-equal at the trait layer — switch by changing one config line.
+[backends.bao-payments]
+type              = "openbao"
+openbao_address   = "https://bao.company.com"
+openbao_namespace = "engineering/payments"
+
+[registries.eng]
+sources = ["bao-eng://secret/registry"]
+
+[registries.payments]
+sources = ["bao-payments://secret/registry"]
+```
+
+Deploy eng: `secretenv run --registry eng -- ./deploy.sh`
+
+### With JSON multi-field secrets
+
+Secret at `secret/prod/db_creds`:
+
+```json
+{"username":"app","password":"sk_live_abc"}
+```
+
+Aliases:
+
+```toml
+db_user = "openbao-dev://secret/prod/db_creds#json-key=username"
+db_pass = "openbao-dev://secret/prod/db_creds#json-key=password"
+```
+
+## Troubleshooting
+
+**"Error reading secret: http: server gave HTTP response to HTTPS client"**
+Scheme mismatch. Dev mode is HTTP, not HTTPS. Set `openbao_address = "http://127.0.0.1:8300"` (or the correct scheme for your instance).
+
+**"permission denied"**
+Your policy doesn't grant the required capability. Run `bao policy read <policy>` to verify read/update/delete scopes. For read-only, ensure `"read"` is listed.
+
+**"secret not found"**
+The path doesn't exist. Verify with `bao kv list secret/` to enumerate existing secrets. Check the mount name is correct (typically `secret`).
+
+## See Also
+
+- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
+- [Vault backend](vault.md) — compatible and equivalent (choose based on governance preference)
+- [OpenBao CLI reference](https://openbao.org/docs/commands/) — authoritative OpenBao docs
+- [All backends](README.md) — pick a different backend
+- [Main README](../../README.md) — overview + workflows

@@ -21,10 +21,10 @@ aws_profile = "prod"
 aws_region  = "us-east-1"
 
 # ── 1Password: work account for team secrets + personal for dotfiles ──
-[backends."1password-work"]
+[backends.1password-work]
 type       = "1password"
 op_account = "company.1password.com"
 
-[backends."1password-personal"]
+[backends.1password-personal]
 type       = "1password"
 op_account = "personal.1password.com"

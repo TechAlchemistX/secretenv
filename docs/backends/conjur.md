@@ -1,49 +1,30 @@
 # CyberArk Conjur
 
 **Type:** `conjur`
-**CLI required:** `conjur` (Go-based v8+; v7 Ruby line is rejected at startup)
+**CLI required:** [`conjur`](https://github.com/cyberark/conjur-cli-go) (Go-based v8+; v7 Ruby line is rejected at startup)
 **URI scheme:** `<instance-name>://<variable-id>[#json-key=<field>]`
+**Platform:** all (macOS, Linux, Windows)
+**Tested:** `Conjur CLI v8.1.3-879b90b` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-[CyberArk Conjur](https://www.conjur.org/) is the open-source PAM secrets store. Conjur OSS (Apache-2.0) and Conjur Enterprise (paid) share the same wire protocol — this backend wraps the CLI so the same crate works against both.
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `conjur` backend. New here? See the [main README](../../README.md).
 
-Unlike Vault / OpenBao's KV-mount-and-path model, Conjur uses a **resource-graph identity model**: every secret is a `variable` resource owned by a `policy`, with access mediated by per-resource `permit` statements rather than path-prefix capabilities. SecretEnv hides this by treating the variable ID as the URI path.
+[CyberArk Conjur](https://www.conjur.org/) is the open-source PAM secrets store — Apache-2.0 (OSS) and Enterprise deployments share the same wire protocol. Unlike Vault's KV-mount-and-path model, Conjur uses a **resource-graph identity model**: every secret is a `variable` resource with access mediated by per-resource policies. SecretEnv treats the variable ID as the URI path. The v8 CLI is Go-based and currently distributed as the `cyberark/conjur-cli:8` Docker image (the PyPI `conjur` package is EOL Ruby v7 and is rejected by `secretenv doctor`).
 
----
+## When to pick this
 
-## Install
-
-The Conjur v8 CLI is **Go-based** and currently distributed as the `cyberark/conjur-cli:8` Docker image — there is no Homebrew tap or native macOS binary at the time of v0.11. The PyPI `conjur` package is the EOL Ruby v7 line and is rejected by `secretenv doctor`.
-
-```bash
-docker pull cyberark/conjur-cli:8
-```
-
-Wrap it with a `docker run` shim and put the wrapper on `$PATH` as `conjur`:
-
-```bash
-#!/usr/bin/env bash
-# /usr/local/bin/conjur — wrapper around cyberark/conjur-cli:8
-set -euo pipefail
-exec docker run --rm -i \
-  --network host \
-  -v "$HOME/.conjur-data:/home/cli" \
-  cyberark/conjur-cli:8 "$@"
-```
-
-Linux / Windows native builds are tracked in <https://github.com/cyberark/cyberark-conjur-cli>; if CyberArk publishes a Homebrew tap or universal binary in the future, point `conjur` directly at it and remove the wrapper.
-
-> **PyPI gotcha:** `pip install conjur` resolves to v7.1.0 (Ruby line, EOL) and pins `cryptography~=3.3.2` which fails to build on modern macOS. SecretEnv's `doctor` parses `conjur --version` and refuses to proceed against v7 with an explicit `v8+ required` message.
-
----
+- **You're using Conjur Enterprise or OSS:** native integration, shared policy/audit infrastructure
+- **Policy-scoped access:** Conjur's resource-graph model suits complex permission hierarchies
+- **Team workflows:** machine accounts and role-based access control built-in
+- **Docker-friendly CI:** the official CLI image works in containerized pipelines
 
 ## Configuration
 
 ```toml
 [backends.conjur-prod]
-type           = "conjur"
-conjur_url     = "https://conjur.company.com"     # required
-conjur_account = "myorg"                           # required
-conjur_authn   = "authn-jwt"                       # optional, default "authn"
+type                = "conjur"
+conjur_appliance_url = "https://conjur.company.com"
+conjur_account       = "myorg"
+conjur_authn         = "authn"                       # optional, default "authn"
 ```
 
 ### Fields
@@ -51,110 +32,67 @@ conjur_authn   = "authn-jwt"                       # optional, default "authn"
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"conjur"` |
-| `conjur_url` | Yes | Full URL of the Conjur server (OSS or Enterprise). Set per-instance even though the CLI also reads `~/.conjurrc` — the registry document must deterministically point at the same Conjur cluster regardless of operator shell state. |
-| `conjur_account` | Yes | Top-level account namespace this instance targets. Conjur is multi-tenant; the account is a hard namespace boundary. Same per-instance discipline as `conjur_url`. |
-| `conjur_authn` | No | Authenticator name. Defaults to `"authn"` (API-key). Other valid values: `authn-jwt`, `authn-oidc`, `authn-iam`, `authn-k8s`, `authn-azure`, `authn-gcp`. SecretEnv does NOT take credentials directly — surface the configured authenticator in the doctor identity line. The CLI's pre-established session controls actual auth. |
-| `conjur_login` | No | Identity for non-default authenticators (`host/<id>` or `<user>`). Reserved — currently surfaced in the identity line only when set. |
-| `conjur_bin` | No | Override the `conjur` binary path. Defaults to `"conjur"` (resolved via `$PATH`). Primarily a test hook. |
-| `conjur_unsafe_set` | No | Defense-in-depth opt-in for the `-v <value>` argv path. Leave at the default `false` unless `/dev/stdin` is unavailable in your execution environment (rare — chrooted CI runner with a stripped `/dev`). See "Storage model" below. |
-| `timeout_secs` | No | Per-instance fetch timeout in seconds. Defaults to 30. |
+| `conjur_appliance_url` | Yes | Full URL (HTTP or HTTPS) of the Conjur server. Local dev typically uses `http://localhost:8083` (HTTP only). |
+| `conjur_account` | Yes | Top-level account namespace. Conjur is multi-tenant; every variable lives under exactly one account. |
+| `conjur_authn` | No | Authenticator name. Defaults to `"authn"` (API-key). Other values: `authn-jwt`, `authn-oidc`, `authn-iam`, `authn-k8s`, `authn-azure`, `authn-gcp`. Surfaced in the doctor identity line. The CLI's pre-established session controls actual auth. |
+| `conjur_unsafe_set` | No | Defense-in-depth opt-in for the `-v <value>` argv path. Defaults to `false`; use the safe `-f /dev/stdin` path by default. Set `true` only if `/dev/stdin` is unavailable. |
+| `timeout_secs` | No | Per-instance fetch timeout. Default: 30s. |
 
-### URL gotcha (HTTP vs HTTPS)
-
-Conjur OSS local dev (`docker compose up` from the official `conjur-quickstart`) listens on plain HTTP. Production deployments use HTTPS with a CA-signed certificate. Always set `conjur_url` explicitly with the scheme:
-
-```toml
-conjur_url = "http://localhost:8083"          # local dev (HTTP only)
-conjur_url = "https://conjur.company.com"     # production
-```
-
-For HTTP-only local servers, the CLI's `conjur init` requires `--insecure`. SecretEnv passes the URL through verbatim, so whichever scheme `conjur_url` carries is the scheme used.
-
-### Account is required
-
-Conjur is multi-tenant: every variable lives under exactly one account. Set `conjur_account` per-instance even though the CLI itself reads `CONJUR_ACCOUNT` from `~/.conjurrc` — same discipline as `conjur_url`, applied for the same reason.
-
-### Multiple Conjur instances or accounts
+### Multiple Conjur instances
 
 ```toml
 [backends.conjur-eng]
-type           = "conjur"
-conjur_url     = "https://conjur.company.com"
-conjur_account = "engineering"
+type                 = "conjur"
+conjur_appliance_url = "https://conjur.company.com"
+conjur_account       = "engineering"
 
 [backends.conjur-payments]
-type           = "conjur"
-conjur_url     = "https://conjur.company.com"
-conjur_account = "payments"
+type                 = "conjur"
+conjur_appliance_url = "https://conjur.company.com"
+conjur_account       = "payments"
 ```
-
----
 
 ## URI Format
 
 ```
 conjur-prod://prod/db/password
-└────────┘   └──────────────┘
- instance    variable ID (the / separators are part of the ID,
-             reflecting Conjur policy hierarchy — NOT URL path
-             delimiters)
+└──────────┘  └──────────────┘
+instance      variable ID (the entire path is the variable ID)
 ```
 
-Conjur has **no KV-mount concept**. The entire URI path IS the variable ID. SecretEnv strips a single leading `/` and passes the rest verbatim to `conjur variable get/set -i <variable-id>`.
+Conjur variables have **no KV-mount concept** — the entire URI path IS the variable ID. SecretEnv strips a single leading `/` and passes the rest to `conjur variable get -i <variable-id>`.
 
 ### `#json-key=<field>` fragment
 
-When a single variable holds multiple values encoded as a JSON object, the `#json-key=<field>` fragment selects one top-level scalar:
+When a variable holds a JSON object, extract a top-level scalar field:
 
 ```toml
-[registries.default.aliases]
 db_password = "conjur-prod://prod/db/credentials#json-key=password"
 db_username = "conjur-prod://prod/db/credentials#json-key=username"
 ```
 
-Provision side:
+The fragment is recognized on `get` only. `set`, `delete`, `list`, and `history` reject any fragment.
 
-```bash
-echo -n '{"username":"app","password":"sk_live_abc"}' \
-  | conjur variable set -i prod/db/credentials -f /dev/stdin
-```
-
-The fragment is recognized only on `get`. `set`, `delete`, `list`, and `history` reject any fragment.
-
----
-
-## Storage model
-
-Conjur variables hold opaque string values. SecretEnv writes the value through the safe-stdin path and reads it back via `conjur variable get -i <id>`, stripping exactly one trailing `\n`.
-
-Registry documents are stored as a JSON alias→URI map serialized to the variable value, matching the [`aws-secrets`](./aws-secrets.md), [`aws-ssm`](./aws-ssm.md), and [`openbao`](./openbao.md) shape. `secretenv registry set` produces this layout automatically.
-
-### `set` argv discipline (no `--value-from-stdin`)
-
-Conjur v8 CLI has **no `--value-from-stdin` flag** (verified against `Conjur CLI version 8.1.3`). Only `-v <value>` argv and `-f <file>` file-path. SecretEnv defaults to `-f /dev/stdin` with the value piped through child stdin: `/dev/stdin` is the kernel pseudo-file present on every supported platform, the CLI reads bytes "as if from a file" without touching disk, and the value never appears on argv. This is CV-1 discipline equivalent to OpenBao's `value=-`.
-
-`conjur_unsafe_set = true` is the explicit operator opt-in that switches `set` to `-v <value>` argv path. The only legitimate reason to flip it: a constrained execution environment without `/dev/stdin` (chrooted CI runner with stripped `/dev/`). Default is `false`; the default-off invariant is machine-checked in the test suite.
-
-### `delete` clears, doesn't remove
-
-**Conjur has no `conjur variable delete` command.** Variables are policy-defined and can only be removed by reloading policy with the variable stripped, which requires policy-edit privileges far beyond a typical SecretEnv operator's `read`/`update` scope.
-
-SecretEnv's `delete()` therefore implements **clear** semantics — it sets the value to the empty string via the same safe `-f /dev/stdin` path used by `set`. The variable retains its policy definition; only the value is emptied. This mirrors 1Password's `delete` precedent and is documented as a deliberate semantic gap.
-
-To fully remove a variable, reload policy without it via `conjur policy load --replace`.
-
----
+**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
-SecretEnv delegates to the `conjur` CLI. Any auth method the CLI supports works — set `conjur_authn` to surface the configured authenticator in `secretenv doctor`:
+SecretEnv delegates to the `conjur` CLI. The CLI's pre-established session controls actual auth — SecretEnv does not take credentials directly. Set `conjur_authn` to surface the configured authenticator in `secretenv doctor`:
 
-- **API key** (`authn`, default) — `conjur login -i <user>`. Session persisted in OS keystore (macOS Keychain / Linux Secret Service / Windows Credential Manager) by default; `~/.netrc` only when launched with `--force-netrc` for Summon compatibility.
-- **JWT** (`authn-jwt`) — for CI / Kubernetes runners. Operator pre-establishes via `conjur login --jwt-from-file <path>` or env-driven flow.
+- **API key** (`authn`, default) — `conjur login -i <user>`. Session persisted in OS keystore (Keychain / Secret Service / Credential Manager) by default.
+- **JWT** (`authn-jwt`) — for CI / Kubernetes. Operator pre-establishes via `conjur login --jwt-from-file <path>`.
 - **OIDC** (`authn-oidc`) — browser / device-code flow.
-- **Cloud-native** (`authn-iam`, `authn-azure`, `authn-gcp`, `authn-k8s`) — workload identity flows; SecretEnv just trusts the CLI.
+- **Cloud-native** (`authn-iam`, `authn-azure`, `authn-gcp`, `authn-k8s`) — workload identity flows. SecretEnv trusts the CLI's session.
 
-### Minimum policy
+### Set safety (no argv)
+
+`set` uses `-f /dev/stdin` with the value piped through stdin — the kernel pseudo-file lets the CLI read bytes without touching disk or argv. This is CV-1 safe. `conjur_unsafe_set = true` switches to `-v <value>` argv path (expose only if `/dev/stdin` is unavailable — rare).
+
+### Delete semantics
+
+Conjur has **no `conjur variable delete` command** — variables are policy-defined. SecretEnv's `delete()` implements **clear** semantics: it sets the value to the empty string via the safe stdin path. The variable retains its policy definition; only the value is emptied.
+
+## Minimum policy
 
 ```yaml
 - !policy
@@ -167,36 +105,126 @@ SecretEnv delegates to the `conjur` CLI. Any auth method the CLI supports works 
         resource: !variable prod/stripe-key
 ```
 
-`set` additionally needs `update`. `delete` (clear) also needs `update`. SecretEnv does NOT manage policy — operators load policies via `conjur policy load`.
-
----
+For `set` and `delete` (clear), the role also needs `update` privilege.
 
 ## doctor Output
 
+Healthy state:
+
 ```
-conjur-prod                                                  (conjur)
+conjur-prod                                                      (conjur)
   ✓ conjur CLI Conjur CLI version 8.1.3-879b90b
-  ✓ authenticated  account=myorg identity=admin authn=authn
+  ✓ authenticated  account=myorg  identity=admin  authn=authn
 ```
 
-The `authn=` value comes from your configured `conjur_authn`. Conjur's `whoami` does not surface the authenticator name, so the doctor identity line uses the configured value — keep `conjur_authn` aligned with the auth method you actually used to log in.
+Not authenticated (session expired):
 
 ```
-conjur-prod                                                  (conjur)
+conjur-prod                                                      (conjur)
   ✓ conjur CLI Conjur CLI version 8.1.3-879b90b
   ✗ not authenticated — session expired
       → run: conjur login  (or 'conjur init' then 'conjur login' if first-time)
 ```
 
+CLI not found (v7 Ruby or not installed):
+
 ```
-conjur-prod                                                  (conjur)
+conjur-prod                                                      (conjur)
   ✗ conjur CLI not found
       → install: docker pull cyberark/conjur-cli:8 (alias `conjur` to a docker-run wrapper)
-        — see https://github.com/cyberark/cyberark-conjur-cli for native builds
+        — see https://github.com/cyberark/conjur-cli-go for native builds
 ```
 
----
+## Fragment directives
 
-## License note
+| Directive | Effect | Example |
+|---|---|---|
+| `json-key=<field>` | Extract top-level JSON field from variable value | `conjur-prod://prod/db/creds#json-key=password` |
 
-Conjur OSS is **Apache-2.0** (CyberArk-led, recently donated to CNCF as an incubating project). Conjur Enterprise is the commercial offering — same wire protocol, additional features (Enterprise authn methods, HA replication, audit). The SecretEnv `conjur` backend wraps the open-source CLI, so the same crate works against both deployments. SecretEnv itself ships under AGPL-3.0-only.
+Other fragments are rejected with an enumerated error listing supported directives.
+
+## History API support
+
+Not implemented. Conjur's CLI exposes no per-variable version-history subcommand. The server maintains audit logs; `secretenv registry history <alias>` returns the trait-default "not implemented" until the CLI surfaces revision metadata.
+
+## Limitations
+
+- **No variable deletion.** `delete()` clears the value (empty string); the variable remains defined. Remove via policy reload only.
+- **Go v8 CLI only.** The PyPI `conjur` package (Ruby v7) is EOL and rejected at startup. Use `cyberark/conjur-cli:8` Docker image or native v8 builds.
+- **HTTP/HTTPS choice is yours.** Set `conjur_appliance_url` with the correct scheme; local dev uses HTTP, production uses HTTPS.
+
+## Examples
+
+### Single instance, local dev
+
+```toml
+[backends.conjur-local]
+type                 = "conjur"
+conjur_appliance_url = "http://localhost:8083"
+conjur_account       = "myorg"
+
+[registries.default]
+sources = ["conjur-local://secretenv/registry"]
+```
+
+```bash
+conjur init --url http://localhost:8083 --account myorg
+conjur login
+secretenv doctor
+secretenv run -- npm start
+```
+
+### Multi-account setup
+
+```toml
+[backends.conjur-eng]
+type                 = "conjur"
+conjur_appliance_url = "https://conjur.company.com"
+conjur_account       = "engineering"
+
+[backends.conjur-payments]
+type                 = "conjur"
+conjur_appliance_url = "https://conjur.company.com"
+conjur_account       = "payments"
+
+[registries.eng]
+sources = ["conjur-eng://secretenv/registry"]
+
+[registries.payments]
+sources = ["conjur-payments://secretenv/registry"]
+```
+
+Deploy with: `secretenv run --registry payments -- ./deploy.sh`
+
+### As registry source
+
+Variable `prod/secretenv/registry` holds:
+
+```json
+{
+  "stripe-key": "conjur-prod://prod/stripe/live-key",
+  "db-url": "conjur-prod://prod/db/connection-string#json-key=url",
+  "slack-token": "conjur-prod://prod/integrations/slack#json-key=token"
+}
+```
+
+## Troubleshooting
+
+**"not authenticated — session expired"**
+Run `conjur login` (or `conjur init` then `conjur login` on first setup). The CLI persists sessions in your OS keystore automatically.
+
+**"conjur: 'variable' is not a conjur command"**
+You're running Conjur v7 (Ruby). SecretEnv requires v8 (Go). Uninstall `pip install conjur` and use the official `cyberark/conjur-cli:8` Docker image instead.
+
+**"HTTP 403 Forbidden" or "Variable not found"**
+Check your policy grants `read` (or `read, execute`) privilege on the target variable. Use `conjur resource check conjur:variable:prod/your-var read` to verify.
+
+## See Also
+
+- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc.
+- [Vault backend](vault.md) — alternative: KV-mount-based secrets management
+- [OpenBao backend](openbao.md) — alternative: Vault-compatible, open-source
+- [All backends](README.md) — pick a different backend
+- [Main README](../../README.md) — overview + workflows

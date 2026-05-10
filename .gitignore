@@ -26,3 +26,9 @@ Thumbs.db
 .env.*
 secretenv.local.toml
 .wrangler/
+
+# Docs (VitePress)
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+*.log

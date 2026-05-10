@@ -168,7 +168,7 @@ aws_region  = "us-east-1"
 
 **`1password` — 1Password**
 ```toml
-[backends."1password-work"]
+[backends.1password-work]
 type       = "1password"
 op_account = "company.1password.com"   # optional — omit for single-account setups
 ```
@@ -257,7 +257,7 @@ type        = "aws-ssm"
 aws_profile = "int"
 aws_region  = "us-east-1"
 
-[backends."1password-work"]
+[backends.1password-work]
 type       = "1password"
 op_account = "company.1password.com"
 

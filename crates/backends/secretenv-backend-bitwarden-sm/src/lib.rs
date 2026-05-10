@@ -154,10 +154,10 @@ pub struct BitwardenSmBackend {
     timeout: Duration,
 }
 
-/// `bws secret get` JSON envelope. Only the `value` field is read at
-/// runtime; the rest are deserialized to validate shape and ignored.
-/// `#[serde(default)]` so a server-side schema addition that omits a
-/// field doesn't break existing clients.
+/// `bws secret get` JSON envelope. Only `value` is read; siblings are
+/// deserialized for shape validation and ignored. `#[serde(default)]`
+/// tolerates a future `bws` schema change that drops the field —
+/// section 28's smoke assertion catches the silent-drift counterpart.
 #[derive(Deserialize)]
 struct SecretGetResponse {
     #[serde(default)]
@@ -171,10 +171,12 @@ struct SecretGetResponse {
 /// because real `bws project list` returns the full envelope
 /// (`organizationId`, `name`, `creationDate`, `revisionDate`, ...).
 /// Phase 8 smoke caught this when strict-mock tests, which returned
-/// only `{"id":"..."}`, missed the field-set drift.
+/// only `{"id":"..."}`, missed the field-set drift. The field is
+/// REQUIRED (no `#[serde(default)]`) so an envelope shape that drops
+/// `id` surfaces as a parse error at Level 2 — matching the doc claim
+/// that `id` "anchors the shape."
 #[derive(Deserialize)]
 struct ProjectListElement {
-    #[serde(default)]
     #[allow(dead_code)]
     id: String,
 }
@@ -605,11 +607,46 @@ impl Backend for BitwardenSmBackend {
     // versioning.
 }
 
-/// Parse the version token (e.g. `2.0.0`) out of a `bws <X.Y.Z>`
-/// line. Returns the `<X.Y.Z>` portion when matched.
+/// Parse the version token (e.g. `2.0.0`) out of a `bws --version`
+/// output line. Scans whitespace-separated tokens for the first one
+/// shaped like `<X.Y.Z>` (three dot-separated numeric components).
+/// Tolerates rebrands and prefix drift (e.g. `bws-cli 2.1.0`,
+/// `bitwarden-sm-cli 2.0.1`, or `bws 2.0.0 (build abc123)`) — anchoring
+/// on the literal `bws ` prefix would have failed any of those opaquely
+/// at Level 1. Mirrors the openbao backend's permissive scanner.
+///
+/// Trust boundary: input is `bws --version` stdout, sourced from the
+/// configured `bitwarden_bin`. The binary is already an authentication
+/// trust root (it handles the access token), so version-string spoofing
+/// is not in the threat model — a hostile substitute could just lie
+/// about anything else too.
+///
+/// LIMITATION: returns the FIRST `<X.Y.Z>` whitespace token. A future
+/// `--version` line that embeds an unrelated three-component dotted
+/// number BEFORE the real version (e.g. `bws built on host 192.168.1
+/// version 2.5.0` would misparse `192.168.1` as the version, then fail
+/// the major-floor check opaquely) would misparse. If `bws --version`
+/// ever grows that shape, switch to anchoring on a known-stable prefix
+/// substring.
 fn parse_version_token(line: &str) -> Option<&str> {
-    let after = line.strip_prefix("bws ")?;
-    after.split_whitespace().next()
+    fn is_three_dot_numeric(tok: &str) -> bool {
+        let mut parts = tok.split('.');
+        let major = parts.next();
+        let minor = parts.next();
+        let patch = parts.next();
+        let extra = parts.next();
+        // Defends against pathological inputs like `bws bws 0.5.0`
+        // where the first whitespace token (`bws`) is non-numeric and
+        // would otherwise fail numeric major-parse downstream.
+        match (major, minor, patch, extra) {
+            (Some(x), Some(y), Some(z), None) => {
+                let all_numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+                all_numeric(x) && all_numeric(y) && all_numeric(z)
+            }
+            _ => false,
+        }
+    }
+    line.split_whitespace().find(|tok| is_three_dot_numeric(tok))
 }
 
 /// Parse `raw` as a JSON object and extract the top-level `key`
@@ -645,10 +682,13 @@ fn extract_json_field(
         serde_json::Value::Number(n) => Ok(n.to_string()),
         serde_json::Value::Bool(b) => Ok(b.to_string()),
         serde_json::Value::Null => Ok("null".to_owned()),
-        ref v @ (serde_json::Value::Array(_) | serde_json::Value::Object(_)) => bail!(
-            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON {} \
-             — only scalar fields (string/number/boolean/null) can be extracted",
-            if v.is_array() { "array" } else { "object" }
+        serde_json::Value::Array(_) => bail!(
+            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON \
+             array — only scalar fields (string/number/boolean/null) can be extracted"
+        ),
+        serde_json::Value::Object(_) => bail!(
+            "bitwarden-sm backend '{instance_name}': URI '{uri_raw}' field '{key}' is a JSON \
+             object — only scalar fields (string/number/boolean/null) can be extracted"
         ),
     }
 }
@@ -698,25 +738,39 @@ impl BitwardenSmFactory {
                 );
             }
         }
-        let bitwarden_access_token_env =
+        // Validate operator-supplied token env var name; the
+        // `unwrap_or_else` default is the static `DEFAULT_TOKEN_ENV`
+        // const which is known-good at compile time, so the checks
+        // only need to run on the configured branch.
+        let bitwarden_access_token_env = if let Some(env) =
             optional_string(config, "bitwarden_access_token_env", "bitwarden-sm", instance_name)?
-                .unwrap_or_else(|| DEFAULT_TOKEN_ENV.to_owned());
-        if has_forbidden_control_char(&bitwarden_access_token_env) {
-            bail!(
-                "bitwarden-sm backend '{instance_name}': field 'bitwarden_access_token_env' \
-                 contains a forbidden control character (NUL or sub-0x20 byte other than tab)"
-            );
-        }
-        if !is_valid_env_var_name(&bitwarden_access_token_env) {
-            bail!(
-                "bitwarden-sm backend '{instance_name}': field 'bitwarden_access_token_env' \
-                 ('{bitwarden_access_token_env}') is not a valid POSIX env var name (must match \
-                 [A-Za-z_][A-Za-z0-9_]*)"
-            );
-        }
+        {
+            if has_forbidden_control_char(&env) {
+                bail!(
+                    "bitwarden-sm backend '{instance_name}': field 'bitwarden_access_token_env' \
+                     contains a forbidden control character (NUL or sub-0x20 byte other than tab)"
+                );
+            }
+            if !is_valid_env_var_name(&env) {
+                bail!(
+                    "bitwarden-sm backend '{instance_name}': field 'bitwarden_access_token_env' \
+                     ('{env}') is not a valid POSIX env var name (must match \
+                     [A-Za-z_][A-Za-z0-9_]*)"
+                );
+            }
+            env
+        } else {
+            DEFAULT_TOKEN_ENV.to_owned()
+        };
         let bitwarden_bin =
             optional_string(config, "bitwarden_bin", "bitwarden-sm", instance_name)?
                 .unwrap_or_else(|| CLI_NAME.to_owned());
+        if has_forbidden_control_char(&bitwarden_bin) {
+            bail!(
+                "bitwarden-sm backend '{instance_name}': field 'bitwarden_bin' \
+                 contains a forbidden control character (NUL or sub-0x20 byte other than tab)"
+            );
+        }
         let bitwarden_unsafe_set =
             optional_bool(config, "bitwarden_unsafe_set", "bitwarden-sm", instance_name)?
                 .unwrap_or(false);
@@ -974,6 +1028,7 @@ mod tests {
             panic!("expected error for control char in server url");
         };
         let msg = format!("{err:#}");
+        assert!(msg.contains("bitwarden_server_url"), "names the field: {msg}");
         assert!(msg.contains("control character"), "names the issue: {msg}");
     }
 
@@ -1432,7 +1487,9 @@ mod tests {
         let _env = env_with(DEFAULT_TOKEN_ENV, TEST_TOKEN, None);
         let dir = TempDir::new().unwrap();
         let mock = StrictMock::new("bws")
-            .on(&["--output", "json", "secret", "edit", "--value", "v", TEST_UUID], ok("{}"))
+            // `secret edit` stdout is unread by the wrapper; empty body
+            // is honest about that vs. a misleading-looking `{}`.
+            .on(&["--output", "json", "secret", "edit", "--value", "v", TEST_UUID], ok(""))
             .install(dir.path());
         let b = backend_with_unsafe_set(&mock);
         let uri = BackendUri::parse(&format!("bws-dev://{TEST_UUID}")).unwrap();
@@ -1451,6 +1508,7 @@ mod tests {
         // `reject_any_fragment` returns its own error wording —
         // check it ran (didn't fall through to the unsafe-set gate).
         assert!(!msg.contains("disabled by default"), "fragment check ran first: {msg}");
+        assert!(msg.contains("fragment"), "names the rejected concept: {msg}");
     }
 
     // ---- delete ----
@@ -1586,5 +1644,119 @@ mod tests {
         let b = backend(&mock);
         let uri = BackendUri::parse(&format!("bws-dev://{TEST_UUID}")).unwrap();
         b.get(&uri).await.unwrap();
+    }
+
+    // ---- factory: bitwarden_bin control-char hardening ----
+
+    #[test]
+    fn factory_rejects_control_char_in_bitwarden_bin() {
+        let factory = BitwardenSmFactory::new();
+        let mut cfg: HashMap<String, toml::Value> = HashMap::new();
+        cfg.insert(
+            "bitwarden_bin".to_owned(),
+            toml::Value::String("/usr/local/bin/b\nws".to_owned()),
+        );
+        let Err(err) = factory.create("bws-dev", &cfg) else {
+            panic!("expected error for control char in bitwarden_bin");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bitwarden_bin"), "names the field: {msg}");
+        assert!(msg.contains("control character"), "names the issue: {msg}");
+    }
+
+    // ---- parse_version_token: permissive parser ----
+
+    #[test]
+    fn parse_version_token_accepts_canonical_bws_prefix() {
+        assert_eq!(parse_version_token("bws 2.0.0"), Some("2.0.0"));
+    }
+
+    #[test]
+    fn parse_version_token_accepts_rebrand_prefixes() {
+        // Future-proofing: a rebrand to `bws-cli` or
+        // `bitwarden-sm-cli` shouldn't fail Level 1 opaquely.
+        assert_eq!(parse_version_token("bws-cli 2.1.0"), Some("2.1.0"));
+        assert_eq!(parse_version_token("bitwarden-sm-cli 2.0.1"), Some("2.0.1"));
+    }
+
+    #[test]
+    fn parse_version_token_accepts_trailing_metadata() {
+        // `bws --version` could grow build-info: "bws 2.0.0 (build abc123)".
+        assert_eq!(parse_version_token("bws 2.0.0 (build abc123)"), Some("2.0.0"));
+    }
+
+    #[test]
+    fn parse_version_token_rejects_no_numeric_triple() {
+        assert_eq!(parse_version_token("bws unknown"), None);
+        assert_eq!(parse_version_token("bws bws"), None);
+        assert_eq!(parse_version_token(""), None);
+    }
+
+    #[test]
+    fn parse_version_token_rejects_two_component_version() {
+        // A `2.0` or `2.0.0.0` shape is not what `bws` emits and
+        // would propagate as garbage downstream.
+        assert_eq!(parse_version_token("bws 2.0"), None);
+        assert_eq!(parse_version_token("bws 2.0.0.0"), None);
+    }
+
+    #[test]
+    fn parse_version_token_first_numeric_triple_wins() {
+        // Pins the documented "first <X.Y.Z> token wins" semantics.
+        // If `bws --version` ever grows a shape that puts an unrelated
+        // dotted-numeric BEFORE the real version (e.g. a build host
+        // IPv4 fragment), this test catches the misparse — and the
+        // doc-comment LIMITATION block names that exact failure mode.
+        assert_eq!(parse_version_token("bws built on 1.2.3 version 2.5.0"), Some("1.2.3"));
+        // Real-world clean case: `2.0.0` is first, sha second.
+        assert_eq!(parse_version_token("bws 2.0.0 sha 9.9.9"), Some("2.0.0"));
+    }
+
+    // ---- extract_json_field: scalar variants ----
+
+    #[test]
+    fn extract_json_field_extracts_string() {
+        let raw = r#"{"username":"alice"}"#;
+        let v = extract_json_field("bws-dev", "uri", "id", raw, "username").unwrap();
+        assert_eq!(v, "alice");
+    }
+
+    #[test]
+    fn extract_json_field_stringifies_number() {
+        let raw = r#"{"port":5432}"#;
+        let v = extract_json_field("bws-dev", "uri", "id", raw, "port").unwrap();
+        assert_eq!(v, "5432");
+    }
+
+    #[test]
+    fn extract_json_field_stringifies_boolean() {
+        let raw = r#"{"enabled":true}"#;
+        let v = extract_json_field("bws-dev", "uri", "id", raw, "enabled").unwrap();
+        assert_eq!(v, "true");
+    }
+
+    #[test]
+    fn extract_json_field_stringifies_null_as_literal() {
+        let raw = r#"{"opt":null}"#;
+        let v = extract_json_field("bws-dev", "uri", "id", raw, "opt").unwrap();
+        assert_eq!(v, "null");
+    }
+
+    #[test]
+    fn extract_json_field_rejects_array() {
+        let raw = r#"{"tags":["a","b"]}"#;
+        let err = extract_json_field("bws-dev", "uri", "id", raw, "tags").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("array"), "names array: {msg}");
+        assert!(msg.contains("scalar"), "names scalar contract: {msg}");
+    }
+
+    #[test]
+    fn extract_json_field_rejects_object() {
+        let raw = r#"{"nested":{"x":1}}"#;
+        let err = extract_json_field("bws-dev", "uri", "id", raw, "nested").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("object"), "names object: {msg}");
+        assert!(msg.contains("scalar"), "names scalar contract: {msg}");
     }
 }

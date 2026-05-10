@@ -3,24 +3,29 @@
 **Type:** `infisical`
 **CLI required:** [`infisical`](https://infisical.com/docs/cli/overview) v0.43+
 **URI scheme:** `<instance-name>:///<project-id>/<env>/<secret>` (full) or `<instance-name>:///<secret>` (short, when config supplies defaults). Nested folders fold into middle segments: `<project-id>/<env>/<folder1>/<folder2>/<secret>`.
-**Platform:** cross-platform (macOS, Linux, Windows)
+**Platform:** all (macOS, Linux, Windows)
+**Tested:** `infisical 0.43.79` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-Infisical is an open-source secrets manager, available both as a hosted SaaS (`app.infisical.com`) and as a self-hostable service. Teams frequently pick Infisical when they want a Doppler-like developer experience without SaaS lock-in. The `infisical` CLI wraps the Infisical API with a clean `secrets get / set / delete` surface and resolves auth from one of three sources: an explicit `INFISICAL_TOKEN` env var, the local cache `infisical login` drops, or an instance-scoped token passed through secretenv's `infisical_token` config field.
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `infisical` backend. New here? See the [overview](/).
 
----
+Infisical is an open-source secrets manager available as SaaS or self-hosted. Pick Infisical when you want a Doppler-like experience without vendor lock-in, with support for nested folder scoping and self-hosting. The `infisical` CLI wraps the API with a clean `secrets get / set / delete` surface.
+
+## When to pick this
+
+- **Self-hosted option:** run your own instance; Infisical Cloud (`app.infisical.com`) is also available
+- **Folder-scoped secrets:** organize secrets in nested paths (`/api/stripe`, `/database/replica`)
+- **Open source first:** MPL-2.0 license, community-driven governance
+- **Team collaboration:** built-in role-based access, audit logging, secret rotation
 
 ## Configuration
 
 ```toml
 [backends.infisical-prod]
-type = "infisical"                                       # required
-# All fields below are optional.
-# infisical_project_id  = "abc-123"                      # short-form URI default
-# infisical_environment = "prod"                         # short-form URI default (dev/staging/prod by default)
-# infisical_secret_path = "/api"                         # default folder path within the env
-# infisical_token       = "st.xxx.yyy"                   # override $INFISICAL_TOKEN
-# infisical_domain      = "https://infisical.acme.com"   # self-hosted instance URL
-# timeout_secs          = 15                             # default: DEFAULT_GET_TIMEOUT
+type                  = "infisical"
+infisical_project_id  = "abc-123-xyz"     # optional — short-form default
+infisical_environment = "prod"            # optional — short-form default (both-or-neither)
+infisical_secret_path = "/api"            # optional — default folder path (default: /)
+infisical_domain      = "https://infisical.acme.com"  # optional — self-hosted domain
 ```
 
 ### Fields
@@ -28,64 +33,38 @@ type = "infisical"                                       # required
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"infisical"` |
-| `infisical_project_id` | No | Default project UUID if the URI omits the `<project-id>` segment (short form). See [URI Format](#uri-format). Pairs with `infisical_environment`: both-or-neither. |
-| `infisical_environment` | No | Default environment slug (Infisical's default envs are `dev`/`staging`/`prod`, but projects may add custom slugs). |
-| `infisical_secret_path` | No | Default folder path within the environment. Infisical supports nested folders (`/`, `/api`, `/api/stripe`). Defaults to `/` when unset. |
-| `infisical_token` | No | Per-instance override for `$INFISICAL_TOKEN`. Passed to the `infisical` subprocess via the `INFISICAL_TOKEN` environment variable — **never** via the `--token` argv flag (argv is visible to same-UID processes via `ps -ww`). |
-| `infisical_domain` | No | Self-hosted Infisical instance URL. Passed via `INFISICAL_API_URL` env var — never the `--domain` argv flag. Default: `https://app.infisical.com/api` (hosted SaaS). |
-| `timeout_secs` | No | Per-instance fetch deadline. Default: `DEFAULT_GET_TIMEOUT` (30 s). Infisical API latencies are typically sub-second; bump this only if you've seen intermittent timeouts during incidents. |
+| `infisical_project_id` | No | Default project UUID for short-form URIs. Must pair with `infisical_environment` (both or neither). |
+| `infisical_environment` | No | Default environment slug (`dev`, `staging`, `prod`, or custom). Must pair with `infisical_project_id`. |
+| `infisical_secret_path` | No | Default folder path (e.g., `/api`, `/database`). Defaults to `/` when unset. |
+| `infisical_domain` | No | Self-hosted instance URL. Passed via `INFISICAL_API_URL` env (never argv). Default: `https://app.infisical.com/api`. |
+| `infisical_token` | No | Per-instance token override. Passed via `INFISICAL_TOKEN` env (never argv). Prefer env var in CI. |
+| `infisical_unsafe_set` | No | Defense-in-depth opt-in for `set`. Defaults to `false`. |
+| `timeout_secs` | No | Per-instance fetch timeout. Default: 30s. |
 
-### Short-form URI defaults
+### Self-hosted domain trust
 
-`infisical_project_id` and `infisical_environment` are **both-or-neither**. Setting only one triggers a factory-time error pointing at the other field — the alternative would be a confusing "missing config" error surfacing at every short-form `get()` instead of at config-load time.
+`infisical_domain` accepts any URL. A typo or lookalike domain routes credentials to an attacker. Before committing a self-hosted domain:
 
-```toml
-[backends.infisical-prod]
-type                  = "infisical"
-infisical_project_id  = "abc-123"
-infisical_environment = "prod"
-```
+- Verify it matches your org's canonical Infisical install
+- Pin HTTPS with a trusted cert (avoid `http://` except loopback)
+- Confirm the TLS cert belongs to your org (inspect with `openssl s_client -connect ...`)
+- Avoid registries pointing at domains you don't control
 
-With the defaults set, `infisical-prod:///STRIPE_API_KEY` resolves to project=`abc-123`, env=`prod`, path=`/`, secret=`STRIPE_API_KEY`.
+See [security.md#self-hosted-domains](../security.md#self-hosted-domains) for the full disclosure discipline.
 
-Without them, every URI must carry at least the project + env segments: `infisical-prod:///abc-123/prod/STRIPE_API_KEY`.
-
-### Self-hosted vs SaaS
-
-One config, one CLI, two target shapes:
-
-```toml
-# SaaS (hosted at app.infisical.com — the default)
-[backends.infisical-saas]
-type = "infisical"
-
-# Self-hosted
-[backends.infisical-internal]
-type             = "infisical"
-infisical_domain = "https://infisical.acme.com"
-```
-
-The `infisical` CLI is shape-identical against both surfaces — only the API URL differs. The `infisical_domain` field points the subprocess at your instance via the `INFISICAL_API_URL` environment variable; no `--domain` flag ever lands on argv (same hardening discipline as the token).
-
-### Multiple Infisical accounts
+### Multi-account setups
 
 ```toml
 [backends.infisical-acme]
 type             = "infisical"
 infisical_token  = "st.xxx.ACME_TOKEN"
 
-[backends.infisical-side-project]
+[backends.infisical-consulting]
 type             = "infisical"
-infisical_token  = "st.xxx.SIDE_TOKEN"
+infisical_token  = "st.xxx.CONSULTING_TOKEN"
 ```
 
-Each instance gets its own token. `infisical-acme:///…` and `infisical-side-project:///…` URIs route through independent auth.
-
----
-
 ## URI Format
-
-### Full form (three or more segments)
 
 ```
 infisical-prod:///abc-123/prod/STRIPE_API_KEY
@@ -93,240 +72,125 @@ infisical-prod:///abc-123/prod/STRIPE_API_KEY
 instance name     project env  secret name
 ```
 
-Every segment must be non-empty. `<project-id>` is Infisical's UUID identifier — visible in the project settings URL or via the dashboard. `<env>` is the environment slug (`dev`/`staging`/`prod` or a custom slug).
+Full form: `<project-id>/<env>/<secret>`. Nested folders fold into middle segments: `abc-123/prod/api/stripe/KEY` → project=`abc-123`, env=`prod`, path=`/api/stripe`, secret=`KEY`. Short form (one segment) requires both project-id and environment in config.
 
-### Folder-path folding (four or more segments)
-
-Infisical organizes secrets under a filesystem-like folder tree inside each environment. The URI folds folder components in as middle segments between `<env>` and `<secret>`:
-
-```
-infisical-prod:///abc-123/prod/api/stripe/STRIPE_API_KEY
-                              └────────┘
-                              folds to path=/api/stripe
-```
-
-This URI resolves to project=`abc-123`, env=`prod`, **path=`/api/stripe`**, secret=`STRIPE_API_KEY`. The backend splits on `/`, takes the first two non-empty segments as project + env, the last as secret name, and joins the middle with `/` to form the folder path. If there are no middle segments, path defaults to `/`.
-
-### Short form (one segment)
-
-```
-infisical-prod:///STRIPE_API_KEY
-└────────────┘    └────────────┘
-instance name     secret name
-```
-
-Valid only when the instance config sets **both** `infisical_project_id` and `infisical_environment`. The backend resolves project + env + path from defaults and the URI's sole segment as the secret name.
-
-If defaults aren't set, a short-form URI errors locally **before** any `infisical` subprocess runs, with a message pointing at both fields.
-
-### Invalid segment counts
-
-`infisical-prod:///abc-123/STRIPE_API_KEY` (two segments) is ambiguous — could be project/secret, env/secret, or folder/secret — and rejected with a specific error. Use full form with all segments or short form with only the secret name.
-
-### Fragment directives
-
-**None in v0.7.** URIs carrying a `#` fragment are rejected at `get` / `set` / `delete` / `list` / `history` time. Reserved for later if per-URI directives become useful.
-
-### Secret names
-
-Infisical's API accepts most characters in secret names but the standard shape is `[A-Z_][A-Z0-9_]*` (all-caps, underscores). The backend doesn't enforce — it passes whatever you give it through the URI directly.
-
----
+**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
 Precedence (highest wins):
 
-1. **`infisical_token` config field** — instance-scoped, passed via `INFISICAL_TOKEN` env to every subprocess.
-2. **`$INFISICAL_TOKEN` env var** — inherits from the parent shell.
-3. **`infisical login` local cache** — the CLI's built-in credential store.
+1. **`infisical_token` config field** — instance-scoped, via `INFISICAL_TOKEN` env
+2. **`$INFISICAL_TOKEN` env var** — from parent shell
+3. **`infisical login` local cache** — browser-based login, cached locally
 
-### Token types
-
-Infisical issues several token shapes; the backend doesn't care which you use — it passes whatever's configured through to the CLI, which handles the type-specific behavior itself:
-
-| Type | Shape | Scope | Use case |
-|---|---|---|---|
-| **User login** | Cached via `infisical login` | User-scoped (all projects the user can access) | Your workstation after browser-based login. Interactive use, exploration. |
-| **Service token** | `st.*` | Project + env + path locked at mint time | CI pipelines. Least-privilege per pipeline. |
-| **Machine identity** | Access token via identity exchange | Scoped per identity's policies | Production automation; supports mTLS, AWS IAM, and other credential-exchange flows. |
-
-### Minting a service token
-
-Scoped to least privilege — one project + one environment + one path:
-
-1. Infisical dashboard → your project → "Access Control" → "Service Tokens".
-2. Click "Create service token".
-3. **Environments:** pick `prod` (or whichever single env).
-4. **Secret path:** `/` for project-wide read, or a subtree like `/api` for narrower scope.
-5. **Permissions:** "Read" for inject-only workloads; "Read + Write" only if your automation mutates secrets.
-6. Copy the token (shown once). Store somewhere encrypted — the dashboard won't show it again.
-
-In your SecretEnv config:
-
-```toml
-[backends.infisical-ci]
-type             = "infisical"
-infisical_token  = "st.xxx.yyy.YOUR_SERVICE_TOKEN"       # or export INFISICAL_TOKEN in CI
-```
-
-> **Storing the token in `config.toml`.** `infisical_token` is a credential. Putting it in a file anyone can read is a risk comparable to committing an AWS access key. Prefer `$INFISICAL_TOKEN` in your environment (CI provider secret store, `direnv` with an uncommitted `.envrc`, 1Password CLI's shell helpers, etc.). Use `infisical_token` in `config.toml` only when you need per-instance routing that a single env var can't express (e.g. two Infisical instances on the same machine).
-
-### Self-hosted domain trust
-
-`infisical_domain` accepts any URL — including ones that look legitimate but aren't. A hostile domain receives every token and URI your backend routes through it, which includes your service-token in `$INFISICAL_TOKEN` on every CLI invocation. Treat the domain as a trust boundary.
-
-Before committing a self-hosted domain to `config.toml` (or to a registry that downstreams will consume):
-
-- **Verify the domain matches your org's canonical Infisical install.** A typo (`infisical.acne.com` vs. `infisical.acme.com`) + an attacker-controlled lookalike registration routes every probe, get, set, and list to them.
-- **Pin HTTPS with a cert you trust.** `http://` URLs are accepted by the CLI but leak your token to anyone on-path. Only use `http://` against a loopback dev instance.
-- **Confirm the TLS cert belongs to your org.** For BYO-CA / internal-PKI setups, make sure the issuing CA is in the system trust store of every machine running `secretenv`. Inspect with `openssl s_client -connect infisical.your-org.com:443 -servername infisical.your-org.com </dev/null`.
-- **Avoid registries that carry a `infisical_domain` they don't control.** A compromised registry pointing at a lookalike domain silently drains credentials until someone notices.
-
-When in doubt, omit `infisical_domain` and use the Infisical Cloud default (`app.infisical.com`) — that host's certificate is managed by the Infisical team and rotates automatically.
-
-See also [security.md#self-hosted-domains](../security.md#self-hosted-domains) for the cross-backend discipline (same concerns apply to Vault's `vault_address`).
-
----
-
-## `set()` discipline — temp-file, not argv
-
-The `infisical` CLI at v0.43.77 accepts values for `set` in exactly two ways:
-
-1. **Positional `secretName=secretValue` pairs** on argv — rejected here because argv is visible to same-UID processes via `ps -ww`.
-2. **`--file <path>`** pointing at a .env or YAML file — **used here**.
-
-There is no stdin form. The backend:
-
-1. Creates a `NamedTempFile` under `$TMPDIR` (mode 0600 on Unix).
-2. Writes `NAME=VALUE\n` to it and `fsync`s.
-3. Spawns `infisical secrets set --file <tempfile> --type shared …`.
-4. On return (success OR failure), explicitly drops the `NamedTempFile` handle, which auto-unlinks the file.
-
-`NamedTempFile`'s `Drop` is panic-safe: even if the calling task panics between steps 2 and 4 (or the `infisical` subprocess segfaults, or the async runtime is cancelled mid-spawn), the temp file is removed as the handle's drop runs during unwind. There is no "orphaned secret-bearing file under `$TMPDIR`" failure mode — every successful `NamedTempFile::new()` on Unix creates the file via `O_CREAT|O_EXCL` with mode 0600, and its destructor always unlinks.
-
-The value never appears on argv. A unit canary test confirms this: it installs a strict mock with no rules, calls `set()` with a recognizable canary string, and asserts the canary is absent from the mock's observed-argv diagnostic.
-
-**Exposure window:** the temp file exists on disk for roughly the duration of the `infisical secrets set` subprocess (typically a few hundred milliseconds). The file is readable only by the current UID (mode 0600). Same-UID processes CAN read it during that window; this is an inherent property of the `--file` interface. If your threat model cares about same-UID adversaries, keep `infisical_unsafe_set` out of your workflow and mutate secrets through the dashboard.
-
-### `--type shared` is mandatory
-
-The CLI's `--type` flag on `set` and `delete` defaults to `personal`. Personal-scoped secrets are user-specific overrides of shared (project-wide) secrets, NOT the project's canonical values. Omitting `--type shared` would:
-
-- On `set`: write to your personal override, leaving project-shared untouched (confusing silent no-op from teammates' perspective).
-- On `delete`: attempt to delete your personal override — if none exists, the shared secret isn't touched and the command silently succeeds.
-
-The backend passes `--type shared` explicitly on every `set` and `delete`. A unit drift-catch test asserts the argv shape diverges from a `--type`-less form, locking the invariant against accidental removal.
-
----
-
-## `list()` — registry-source semantics
-
-Unlike most backends (where the registry is a single secret whose value is a JSON/TOML alias→URI map), Infisical's `list()` uses the **entire Infisical environment + path** as the alias map. Each Infisical secret becomes one alias; the secret's value is the alias target URI.
-
-```toml
-# Infisical: project=abc-123, env=prod, path=/registry
-STRIPE_KEY        = "aws-ssm-prod:///stripe-key"
-DB_URL            = "vault-dev:///secret/db"
-SEGMENT_WRITE_KEY = "infisical-prod:///abc-123/prod/api/SEGMENT_WRITE_KEY"
-```
-
-Configuring this as a registry source:
-
-```toml
-[registries.default]
-sources = ["infisical-registry:///abc-123/prod/registry/UNUSED_MARKER"]
-
-[backends.infisical-registry]
-type = "infisical"
-```
-
-The URI's secret segment (`UNUSED_MARKER`) is **ignored by `list()`** — a list targets the whole project+env+path scope, not a single secret. Using a recognizable placeholder makes the intent obvious in your config.
-
-### Response-body handling
-
-`infisical secrets --output json` returns an array shaped
-`[{"secretKey":"NAME","secretValue":"URI", …}, …]` covering every secret in the scope. The backend parses via a Rust struct that declares only the `secretKey` and `secretValue` fields — every other field (`type`, `version`, `createdAt`, `updatedAt`, …) is dropped silently by serde. Values leave the backend only as the second element of the returned `(alias, target_uri)` tuples; the raw stdout bytes and the parsed `Vec` are never logged, `Debug`-dumped, or interpolated into errors. If a misconfigured env+path holds non-URI secret values, they surface as "not a valid URI" errors when the resolver tries to parse them — not in log output.
-
----
-
-## `history()` — unsupported via CLI
-
-Infisical has per-secret version history in the Dashboard and REST API, but the `infisical` CLI (v0.43.77 at time of writing) does **not** expose a `secrets versions` subcommand. Since the backend-wraps-CLI pattern is load-bearing (see [backend template](../../kb/wiki/backends/template.md)), `history()` returns:
-
-```
-infisical backend '<instance>': history is not supported — the `infisical`
-CLI (v0.43.77) has no per-secret version-history subcommand; version
-history IS available in the Infisical Dashboard and REST API.
-```
-
-If a future Infisical CLI release adds `infisical secrets versions`, the backend can flip to a native implementation in a patch. For now, open the secret in the dashboard to view its version history.
-
----
-
-## Response parsing gotchas
-
-- **`secrets get --plain` trailing newline.** The CLI writes the value with exactly one `\n` appended. The backend strips it; your consumer sees the raw value.
-- **`secrets --plain` is deprecated on list.** The CLI marks `--plain` deprecated on the `secrets` (list) subcommand at v0.43.77; the backend uses `--output json` which is the forward-compatible shape.
-- **`--output json` on list returns a JSON ARRAY.** Top-level `[{"secretKey":"…","secretValue":"…"}, …]`, not an object. The backend parses into a name-only struct as described above.
-- **Folder-path normalization.** Infisical paths always start with `/`; the backend normalizes (prepending `/` if the URI path somehow doesn't, though URI parsing enforces the leading slash).
-- **Rate limits.** Infisical's SaaS enforces per-token rate limits; self-hosted instances are capped by your own infrastructure. Cascade resolvers that fan out across many aliases can throttle; the SecretEnv cascade resolves serially, so this isn't typically a concern.
-
----
-
-## Security notes
-
-- **`set()` via `--file` temp-file.** Mode 0600 under `$TMPDIR`, unlinked on drop (RAII guard, regardless of spawn exit code). Value never on argv. See [`set()` discipline](#set-discipline--temp-file-not-argv).
-- **Token via env, never argv.** `INFISICAL_TOKEN` is set on the subprocess environment — never passed as `--token <value>`. A unit canary test (`token_travels_via_env_not_argv`) locks this: if a regression adds `--token` to argv, the strict-mock's declared argv shape diverges and the test fails with `strict-mock-no-match`.
-- **Domain via env, never argv.** `infisical_domain` travels via `INFISICAL_API_URL`, not `--domain` on argv. Symmetric to the token discipline — keeps the `infisical` subprocess command-line shape uniform across self-hosted and SaaS deployments.
-- **`list()` response is secret-bearing.** `infisical secrets --output json` returns every value in the scope. The backend uses the Doppler-style bulk model — each Infisical secret value is treated as the alias's target URI. Values leave the backend only as alias targets in the returned `(name, uri)` tuples; raw stdout + the parsed `Vec` are never logged/Debug-dumped/error-interpolated. **Do not configure an Infisical env+path as a registry source unless every entry's value is a URI.** Mixed content (URIs alongside real credentials) would surface real credentials as alias targets.
-- **`--type shared` on set + delete.** Locked by drift-catch tests to prevent silent scope corruption under the CLI's `personal` default.
-- **Error messages never quote secret bodies.** Every `bail!` includes instance name + URI.raw + the CLI's stderr, never the body of the secret being read.
-
----
+Service tokens (`st.*`) are scoped to a project + environment + path at mint time. Ensure your token's scope matches the URI you're reading. Machine identities (via identity exchange) are also supported.
 
 ## doctor Output
 
-Healthy (user-login auth against SaaS):
+Healthy (SaaS):
 
 ```
-infisical-prod                                          (infisical)
-  ✓ infisical version 0.43.77
-  ✓ authenticated  auth=user-login domain=https://app.infisical.com/api
+infisical-prod                                              (infisical)
+  ✓ infisical CLI v0.43.79
+  ✓ authenticated  domain=https://app.infisical.com/api
 ```
 
-Healthy (token-auth against a self-hosted instance):
+Healthy (self-hosted):
 
 ```
-infisical-prod                                          (infisical)
-  ✓ infisical version 0.43.77
-  ✓ authenticated  auth=token domain=https://infisical.acme.com
+infisical-prod                                              (infisical)
+  ✓ infisical CLI v0.43.79
+  ✓ authenticated  domain=https://infisical.acme.com
 ```
 
-Not authenticated (no cached login, no `INFISICAL_TOKEN`):
+Not authenticated:
 
 ```
-infisical-prod                                          (infisical)
-  ✓ infisical version 0.43.77
+infisical-prod                                              (infisical)
+  ✓ infisical CLI v0.43.79
   ✗ not authenticated
-      → run: infisical login  OR  export INFISICAL_TOKEN=<your-token>  (domain: https://app.infisical.com/api)
+      → run: infisical login  OR  export INFISICAL_TOKEN=<your-token>
 ```
 
-CLI missing:
+## Fragment directives
 
+No fragment directives. Any `#...` fragment is rejected at URI-parse time.
+
+## History API support
+
+Not implemented. The `infisical` CLI (v0.43.79) has no per-secret version-history subcommand; version history is available in the Infisical Dashboard and REST API. Open the secret in the dashboard to view its version history.
+
+## Limitations
+
+- **`doctor` pipe-deadlock fix in v0.13.** Earlier releases occasionally false-reported "not authenticated" because `Stdio::piped()` + `.status()` left stderr undrained when the upgrade-banner payload exceeded the OS pipe buffer. v0.13 uses `Stdio::null()`. No action needed when upgrading.
+- **No stdin set form.** `infisical secrets set` requires `--file <path>`. The backend writes to a mode-0600 tempfile and passes `--type shared` to avoid personal-override scope corruption.
+- **Self-hosted domain validation.** Domain trust is on the operator — a typo or lookalike routes all credentials to an attacker.
+
+## Examples
+
+### Single dev instance
+
+```toml
+[backends.infisical-dev]
+type                  = "infisical"
+infisical_project_id  = "abc-123"
+infisical_environment = "dev"
+
+[registries.default]
+sources = ["infisical-dev:///REGISTRY"]
 ```
-infisical-prod                                          (infisical)
-  ✗ CLI 'infisical' not found
-      → brew install infisical/get-cli/infisical  OR  https://infisical.com/docs/cli/overview
+
+```bash
+secretenv run -- npm start
 ```
 
----
+### Multi-environment with folders
 
-## Related
+```toml
+[backends.infisical-staging]
+type                  = "infisical"
+infisical_project_id  = "abc-123"
+infisical_environment = "staging"
+infisical_secret_path = "/api"
 
-- [Fragment directives](../fragment-vocabulary.md) — why `#version=` etc. are rejected by Infisical (currently none supported).
-- [`docs/registry.md`](../registry.md) — how alias → URI resolution works end-to-end.
-- [`docs/security.md`](../security.md) — threat-model notes (argv discipline, temp-file writes).
-- [Infisical CLI reference](https://infisical.com/docs/cli/overview) — authoritative CLI docs.
-- [Infisical service tokens](https://infisical.com/docs/documentation/platform/token) — minting + scoping guide.
-- [Self-hosting Infisical](https://infisical.com/docs/self-hosting/overview) — running your own instance.
+[backends.infisical-prod]
+type                  = "infisical"
+infisical_project_id  = "abc-123"
+infisical_environment = "prod"
+infisical_secret_path = "/api"
+```
+
+### As registry source
+
+Project `abc-123`, env `prod`, path `/registry` holds:
+
+```json
+{
+  "stripe_key": "infisical-prod:///abc-123/prod/api/stripe/STRIPE_KEY",
+  "db_url": "vault-prod:///secret/db"
+}
+```
+
+Then: `secretenv run --registry infisical-prod:///abc-123/prod/registry/REGISTRY -- npm start`
+
+## Troubleshooting
+
+**"error reading secret: invalid request body"**
+Check that `infisical_secret_path` matches the folder where the secret exists. Use `infisical secrets list --path /...` to verify.
+
+**"401 Unauthorized"**
+Token is invalid, expired, or scoped to a different project/env. Run `infisical export` to test the token; it should succeed.
+
+**"secret not found"**
+The secret doesn't exist in the scoped project + env + path. Verify all three with `secretenv doctor` and `infisical secrets list`.
+
+## See Also
+
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
+- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
+- [Self-hosted domain trust](../security.md#self-hosted-domains) — `infisical_domain` disclosure discipline
+- [Infisical CLI reference](https://infisical.com/docs/cli/overview) — authoritative Infisical docs
+- [All backends](README.md) — pick a different backend
+- [Overview](/) — overview + workflows

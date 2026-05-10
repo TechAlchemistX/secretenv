@@ -445,9 +445,14 @@ impl Backend for InfisicalBackend {
         probe.args(["user", "get", "token", "--plain"]);
         probe.stdin(Stdio::null());
         // Token goes to /dev/null — we don't need its value, only
-        // exit status.
+        // exit status. Stderr is also discarded: piping it without
+        // also reading it (`.status()` doesn't drain pipes) blocked
+        // the child once `infisical`'s upgrade-available notice +
+        // auth-state messages crossed the OS pipe buffer threshold,
+        // which surfaced as a spurious NotAuthenticated. Bug found
+        // during v0.13.0 hygiene smoke against `infisical` 0.43.79.
         probe.stdout(Stdio::null());
-        probe.stderr(Stdio::piped());
+        probe.stderr(Stdio::null());
         if let Some(token) = &self.infisical_token {
             probe.env("INFISICAL_TOKEN", token);
         }

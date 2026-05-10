@@ -1,0 +1,227 @@
+/*
+ * secretenv docs theme — inherits secretenv.io brand tokens verbatim.
+ * Source of truth: secretenv-site/index.html.
+ *
+ * Force dark theme. Marketing site is dark-only; docs follow.
+ */
+
+:root {
+  /* Site brand tokens — verbatim from secretenv-site/index.html */
+  --site-ink:   #0a0a0c;
+  --site-ink-2: #111114;
+  --site-ink-3: #16171b;
+  --site-line:  #1f2026;
+  --site-line-2:#2a2c34;
+  --site-fg:    #f4f4f5;
+  --site-fg-2:  #b6b8bf;
+  --site-fg-3:  #7a7c87;
+  --site-fg-4:  #4d4f59;
+
+  /* Site accent palette (oklch — verbatim from secretenv-site) */
+  --site-amber:      oklch(0.82 0.13 75);
+  --site-amber-soft: oklch(0.82 0.13 75 / 0.14);
+  --site-green:      oklch(0.78 0.18 160);
+  --site-green-soft: oklch(0.78 0.18 160 / 0.14);
+  --site-blue:       oklch(0.78 0.10 230);
+  --site-blue-soft:  oklch(0.78 0.10 230 / 0.14);
+  --site-pink:       oklch(0.74 0.06 60);
+
+  /* Force light mode tokens to dark too — we don't ship a light mode */
+}
+
+/* === Override VitePress dark-theme tokens === */
+.dark,
+:root {
+  /* Backgrounds — sidebar + nav blend into page; only elevated surfaces (code, cards) lift */
+  --vp-c-bg:        var(--site-ink);
+  --vp-c-bg-alt:    var(--site-ink);
+  --vp-c-bg-elv:    var(--site-ink-2);
+  --vp-c-bg-soft:   var(--site-ink-2);
+
+  /* Text */
+  --vp-c-text-1:    var(--site-fg);
+  --vp-c-text-2:    var(--site-fg-2);
+  --vp-c-text-3:    var(--site-fg-3);
+
+  /* Borders + dividers */
+  --vp-c-border:    var(--site-line-2);
+  --vp-c-divider:   var(--site-line);
+  --vp-c-gutter:    var(--site-ink-2);
+
+  /* Brand (default-1 amber for primary actions) */
+  --vp-c-brand-1:    var(--site-amber);
+  --vp-c-brand-2:    var(--site-amber);
+  --vp-c-brand-3:    var(--site-amber);
+  --vp-c-brand-soft: var(--site-amber-soft);
+
+  /* Default surface tones */
+  --vp-c-default-1:    var(--site-fg);
+  --vp-c-default-2:    var(--site-fg-2);
+  --vp-c-default-3:    var(--site-fg-3);
+  --vp-c-default-soft: var(--site-line);
+
+  /* Tip (green) */
+  --vp-c-tip-1:    var(--site-green);
+  --vp-c-tip-2:    var(--site-green);
+  --vp-c-tip-3:    var(--site-green);
+  --vp-c-tip-soft: var(--site-green-soft);
+
+  /* Note (blue) */
+  --vp-c-note-1:    var(--site-blue);
+  --vp-c-note-2:    var(--site-blue);
+  --vp-c-note-3:    var(--site-blue);
+  --vp-c-note-soft: var(--site-blue-soft);
+
+  /* Warning (amber — same as brand for the warm tone) */
+  --vp-c-warning-1:    var(--site-amber);
+  --vp-c-warning-2:    var(--site-amber);
+  --vp-c-warning-3:    var(--site-amber);
+  --vp-c-warning-soft: var(--site-amber-soft);
+
+  /* Danger (pink) */
+  --vp-c-danger-1:    var(--site-pink);
+  --vp-c-danger-2:    var(--site-pink);
+  --vp-c-danger-3:    var(--site-pink);
+  --vp-c-danger-soft: oklch(0.74 0.06 60 / 0.14);
+
+  /* Important (purple — using note blue for now) */
+  --vp-c-important-1:    var(--site-blue);
+  --vp-c-important-2:    var(--site-blue);
+  --vp-c-important-3:    var(--site-blue);
+  --vp-c-important-soft: var(--site-blue-soft);
+
+  /* === Typography === */
+  --vp-font-family-base: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --vp-font-family-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* === Home hero === */
+  --vp-home-hero-name-color: var(--site-fg);
+  --vp-home-hero-name-background: linear-gradient(120deg, var(--site-fg) 35%, var(--site-amber) 100%);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, var(--site-amber-soft) 50%, var(--site-blue-soft) 50%);
+  --vp-home-hero-image-filter: blur(48px);
+
+  /* === Code block === */
+  --vp-code-block-bg: var(--site-ink-2);
+  --vp-code-block-color: var(--site-fg);
+  --vp-code-line-highlight-color: var(--site-line);
+  --vp-code-line-number-color: var(--site-fg-3);
+
+  /* === Custom block (callouts) === */
+  --vp-custom-block-tip-bg: var(--site-green-soft);
+  --vp-custom-block-tip-text: var(--site-green);
+  --vp-custom-block-tip-border: var(--site-green);
+
+  --vp-custom-block-note-bg: var(--site-blue-soft);
+  --vp-custom-block-note-text: var(--site-fg);
+  --vp-custom-block-note-border: var(--site-blue);
+
+  --vp-custom-block-warning-bg: var(--site-amber-soft);
+  --vp-custom-block-warning-text: var(--site-fg);
+  --vp-custom-block-warning-border: var(--site-amber);
+
+  --vp-custom-block-danger-bg: oklch(0.74 0.06 60 / 0.14);
+  --vp-custom-block-danger-text: var(--site-fg);
+  --vp-custom-block-danger-border: var(--site-pink);
+}
+
+/* Force the default scheme to dark — disables the light-mode toggle visual */
+html { color-scheme: dark; }
+
+/* Body baseline matches the marketing site */
+body {
+  background: var(--site-ink);
+  color: var(--site-fg);
+  font-family: var(--vp-font-family-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Italic flourish in hero — Instrument Serif on emphasis */
+.VPHero .text em,
+.VPHero .text i,
+.VPHomeHero .text em,
+.VPHomeHero .text i {
+  font-family: "Instrument Serif", ui-serif, Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--site-amber);
+  letter-spacing: -0.01em;
+}
+
+/* Tighter hero text — match marketing site rhythm */
+.VPHomeHero .name,
+.VPHomeHero .text {
+  letter-spacing: -0.02em;
+}
+
+/* Feature cards — slight lift */
+.VPFeature {
+  background: var(--site-ink-2);
+  border: 1px solid var(--site-line-2);
+  border-radius: 10px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.VPFeature:hover {
+  border-color: var(--site-fg-4);
+  transform: translateY(-1px);
+}
+.VPFeature .icon {
+  background: var(--site-amber-soft);
+  color: var(--site-amber);
+}
+
+/* Nav: monospace + low key, matching site */
+.VPNavBar .title,
+.VPNavBarTitle .title {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+}
+.VPNavBarMenuLink {
+  font-size: 13.5px;
+  color: var(--site-fg-2);
+}
+.VPNavBarMenuLink:hover {
+  color: var(--site-fg);
+}
+
+/* Sidebar: smaller, denser */
+.VPSidebar .group .title-text {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--site-fg-3);
+}
+.VPSidebarItem .text {
+  font-size: 13.5px;
+}
+
+/* Inline code — match marketing site `--mono` styling */
+:not(pre) > code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.92em;
+  background: var(--site-ink-2);
+  border: 1px solid var(--site-line);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--site-fg);
+}
+
+/* Code blocks: match site install-btn surface */
+div[class*='language-'] {
+  background: var(--site-ink-2) !important;
+  border: 1px solid var(--site-line-2);
+  border-radius: 10px;
+}
+div[class*='language-'] code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 13.5px;
+}
+
+/* Selection */
+::selection {
+  background: var(--site-amber);
+  color: #000;
+}

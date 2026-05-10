@@ -16,26 +16,32 @@ secretenv's security posture is entirely inherited from the backends it wraps. I
 
 ---
 
+## A Note on the fnox Comparison
+
+Earlier drafts of this document modelled fnox as a single-mode tool (age-encryption only). That was incomplete. **fnox is multi-mode:** it supports age-encryption (private key on disk), KMS-gated encryption (`aws-kms` / `azure-kms` / `gcp-kms` — no persistent disk key, decryption gated on IAM), and pure cloud-reference modes (`aws-sm`, `vault`, `1password`, etc. — no encryption involved). The fnox columns below are split accordingly. **In KMS modes, fnox closes the persistent-key and offboarding concerns at the KMS-key level**, and the threat model reflects that. The full mode-by-mode breakdown lives at [comparisons/vs-fnox.md](comparisons/vs-fnox.md).
+
+---
+
 ## Threat Model Comparison
 
 The table below maps 14 threat categories across common secrets workflows. The goal is not to show secretenv wins everywhere — it doesn't. The goal is an honest map of where risks move.
 
-| Threat | .env files | direnv | op run | doppler run | fnox (age) | **secretenv** |
-|---|---|---|---|---|---|---|
-| **Secrets committed to git** | 🔴 High — files exist to be committed | 🔴 High — `.envrc` can contain secrets | 🟡 Medium — 1Password URIs committed, not values | 🟢 Low — no secrets in repo | 🟢 Low — encrypted at rest | 🟢 **Eliminated** — aliases only |
-| **Secrets on disk in plaintext** | 🔴 High — that's the entire model | 🔴 High — reads from local files | 🟢 Low — runtime fetch | 🟢 Low — runtime fetch | 🟡 Medium — encrypted, key required | 🟢 **Eliminated** — nothing written |
-| **Infrastructure paths in repos** | 🔴 High — paths are the config | 🔴 High — paths in `.envrc` | 🔴 High — `op://` URIs committed | 🟢 Low — project name only | 🟡 Medium — paths present, encrypted | 🟢 **Eliminated** — aliases only |
-| **New engineer onboarding** | 🔴 High — manual credential ceremony | 🔴 High — write custom `.envrc` per project | 🟡 Medium — 1Password access + `op` CLI | 🟡 Medium — Doppler token + CLI | 🟡 Medium — age key ceremony + backend setup | 🟢 **One command** |
-| **Offboarding a departing engineer** | 🔴 High — manual, slow, cached copies unknown | 🔴 High — manual, files may be cached | 🟡 Medium — remove from 1Password vault | 🟡 Medium — remove from Doppler | 🔴 High — re-encryption required across all repos | 🟢 **One operation** — revoke registry backend access |
-| **Backend migration** | 🔴 High — update every `.env` everywhere | 🔴 High — rewrite `.envrc` everywhere | 🔴 Critical — locked to 1Password | 🔴 Critical — locked to Doppler | 🔴 High — re-encrypt everything | 🟢 **One registry update** — all repos inherit |
-| **Machine compromise** | 🔴 Plaintext files directly readable | 🔴 Same as `.env` | 🔴 Active sessions exploitable | 🔴 Active sessions + Doppler token at risk | 🔴 Active sessions + **age private key theft** — offline decryption survives re-image | 🔴 Active sessions exploitable — **no persistent key**, breach contained after re-image |
-| **Registry document compromise** | 🟢 Does not exist | 🟢 Does not exist | 🟢 Does not exist | 🟢 Does not exist | 🟢 Does not exist | 🟡 **New** — path topology exposed. Requires authenticated backend access. |
-| **Post-injection process exposure** | 🔴 Universal | 🔴 Universal | 🔴 Universal | 🔴 Universal | 🔴 Universal | 🔴 **Universal** — property of env var model, not the tool |
-| **Audit trail** | 🔴 None | 🔴 None | 🟡 1Password activity log | 🟢 Doppler audit log | 🟡 Backend-dependent | 🟡 **Delegated to backends** — CloudTrail, Vault audit, 1Password activity |
-| **Supply chain risk** | 🟢 None | 🟢 Low | 🟡 `op` CLI binary trust | 🟡 Doppler CLI + SaaS | 🟡 age tooling | 🟡 **Install script** — mitigated by signed binaries |
-| **SaaS dependency** | 🟢 None | 🟢 None | 🟢 None | 🔴 Hard — Doppler is the backend | 🟢 None | 🟢 **None** — no secretenv service |
-| **Secret rotation visibility** | 🔴 None — files go stale silently | 🔴 None — `.envrc` goes stale | 🟢 Automatic — runtime fetch | 🟢 Automatic — Doppler manages rotation | 🔴 Manual — re-encrypt with new value | 🟢 **Automatic** — runtime fetch, rotation transparent |
-| **Multi-backend coordination** | 🔴 Manual copy-paste across tools | 🔴 Manual shell glue per project | 🔴 Single backend only | 🔴 Single backend only | 🟡 Possible but complex at scale | 🟢 **Native** — registry abstracts all backends |
+| Threat | **secretenv** | .env files | fnox (KMS) | direnv | op run | doppler run | fnox (age) |
+|---|---|---|---|---|---|---|---|
+| **Secrets committed to git** | **Eliminated** — aliases only | High — files exist to be committed | Low — ciphertext or reference-only | High — `.envrc` can contain secrets | Medium — 1Password URIs committed, not values | Low — no secrets in repo | Low — encrypted at rest |
+| **Secrets on disk in plaintext** | **Eliminated** — nothing written | High — that's the entire model | Low — runtime KMS decrypt or reference fetch | High — reads from local files | Low — runtime fetch | Low — runtime fetch | Medium — encrypted, key required |
+| **Infrastructure paths in repos** | **Eliminated** — aliases only | High — paths are the config | High — provider + path/KMS-key-id committed | High — paths in `.envrc` | High — `op://` URIs committed | Low — project name only | Medium — paths present, encrypted |
+| **New engineer onboarding** | **One command** | High — manual credential ceremony | Low — IAM grant on KMS / backend access | High — write custom `.envrc` per project | Medium — 1Password access + `op` CLI | Medium — Doppler token + CLI | Medium — age key ceremony + backend setup |
+| **Offboarding a departing engineer** | **One operation** — revoke registry backend access | High — manual, slow, cached copies unknown | Low — IAM revoke on KMS key / backend | High — manual, files may be cached | Medium — remove from 1Password vault | Medium — remove from Doppler | High — re-encryption required across all repos |
+| **Backend migration** | **One registry update** — all repos inherit | High — update every `.env` everywhere | High — edit every `fnox.toml` (KMS modes also re-encrypt) | High — rewrite `.envrc` everywhere | Critical — locked to 1Password | Critical — locked to Doppler | High — re-encrypt everything |
+| **Machine compromise** | Active sessions exploitable — **no persistent key**, breach contained after re-image | Plaintext files directly readable | Active sessions exploitable — no persistent key; bounded by KMS / backend policy | Same as `.env` | Active sessions exploitable | Active sessions + Doppler token at risk | Active sessions + **age private key theft** — offline decryption survives re-image |
+| **Registry document compromise** | **New** — path topology exposed. Requires authenticated backend access. | Does not exist | Does not exist | Does not exist | Does not exist | Does not exist | Does not exist |
+| **Post-injection process exposure** | **Universal** — property of env var model, not the tool | Universal | Universal | Universal | Universal | Universal | Universal |
+| **Audit trail** | **Delegated to backends** — CloudTrail, Vault audit, 1Password activity | None | KMS CloudTrail / backend audit | None | 1Password activity log | Doppler audit log | Backend-dependent |
+| **Supply chain risk** | **Install script** — mitigated by signed binaries | None | fnox binary + cloud SDK trust | Low | `op` CLI binary trust | Doppler CLI + SaaS | age tooling |
+| **SaaS dependency** | **None** — no secretenv service | None | Cloud KMS / backend reachability required | None | None | Hard — Doppler is the backend | None |
+| **Secret rotation visibility** | **Automatic** — runtime fetch, rotation transparent | None — files go stale silently | Automatic in reference modes; manual on KMS-key rotation | None — `.envrc` goes stale | Automatic — runtime fetch | Automatic — Doppler manages rotation | Manual — re-encrypt with new value |
+| **Multi-backend coordination** | **Native** — registry abstracts all backends | Manual copy-paste across tools | fnox supports many providers; per-repo config | Manual shell glue per project | Single backend only | Single backend only | Possible but complex at scale |
 
 ---
 
@@ -55,9 +61,10 @@ These are the failures that actually cost organizations. Eliminating them is rea
 
 What the tool choice *does* affect is the blast radius and post-incident containment:
 
-- **.env files:** Plaintext on disk, immediately readable, breach is permanent regardless of what you do next.
-- **fnox:** Active sessions inherited *plus* the age private key is now in attacker hands. That key decrypts repo secrets offline, after the machine is re-imaged, after credentials are rotated. The breach outlives the machine.
-- **secretenv:** Active sessions inherited. No persistent decryption key exists anywhere. Re-image the machine, rotate backend credentials — the breach is contained. It dies with the session.
+- **`.env` files:** Plaintext on disk, immediately readable, breach is permanent regardless of what you do next.
+- **fnox (age mode):** Active sessions inherited *plus* the age private key is now in attacker hands. That key decrypts repo ciphertext offline, after the machine is re-imaged, after credentials are rotated. The breach outlives the machine.
+- **fnox (KMS / cloud-reference modes):** Active sessions inherited. No persistent decryption key on disk. Decryption (KMS modes) and reference resolution (`aws-sm`, `vault`, etc.) are gated by IAM / backend policy — re-image the machine, rotate or revoke the IAM principal, and the breach is contained. Same containment shape as secretenv.
+- **secretenv:** Active sessions inherited. No persistent decryption key exists anywhere — secretenv has nothing encrypted to decrypt. Re-image the machine, rotate backend credentials — the breach is contained. It dies with the session.
 
 The real defense against machine compromise is credential scoping at the backend level — IAM policies with least privilege, Vault policies with bounded paths, short-lived session tokens. A compromised machine with narrowly scoped credentials has a bounded blast radius regardless of which secrets tool is running. If a machine is fully compromised, you have an incident response problem. The secrets tool is irrelevant at that point.
 
@@ -98,6 +105,8 @@ This is enforced in the plugin development guide and verified in CI for all firs
 **Post-injection secret protection.** Once the process has the env var, secretenv is out of the picture. The process can log it, write it to disk, pass it in an HTTP request. This is outside secretenv's scope and always will be.
 
 **Production runtime security.** secretenv is a developer tool. ECS, Lambda, and Kubernetes have native secret injection mechanisms that are the right answer for production. secretenv is not a runtime secret delivery mechanism.
+
+**Encryption at rest.** secretenv stores no secret values, so it provides no encryption-at-rest property. That is the responsibility of whichever backend holds the value (Vault's storage encryption, SSM SecureString + KMS, 1Password's E2E vault). Tools like fnox (age + KMS modes) and sops *do* provide ciphertext-in-repo and are the right answer if that is the property you need.
 
 **Secret rotation enforcement.** secretenv fetches whatever the backend has, rotated or not. Rotation policy is the backend's concern.
 
@@ -141,7 +150,7 @@ Discipline that applies to both:
 
 Per-backend specifics:
 
-- [backends/infisical.md#self-hosted-domain-trust](backends/infisical.md#self-hosted-domain-trust) — Infisical's `infisical_domain` threat model.
+- [backends/infisical.md](backends/infisical.md) — Infisical's `infisical_domain` threat model.
 - [backends/vault.md](backends/vault.md) — Vault's `vault_address` and namespace scoping.
 
 ---

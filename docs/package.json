@@ -1,0 +1,15 @@
+{
+  "name": "secretenv-docs",
+  "private": true,
+  "version": "0.13.0",
+  "description": "secretenv documentation site (VitePress)",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "preview": "vitepress preview ."
+  },
+  "devDependencies": {
+    "vitepress": "^1.5.0"
+  }
+}

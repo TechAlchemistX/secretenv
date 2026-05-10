@@ -1,17 +1,6 @@
 <div align="center">
 
-<!-- MEDIA: hero-image
-     Type: image / video / GIF
-     Source: TBD (hyperframe export → docs/media/hero.{svg,mp4,gif})
-     Alt-text: SecretEnv resolving secrets across multiple backends in one command
-     Notes: keep banner.svg as fallback; hero should not exceed ~200px tall
--->
-
-<div align="center">
-  <img src="./docs/banner.svg" alt="secretenv" width="100%"/>
-</div>
-
-‎
+# secretenv
 
 <!-- MEDIA: badges-row-extended
      Add when available: tests-count, contributors, downloads, last-release-date, MSRV
@@ -56,11 +45,6 @@ Secrets are fetched at runtime, injected into the child process, and gone when i
 
 > **SecretEnv is a coat of paint. If the walls aren't strong, the paint is useless. The walls are your backends.** SecretEnv is not a security product — it's a workflow product that removes the most common vectors for secrets-in-git and secrets-on-disk. Auth, encryption, and storage stay where they already are.
 
-<!-- MEDIA: demo-recording
-     Type: asciinema cast OR hyperframe GIF
-     Shows: a `secretenv run` invocation against 2-3 backends, then `secretenv doctor`
-     Source: TBD → docs/media/demo.cast
--->
 
 ---
 
@@ -75,13 +59,6 @@ SecretEnv separates three things every other tool conflates. **Three files, thre
 | Alias registry document | Inside a backend you already control | Platform / security team | `alias-name → backend-URI` map | **No** — lives in your backend |
 
 The manifest tells SecretEnv **what** is needed. The registry tells SecretEnv **where** things live. The machine config tells SecretEnv **which backends** exist on this machine. Reading the repo teaches you nothing about backend topology, because topology never enters the repo.
-
-<!-- MEDIA: architecture-diagram
-     Type: SVG diagram (or PNG)
-     Depicts: three boxes (manifest / machine config / registry) with ownership labels and arrows
-              into the resolution flow (manifest + registry → backend URI → native CLI → env injection)
-     Source: TBD → docs/media/three-file.svg
--->
 
 For the file-by-file breakdown with full schemas, see [docs/reference/three-file-model-deep.md](docs/reference/three-file-model-deep.md).
 
@@ -259,11 +236,6 @@ secretenv doctor
 
 Clone any repo, run `secretenv run -- npm start`. Done. The profile carries every backend instance and registry source the team has converged on — no copy-paste from a wiki page, no Slack thread asking where Stripe lives. **Publish the profile once; every dev gets it via one command.** Updating org-wide credential topology later is `secretenv profile update` on the developer's machine — the platform team never logs into anyone else's laptop.
 
-<!-- MEDIA: workflow-onboarding-video
-     Type: hyperframe GIF or short video (≤30s)
-     Shows: brew install → profile install → doctor clean → clone repo → first secretenv run
-     Source: TBD → docs/media/workflow-onboarding.gif
--->
 
 ### Workflow 2 — Multi-environment deployment
 
@@ -280,9 +252,6 @@ secretenv run --registry prod    -- ./deploy.sh
 
 Each registry maps `db-url`, `stripe-key`, `api-key` to env-specific backends. Your repo never knows which AWS account or which Vault namespace it's running against.
 
-<!-- MEDIA: workflow-multienv-video
-     Source: TBD → docs/media/workflow-multienv.gif
--->
 
 ### Workflow 3 — Backend migration without touching repos
 
@@ -302,9 +271,6 @@ secretenv registry set stripe-key "vault-prod://secret/payments/stripe_key"
 
 > **Coming in v0.14 — `secretenv registry migrate`.** Today's flow is two steps: move the value to the new backend with your existing tooling, then `registry set` to repoint the alias. The next release folds both into one operation — read from the current backend, write to the new one (where you have write permission), update the pointer atomically. Exact CLI shape is being figured out now; the indirection guarantee doesn't change — repos still inherit on next run.
 
-<!-- MEDIA: workflow-migration-video
-     Source: TBD → docs/media/workflow-migration.gif
--->
 
 ### Workflow 4 — Offboarding an engineer
 
@@ -420,9 +386,6 @@ jobs:
 | BuildKite | Persistent | Agent-baked CLIs + hooks | [docs/ci-cd.md](docs/ci-cd.md) |
 | CircleCI | Ephemeral | Context vars + OIDC | [docs/ci-cd.md](docs/ci-cd.md) |
 
-<!-- MEDIA: ci-animation
-     Source: TBD → docs/media/ci-animation.gif
--->
 
 ---
 
@@ -485,10 +448,6 @@ Exit code is non-zero if any backend reports anything other than `Ok`. `doctor -
 - **Failure modes report cleanly.** `BackendUnauthenticated`, `AliasNotFound`, `RegistryUnreachable`, `BackendCliMissing` are the four operationally interesting failure shapes; each carries enough context to triage without re-running.
 - **Logging.** `RUST_LOG=secretenv=debug` emits structured logs to stderr. `--verbose` on `run` emits per-secret fetch progress.
 
-<!-- MEDIA: doctor-output-screenshot
-     Source: TBD → docs/media/doctor.png
--->
-
 ---
 
 ## Stability Proof
@@ -498,14 +457,6 @@ Every backend tool claims stability. SecretEnv proves it.
 The smoke harness exercises the **real binary** against **real backend CLIs** in **real shells** — not mocks, not contract tests. Every assertion validates: spawn the CLI, route input via tempfile or stdin, parse stdout, handle stderr, observe exit code. **508 assertions across 15 backends as of v0.13.0.**
 
 In the v0.13 cycle, this harness caught a latent pipe-deadlock in the Infisical backend that had survived **15 days and 6 release cycles** since Infisical shipped in v0.7.0. CI was green every release. Unit tests passed. Three-agent audits passed. Only the live-backend smoke — running the real binary against the real CLI in a real shell — surfaced it. The fix was one line; the lesson was the harness.
-
-<!-- MEDIA: smoke-growth-chart
-     Type: SVG line chart (preferred — reproducible per release via scripts/)
-     X-axis: release tag (v0.2 → v0.13)
-     Y-axis: live-backend assertion count
-     Source: TBD (script in scripts/charts/smoke-growth.{py,sh} → docs/media/smoke-growth.svg)
-     Notes: numbers from kb/wiki/build-log.md per release; regenerate as part of release ritual
--->
 
 | Release | Date | Backends | Live-smoke assertions | Notable addition |
 |---|---|---|---|---|
@@ -530,9 +481,6 @@ Test surface grew with feature surface across ~3 weeks of single-backend-per-min
 
 SecretEnv delegates all authentication to each backend's native CLI. The version column below is what the v0.13.0 release smoke ran against.
 
-<!-- MEDIA: backend-logos-strip
-     Source: TBD → docs/media/backend-logos.svg
--->
 
 | Backend | Type | URI Scheme | Tested CLI version | Status |
 |---|---|---|---|---|

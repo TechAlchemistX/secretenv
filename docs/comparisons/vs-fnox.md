@@ -92,11 +92,11 @@ They are layered, not competing.
 
 ## Operator's correspondence with the fnox maintainer
 
-For accurate context: the SecretEnv operator's exchange with @jdx (fnox maintainer) on a prior version of this comparison surfaced that the v1 SecretEnv README modelled only fnox-age mode and missed fnox-KMS. The maintainer's clarification:
+For accurate context: the @TechAlchemistX's exchange with @jdx (fnox maintainer) on a prior version of this comparison surfaced that the v1 SecretEnv README modelled only fnox-age mode and missed fnox-KMS. The maintainer's clarification:
 
 > "I am the maintainer of fnox. This is only true if you use the encryption providers. If you don't, nothing is encrypted obviously. Your doc also doesn't seem to take into account my preferred way of using it with KMS that solves a lot of the problems mentioned."
 
-The operator's reply:
+TechAlchemistX's reply:
 
 > "Fair point, the table only models age-mode and that's a real miss. KMS-mode closes a lot of what I flagged (offboarding via IAM revocation on the KMS key, no persistent decryption key on disk, transparent rotation through aws-sm). Separately, I still do think secretenv's registry indirection adds something orthogonal to encryption (cross-backend migration is one line vs editing every fnox.toml), but that's a different conversation."
 

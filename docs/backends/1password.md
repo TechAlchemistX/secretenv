@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `op 2.34.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `1password` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `1password` backend. New here? See the [overview](/).
 
 1Password is a password manager and secret store used by engineering teams for credential centralization, audit logging, and fine-grained access control. The `op` CLI is 1Password's official integration surface, supporting both interactive authentication via the desktop app and non-interactive service accounts for CI/CD environments.
 
@@ -160,8 +160,8 @@ Enable `op_unsafe_set = true` in `[backends.1password-<instance>]` if you need t
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [1Password CLI documentation](https://developer.1password.com/docs/cli) — `op` command reference
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

@@ -240,7 +240,7 @@ With: revoke access to the registry backend. Engineer can no longer resolve any 
 
 ## See also
 
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows
 - [Full CLI reference](cli-reference-full.md)
 - [Threat model](../security.md) — full security comparison
 - [Fragment vocabulary](fragment-vocabulary.md) — URI fragment grammar

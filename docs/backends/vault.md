@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `vault v2.0.0` (build 2026-04-13) on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `vault` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `vault` backend. New here? See the [overview](/).
 
 HashiCorp Vault is a centralized, multi-tenant secrets store designed for enterprise teams. It offers fine-grained access control, comprehensive audit logging, and advanced authentication methods (AppRole, OIDC, Kubernetes, AWS IAM). Pick Vault when you need dynamic secrets, secrets rotation, or centralized credential management across infrastructure. The `vault` CLI delegates all authentication, eliminating the need for SecretEnv to manage tokens or auth flows.
 
@@ -183,10 +183,10 @@ History API only works on KV v2 mounts. Check your mount type with `vault secret
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#version` directive reference
 - [Self-hosted domain trust](../security.md#self-hosted-domains) — `vault_address` disclosure discipline
 - [OpenBao](openbao.md) — LF MPL fork; near-identical wire protocol and KV semantics
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

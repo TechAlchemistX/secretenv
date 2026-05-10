@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `Google Cloud SDK 560.0.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `gcp` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `gcp` backend. New here? See the [overview](/).
 
 GCP Secret Manager is Google Cloud's native secrets store, deeply integrated with GCP identity and access management. It offers fine-grained IAM roles, version management, and seamless authentication on GCP compute (Workload Identity on GKE, instance metadata on Compute Engine). Pick Secret Manager when you're on Google Cloud and want the simplest, tightest integration path.
 
@@ -195,9 +195,9 @@ Run `gcloud auth login` or `gcloud auth activate-service-account --key-file <pat
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#version` directive reference
 - [GCP Secret Manager documentation](https://cloud.google.com/secret-manager/docs) — permissions, versions, replication
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

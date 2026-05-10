@@ -2,7 +2,7 @@
 
 SecretEnv works in CI via the `SECRETENV_REGISTRY` environment variable. No config file is needed on the runner — set the variable once at the org or repo level and every `secretenv run` in every pipeline resolves from the right registry.
 
-The [main README's CI/CD section](../README.md#cicd-integration) has the headline GitHub Actions example. This page is the deeper playbook for Jenkins, GitLab, BuildKite, and CircleCI patterns — plus the per-CI-platform runner-lifecycle reasoning that doesn't fit inline in the README.
+The [CI/CD Integration overview](/ci-cd) has the headline GitHub Actions example. This page is the deeper playbook for Jenkins, GitLab, BuildKite, and CircleCI patterns — plus the per-CI-platform runner-lifecycle reasoning that doesn't fit inline in the README.
 
 ---
 
@@ -22,7 +22,7 @@ SECRETENV_REGISTRY=aws-ssm:///secretenv/registry secretenv run -- ./deploy.sh
 
 Ephemeral runners. Each workflow run starts a fresh container. Use OIDC federation for AWS and similar — no static credentials stored in GitHub.
 
-The full inline example lives in the [main README](../README.md#cicd-integration). Patterns covered there:
+The full inline example lives in the [CI/CD Integration](/ci-cd). Patterns covered there:
 
 - AWS OIDC + `SECRETENV_REGISTRY` env-var pattern
 - Org-level `SECRETENV_REGISTRY` variable for cross-repo consistency
@@ -219,7 +219,7 @@ Exit code is non-zero on any not-`Ok` state. Average runtime: under 2 seconds fo
 
 ## See Also
 
-- [Main README — CI/CD section](../README.md#cicd-integration) — headline GitHub Actions example
-- [Operational Health: secretenv doctor](../README.md#operational-health-secretenv-doctor) — three-level health checks
-- [Backend pages](backends/README.md) — per-backend auth patterns
+- [CI/CD overview](/ci-cd) — headline GitHub Actions example
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — three-level health checks
+- [Backends](/backends/) — per-backend auth patterns
 - [Configuration reference](reference/configuration.md) — full schema

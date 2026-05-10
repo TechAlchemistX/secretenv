@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `Conjur CLI v8.1.3-879b90b` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `conjur` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `conjur` backend. New here? See the [overview](/).
 
 [CyberArk Conjur](https://www.conjur.org/) is the open-source PAM secrets store — Apache-2.0 (OSS) and Enterprise deployments share the same wire protocol. Unlike Vault's KV-mount-and-path model, Conjur uses a **resource-graph identity model**: every secret is a `variable` resource with access mediated by per-resource policies. SecretEnv treats the variable ID as the URI path. The v8 CLI is Go-based and currently distributed as the `cyberark/conjur-cli:8` Docker image (the PyPI `conjur` package is EOL Ruby v7 and is rejected by `secretenv doctor`).
 
@@ -221,10 +221,10 @@ Check your policy grants `read` (or `read, execute`) privilege on the target var
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc.
 - [Vault backend](vault.md) — alternative: KV-mount-based secrets management
 - [OpenBao backend](openbao.md) — alternative: Vault-compatible, open-source
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

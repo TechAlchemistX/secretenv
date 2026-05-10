@@ -278,4 +278,4 @@ db-url     = "aws-ssm-dev:///myapp/dev/db_url"
 
 ---
 
-For workflow guidance, see the [main README](../../README.md). For the threat model + security posture: [security.md](../security.md).
+For workflow guidance, see the [overview](/). For the threat model + security posture: [security.md](../security.md).

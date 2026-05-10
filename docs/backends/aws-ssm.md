@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `aws-cli/2.34.35` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `aws-ssm` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `aws-ssm` backend. New here? See the [overview](/).
 
 AWS Systems Manager (SSM) Parameter Store is AWS's native secrets store — built-in, region-scoped, and integrated with KMS for SecureString encryption. Pick SSM when you're already on AWS and want the simplest path: no new service account, no new CLI, no API tokens. The `aws` CLI wraps the Parameter Store API and resolves credentials from your ambient AWS configuration (profiles, IAM roles, SSO, environment variables).
 
@@ -212,9 +212,9 @@ Same cause as above; SSM conflates "not found" and "access denied" for security.
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — other backends' `#version`, `#json-key` directives
 - [AWS Secrets Manager](aws-secrets.md) — alternative: automatic rotation, cross-region replication
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

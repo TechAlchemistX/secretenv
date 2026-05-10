@@ -6,7 +6,7 @@
 **Platform:** macOS only — `secretenv doctor` reports `keychain-<instance>` as CliMissing on Linux/Windows
 **Tested:** macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `keychain` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `keychain` backend. New here? See the [overview](/).
 
 The macOS Keychain is the OS's native credential store, accessed via the built-in `security` CLI. It requires no external service account or API token. Use it for solo developer machines, paired with the `local` backend as a registry document pointing at keychain entries.
 
@@ -247,9 +247,9 @@ The keychain item's ACL is set to "Confirm before allowing". Either edit the ite
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Local file backend](local.md) — recommended registry host when keychain is the secret target
 - [macOS Keychain documentation](https://www.unix.com/man-page/osx/1/security/) — the authoritative CLI reference
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

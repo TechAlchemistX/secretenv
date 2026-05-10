@@ -55,4 +55,4 @@ The moment you have:
 - A production environment
 - A backend that already holds the secret authoritatively
 
-`.env` is a workflow trap. Use SecretEnv (or one of the alternatives — see [the comparison overview](../../README.md#how-secretenv-compares)).
+`.env` is a workflow trap. Use SecretEnv (or one of the alternatives — see [the comparison overview](/comparisons/)).

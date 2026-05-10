@@ -68,7 +68,7 @@ Backends are independent Rust crates implementing two traits. See [reference/add
 
 ## See Also
 
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows
 - [Tool comparisons](../comparisons/README.md) — SecretEnv vs `.env` / fnox / direnv / op-run / etc.
 - [Threat model](../security.md) — 14-category honest security comparison
 - [CI/CD patterns](../ci-cd.md) — using SecretEnv in CI pipelines

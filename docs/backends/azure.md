@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `azure-cli 2.85.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `azure` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `azure` backend. New here? See the [overview](/).
 
 Azure Key Vault is Microsoft Azure's native secrets store, offering centralized credential management with fine-grained RBAC and comprehensive audit logging. Key Vault integrates seamlessly with Azure Managed Identities, allowing pods and VMs to authenticate without managing credentials. Pick Key Vault when you're on Azure or need a multi-cloud strategy with an Azure anchor.
 
@@ -225,9 +225,9 @@ The secret is soft-deleted and recoverable. Either recover with `az keyvault sec
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#version` directive reference
 - [Azure Key Vault documentation](https://learn.microsoft.com/en-us/azure/key-vault/) — permissions, soft-delete, RBAC
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

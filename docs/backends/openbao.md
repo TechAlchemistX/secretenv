@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `bao v2.5.3` (build 2026-04-20) on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `openbao` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `openbao` backend. New here? See the [overview](/).
 
 OpenBao is the Linux Foundation MPL-2.0 fork of HashiCorp Vault — same wire protocol, KV semantics, and auth methods. Pick OpenBao if you're already running a Vault-compatible instance and want the open-source governance model. Migration from Vault is a one-line config swap.
 
@@ -202,10 +202,10 @@ The path doesn't exist. Verify with `bao kv list secret/` to enumerate existing 
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
 - [Vault backend](vault.md) — compatible and equivalent (choose based on governance preference)
 - [OpenBao CLI reference](https://openbao.org/docs/commands/) — authoritative OpenBao docs
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

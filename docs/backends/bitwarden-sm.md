@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `bws 2.0.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `bitwarden-sm` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `bitwarden-sm` backend. New here? See the [overview](/).
 
 [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/) is Bitwarden's developer/CI secrets product — machine-account access tokens, project-scoped secrets keyed by UUID. It is **a distinct product from Bitwarden Password Manager** (`bw` CLI). The backend wraps `bws` v2+ only; human-readable aliases live in the SecretEnv registry layer because `bws secret get` accepts UUIDs only (no key-name lookup), and Bitwarden allows duplicate key names within a project.
 
@@ -235,10 +235,10 @@ Your token is authenticated but scoped to zero projects. Grant the machine accou
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc.
 - [1Password backend](1password.md) — alternative: personal vault + team vaults
 - [Vault backend](vault.md) — alternative: HashiCorp's general-purpose secrets engine
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

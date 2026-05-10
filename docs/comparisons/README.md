@@ -2,7 +2,7 @@
 
 How SecretEnv fits into your ecosystem — one page per alternative, each independently maintainable.
 
-The compact comparison matrix in the [main README](../../README.md#how-secretenv-compares) lists SecretEnv vs `.env` / fnox / direnv. The pages below are the deep, honest dives — including the cases where the alternative is the right answer for your team.
+The compact comparison matrix in the [Comparisons](/comparisons/) lists SecretEnv vs `.env` / fnox / direnv. The pages below are the deep, honest dives — including the cases where the alternative is the right answer for your team.
 
 ---
 

@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `doppler v3.76.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `doppler` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `doppler` backend. New here? See the [overview](/).
 
 Doppler is a SaaS secrets manager with a clean CLI surface. Pick Doppler when you want multi-project secret scoping, team-friendly dashboards, and integrated audit logs. The `doppler` CLI resolves auth from three sources: an explicit `DOPPLER_TOKEN` env var, the local keychain entry from `doppler login`, or an instance-scoped token via config.
 
@@ -172,9 +172,9 @@ Token scope mismatch. Service tokens are locked to a project + config at mint. V
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
 - [Doppler CLI reference](https://docs.doppler.com/docs/cli) — authoritative Doppler docs
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

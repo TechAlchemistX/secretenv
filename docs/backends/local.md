@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** SecretEnv v0.13.0 (2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `local` backend — the only backend that needs no CLI. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `local` backend — the only backend that needs no CLI. New here? See the [overview](/).
 
 The local backend reads secret values directly from a flat TOML file on disk. Use it for solo developers who want zero-infrastructure local workflow, or as a **registry document** pointing at other backends (most commonly the macOS Keychain).
 
@@ -182,9 +182,9 @@ The file is readable but the TOML syntax is invalid. Check for missing quotes on
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how aliases resolve
 - [macOS Keychain backend](keychain.md) — the typical pair for `local`-as-registry
 - [AWS SSM backend](aws-ssm.md) — alternative: cloud-native parameter store
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

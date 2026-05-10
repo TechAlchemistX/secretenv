@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `wrangler 4.85.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `cf-kv` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `cf-kv` backend. New here? See the [overview](/).
 
 Cloudflare Workers KV is a globally-distributed, eventually-consistent key-value store designed for low-latency reads from Cloudflare Workers. This backend wraps the `wrangler` CLI for read, write, list, and delete operations. Auth flows through `wrangler login` (OAuth) or `CLOUDFLARE_API_TOKEN`.
 
@@ -171,9 +171,9 @@ OAuth token expired or `CLOUDFLARE_API_TOKEN` not set. Quickest fix: `wrangler l
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
 - [Cloudflare Workers KV docs](https://developers.cloudflare.com/workers/wrangler/commands/#kv) — authoritative KV reference
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

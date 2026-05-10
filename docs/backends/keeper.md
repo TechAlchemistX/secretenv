@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `keeper Commander 17.2.13` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `keeper` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `keeper` backend. New here? See the [overview](/).
 
 Keeper is an enterprise password manager and secrets vault. Unlike other backends, Keeper requires a one-time persistent-login setup before non-interactive use. After setup, the `keeper` CLI provides interactive shell access and one-shot commands. This backend wraps the one-shot path.
 
@@ -196,9 +196,9 @@ The Keeper CLI has no stdin form for field values. Either opt in via config (`ke
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
 - [Keeper CLI reference](https://docs.keeper.io/en/keeperpam/commander-cli) — authoritative Keeper docs
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

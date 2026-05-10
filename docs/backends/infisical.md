@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `infisical 0.43.79` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `infisical` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `infisical` backend. New here? See the [overview](/).
 
 Infisical is an open-source secrets manager available as SaaS or self-hosted. Pick Infisical when you want a Doppler-like experience without vendor lock-in, with support for nested folder scoping and self-hosting. The `infisical` CLI wraps the API with a clean `secrets get / set / delete` surface.
 
@@ -187,10 +187,10 @@ The secret doesn't exist in the scoped project + env + path. Verify all three wi
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
 - [Self-hosted domain trust](../security.md#self-hosted-domains) — `infisical_domain` disclosure discipline
 - [Infisical CLI reference](https://infisical.com/docs/cli/overview) — authoritative Infisical docs
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

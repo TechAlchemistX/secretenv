@@ -6,7 +6,7 @@
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `aws-cli/2.34.35` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `aws-secrets` backend. New here? See the [main README](../../README.md).
+> SecretEnv injects secrets from any backend as environment variables. This page covers the `aws-secrets` backend. New here? See the [overview](/).
 
 AWS Secrets Manager is AWS's native secrets store for cross-service replication and automatic rotation. Unlike Parameter Store (which stores values as-is), Secrets Manager offers structured secret support and fine-grained permission control. Pick Secrets Manager when you need multi-region replication, automatic rotation orchestration, or fine-grained RDS/database credential management. The `aws` CLI wraps the Secrets Manager API with full credential chain support.
 
@@ -203,9 +203,9 @@ Secret names cannot start with `/`. Use `aws secretsmanager list-secrets --regio
 
 ## See Also
 
-- [`secretenv doctor`](../../README.md#operational-health-secretenv-doctor) — health checks for all backends
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
 - [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key` directive reference
 - [AWS Systems Manager Parameter Store](aws-ssm.md) — alternative for simpler use cases
 - [All backends](README.md) — pick a different backend
-- [Main README](../../README.md) — overview + workflows
+- [Overview](/) — overview + workflows

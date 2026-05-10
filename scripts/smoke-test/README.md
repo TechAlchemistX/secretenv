@@ -44,15 +44,42 @@ Plus a Rust toolchain to build the release binary.
 
 ## Required env vars
 
+The full set lives in 1Password (item `secretenv-smoke-env` in vault `Private` by default). Source the helper before each smoke run:
+
 ```sh
+source ./scripts/smoke-test/source-env.sh
+```
+
+The helper pulls every smoke var from a single 1Password item so the canonical values never go stale across notes or shells. Override the source item with `SECRETENV_SMOKE_OP_ITEM=op://Vault/item-name source ...`.
+
+Manual fallback if not using the helper:
+
+```sh
+# Cloud topology
 export SECRETENV_TEST_GCP_PROJECT=your-gcp-project-id
 export SECRETENV_TEST_AZURE_VAULT=your-azure-key-vault-name
+export SECRETENV_TEST_AWS_REGION=us-east-1          # default
+# OpenBao
+export SECRETENV_TEST_BAO_ADDR=http://127.0.0.1:8300
+# Bitwarden Secrets Manager (UUIDs from your bws workspace)
+export BWS_ACCESS_TOKEN=0.<uuid>.<base64>:<base64>  # NO surrounding quotes — bws v2 misreads them
+export SECRETENV_TEST_BWS_SERVER_URL=https://api.bitwarden.com
+export SECRETENV_TEST_BWS_SCALAR_UUID=<uuid>
+export SECRETENV_TEST_BWS_JSON_UUID=<uuid>
+export SECRETENV_TEST_BWS_REGISTRY_UUID=<uuid>
+export SECRETENV_TEST_BWS_CYCLE_UUID=<uuid>
+# CyberArk Conjur
+export SECRETENV_TEST_CONJUR_URL=http://127.0.0.1:8083
+export SECRETENV_TEST_CONJUR_ACCOUNT=myorg
+# Doppler / Infisical tokens (if not already from `doppler login` / `infisical login`)
+export DOPPLER_TOKEN=<service-token>
+export INFISICAL_TOKEN=<service-token>
+export INFISICAL_PROJECT_ID=<uuid>
 ```
 
 Optional overrides:
 
 ```sh
-export SECRETENV_TEST_AWS_REGION=us-east-1          # default
 export SECRETENV_SMOKE_RUNTIME=/tmp/secretenv-test  # default
 export SECRETENV_BIN=/path/to/secretenv             # default: <repo>/target/release/secretenv
 export SECRETENV_INFISICAL_PROJECT_ID=<uuid>        # override the Infisical project UUID (default: TechAlchemistX CI smoke project)

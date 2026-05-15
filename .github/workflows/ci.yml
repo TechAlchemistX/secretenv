@@ -62,6 +62,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p secretenv-core --features mcp-safe --test mcp_safe_trybuild
 
+  tracing-leak-guard:
+    name: SEC-INV-17 tracing-leak guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # ripgrep ships preinstalled on ubuntu-latest GH Actions runners.
+      - name: SEC-INV-17 grep (tracing macro value leaks)
+        run: bash scripts/check_tracing_leaks.sh
+
   secret-no-leak-grep:
     name: Secret<T> no-leak grep gate
     runs-on: ubuntu-latest

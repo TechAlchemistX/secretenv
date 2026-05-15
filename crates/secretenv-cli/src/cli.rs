@@ -71,7 +71,8 @@ pub enum Command {
 /// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
 #[derive(Debug, Args)]
 pub struct RedactArgs {
-    /// Path to the file to scrub. Use `-` for stdin (writes to stdout).
+    /// Path to the file to scrub. Stdin (`-`) is reserved for a
+    /// future cycle; v0.14 requires a regular-file path.
     pub path: String,
     /// Registry selection — name or direct URI. Same semantics as
     /// `secretenv run --registry`. Determines which aliases'
@@ -96,9 +97,13 @@ pub struct RedactArgs {
     /// `--in-place` nor stdout emission.
     #[arg(long)]
     pub dry_run: bool,
-    /// Allow scrubbing a file owned by a different UID. Off by
-    /// default; enabling this re-enables the foreign-owner refusal
-    /// (mode B's defense against a maliciously-planted log file).
+    /// Bypass the foreign-owner refusal that fires when the target
+    /// file's UID differs from the caller's effective UID. By
+    /// default, mode B refuses such files (defense against a
+    /// maliciously-planted log file in a shared directory). Pass
+    /// this flag only when scrubbing a file you intend to read but
+    /// do not own — e.g. a root-owned `/var/log/*` log as a
+    /// non-root user with read-only intent.
     #[arg(long)]
     pub allow_foreign_owner: bool,
     /// Override the substitution token. Default is

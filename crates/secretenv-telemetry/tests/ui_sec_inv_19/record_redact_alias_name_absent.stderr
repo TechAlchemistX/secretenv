@@ -1,0 +1,11 @@
+error[E0599]: no method named `record_redact_alias_name` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_19/record_redact_alias_name_absent.rs:14:10
+   |
+14 |     span.record_redact_alias_name("stripe-key");
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_alias_name` with a similar name
+   |
+14 -     span.record_redact_alias_name("stripe-key");
+14 +     span.record_alias_name("stripe-key");
+   |

@@ -2816,20 +2816,20 @@ section_begin 29 "v0.14 Mode A — runtime stdout/stderr redaction"
 
 # 29a — Default alias-aware substitution: each of 7 tainted values
 # replaced with `[redacted:<NAME>]` (the manifest env-var name). The
-# pattern `redacted:STRIPE_KEY` is bracket-free so it side-steps
+# pattern `redacted:stripe_key` is bracket-free so it side-steps
 # grep BRE character-class metacharacters; the brackets are
 # implicitly tested by the surrounding LOG_LEVEL=info assertion.
 run_test "500 v0.14 mode-A redact (default substitution)" 0 "$RUNS/500-v014-redact-modeA.log" \
   "$BIN" --config "$CFG" run --registry default --redact -- \
   sh -c 'echo S=$STRIPE_KEY D=$DB_URL A=$API_KEY O=$OP_PAT V=$OAUTH_TOKEN G=$GCP_SECRET Z=$AZURE_SECRET L=$LOG_LEVEL'
 
-assert_contains "501 mode-A STRIPE_KEY substituted"   "$RUNS/500-v014-redact-modeA.log" 'redacted:STRIPE_KEY'
-assert_contains "502 mode-A DB_URL substituted"       "$RUNS/500-v014-redact-modeA.log" 'redacted:DB_URL'
-assert_contains "503 mode-A API_KEY substituted"      "$RUNS/500-v014-redact-modeA.log" 'redacted:API_KEY'
-assert_contains "504 mode-A OP_PAT substituted"       "$RUNS/500-v014-redact-modeA.log" 'redacted:OP_PAT'
-assert_contains "505 mode-A OAUTH_TOKEN substituted"  "$RUNS/500-v014-redact-modeA.log" 'redacted:OAUTH_TOKEN'
-assert_contains "506 mode-A GCP_SECRET substituted"   "$RUNS/500-v014-redact-modeA.log" 'redacted:GCP_SECRET'
-assert_contains "507 mode-A AZURE_SECRET substituted" "$RUNS/500-v014-redact-modeA.log" 'redacted:AZURE_SECRET'
+assert_contains "501 mode-A STRIPE_KEY substituted"   "$RUNS/500-v014-redact-modeA.log" 'redacted:stripe_key'
+assert_contains "502 mode-A DB_URL substituted"       "$RUNS/500-v014-redact-modeA.log" 'redacted:db_url'
+assert_contains "503 mode-A API_KEY substituted"      "$RUNS/500-v014-redact-modeA.log" 'redacted:api_key'
+assert_contains "504 mode-A OP_PAT substituted"       "$RUNS/500-v014-redact-modeA.log" 'redacted:op_pat'
+assert_contains "505 mode-A OAUTH_TOKEN substituted"  "$RUNS/500-v014-redact-modeA.log" 'redacted:oauth_token'
+assert_contains "506 mode-A GCP_SECRET substituted"   "$RUNS/500-v014-redact-modeA.log" 'redacted:gcp_secret'
+assert_contains "507 mode-A AZURE_SECRET substituted" "$RUNS/500-v014-redact-modeA.log" 'redacted:azure_secret'
 
 # Negative half: raw values must NOT appear in redacted stdout.
 assert_not_contains "508 mode-A no raw STRIPE_KEY value"  "$RUNS/500-v014-redact-modeA.log" 'sk_test_LOCAL_11111'
@@ -2851,7 +2851,7 @@ run_test "515 v0.14 mode-A --no-redact --i-know opt-out" 0 "$RUNS/515-v014-no-re
   sh -c 'echo STRIPE=$STRIPE_KEY'
 
 assert_contains "516 --no-redact raw STRIPE_KEY present" "$RUNS/515-v014-no-redact.log" 'STRIPE=sk_test_LOCAL_11111'
-assert_not_contains "517 --no-redact substitution absent" "$RUNS/515-v014-no-redact.log" 'redacted:STRIPE_KEY'
+assert_not_contains "517 --no-redact substitution absent" "$RUNS/515-v014-no-redact.log" 'redacted:stripe_key'
 
 # 29c — --redact-token override. Uses 'XXX' to side-step the `*`-as-
 # regex-quantifier in BRE; assertion intent is "the substituted form
@@ -2862,7 +2862,7 @@ run_test "518 v0.14 mode-A --redact-token override" 0 "$RUNS/518-v014-redact-tok
   sh -c 'echo STRIPE=$STRIPE_KEY'
 
 assert_contains "519 --redact-token produces fixed XXX"   "$RUNS/518-v014-redact-token.log" 'STRIPE=XXX'
-assert_not_contains "520 --redact-token no alias-aware form" "$RUNS/518-v014-redact-token.log" 'redacted:STRIPE_KEY'
+assert_not_contains "520 --redact-token no alias-aware form" "$RUNS/518-v014-redact-token.log" 'redacted:stripe_key'
 assert_not_contains "521 --redact-token no raw value"        "$RUNS/518-v014-redact-token.log" 'sk_test_LOCAL_11111'
 
 # 29d — stderr coverage: child writes to fd 2; the redact engine runs
@@ -2872,7 +2872,7 @@ run_test "522 v0.14 mode-A stderr redaction" 0 "$RUNS/522-v014-redact-stderr.log
   "$BIN" --config "$CFG" run --registry default --redact -- \
   sh -c 'echo STRIPE=$STRIPE_KEY >&2'
 
-assert_contains "523 mode-A stderr substituted"        "$RUNS/522-v014-redact-stderr.log" 'STRIPE=\[redacted:STRIPE_KEY\]'
+assert_contains "523 mode-A stderr substituted"        "$RUNS/522-v014-redact-stderr.log" 'STRIPE=\[redacted:stripe_key\]'
 assert_not_contains "524 mode-A stderr no raw value"   "$RUNS/522-v014-redact-stderr.log" 'sk_test_LOCAL_11111'
 
 # 29e — clap rejects --no-redact without --i-know. Exit code 2 is

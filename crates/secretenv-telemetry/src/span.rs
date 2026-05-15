@@ -161,11 +161,17 @@ impl SecretEnvSpan {
         self
     }
 
-    /// `secretenv.redact.alias_name`. ALLOW (per operator's
-    /// emission rule).
-    pub fn record_redact_alias_name(&mut self, _alias: &str) -> &mut Self {
-        self
-    }
+    // `record_redact_alias_name` was deliberately removed in v0.14
+    // Phase 9 per SEC-INV-19. The redact alias name remains in the
+    // operator-local terminal substitution token (`[redacted:<alias>]`,
+    // rendered by `secretenv_core::redact::SubstitutionToken`) but is
+    // DENY for OTel attribute emission. See
+    // [[v0.14-plus-security-invariants]] §2.5 and §9 for the council
+    // resolution that overruled the alternative ALLOW position.
+    //
+    // A compile-fail test at `tests/no_redact_alias_in_otel.rs`
+    // verifies this method does not exist; adding it back without
+    // also amending SEC-INV-19 will fail CI.
 
     /// `secretenv.redact.stream`. ALLOW.
     pub fn record_redact_stream(&mut self, _s: RedactionStream) -> &mut Self {

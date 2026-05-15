@@ -213,6 +213,12 @@ pub enum ResolvedSource {
         /// by `--verbose` and `doctor --extensive` to help operators
         /// confirm which cascade layer a secret came from.
         source: BackendUri,
+        /// The registry alias name the manifest's `from = "secretenv://<alias>"`
+        /// pointed at. Threaded into [`crate::EnvEntry::alias_name`]
+        /// so the runtime redact mode (mode A) can render
+        /// `[redacted:<alias>]` consistently with mode B (which
+        /// also uses the registry alias name). Per Phase 9 Code-H4.
+        alias_name: String,
     },
 }
 
@@ -476,7 +482,11 @@ pub fn resolve_manifest(manifest: &Manifest, aliases: &AliasMap) -> Result<Vec<R
                         format_sources(aliases)
                     )
                 })?;
-                ResolvedSource::Uri { target: target.clone(), source: resolved_from.clone() }
+                ResolvedSource::Uri {
+                    target: target.clone(),
+                    source: resolved_from.clone(),
+                    alias_name: alias_name.to_owned(),
+                }
             }
         };
         out.push(ResolvedSecret { env_var: env_var.clone(), source });
@@ -948,9 +958,10 @@ mod tests {
 
         let stripe = resolved.iter().find(|s| s.env_var == "STRIPE").unwrap();
         match &stripe.source {
-            ResolvedSource::Uri { target, source } => {
+            ResolvedSource::Uri { target, source, alias_name } => {
                 assert_eq!(target.scheme, "aws-ssm-prod");
                 assert_eq!(source.raw, "local:///r.toml");
+                assert_eq!(alias_name, "stripe-key");
             }
             ResolvedSource::Default(_) => panic!("expected Uri"),
         }

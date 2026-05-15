@@ -99,6 +99,12 @@ pub struct RunOptions {
 pub struct EnvEntry {
     /// The environment variable name.
     pub key: String,
+    /// The registry alias name the value came from, when resolved
+    /// via a `secretenv://<alias>` reference. `None` for manifest
+    /// defaults (which have no registry alias). Carried so mode-A
+    /// redact emits `[redacted:<alias>]` consistent with mode B
+    /// per Phase 9 Code-H4.
+    pub alias_name: Option<String>,
     value: Secret<String>,
 }
 
@@ -180,10 +186,15 @@ pub async fn run_with_options(
             // whether to fall back to exec. Build the tainted set here.
             let mut tainted = TaintedSet::new();
             for entry in &env {
-                tainted.insert(TaintedValue::from_alias(
-                    entry.key.clone(),
-                    entry.value.as_str_internal(),
-                ));
+                // Phase 9 Code-H4 fix: use the registry alias name
+                // (lowercase, e.g. `stripe_key`) for the
+                // substitution token when one is available, so mode
+                // A's `[redacted:<alias>]` matches mode B's. Falls
+                // back to the env-var name for manifest-default
+                // entries (which have no registry alias).
+                let alias_label = entry.alias_name.clone().unwrap_or_else(|| entry.key.clone());
+                tainted
+                    .insert(TaintedValue::from_alias(alias_label, entry.value.as_str_internal()));
             }
             let token = options
                 .redact_token
@@ -450,6 +461,7 @@ pub async fn build_env(
                 }
                 slots[idx] = Some(EnvEntry {
                     key: secret.env_var.clone(),
+                    alias_name: None, // manifest defaults have no registry alias
                     value: Secret::new(value.clone()),
                 });
             }
@@ -495,8 +507,8 @@ async fn fetch_one(
     dry_run: bool,
     verbose: bool,
 ) -> Result<Option<EnvEntry>> {
-    let target = match &secret.source {
-        ResolvedSource::Uri { target, .. } => target,
+    let (target, alias_name) = match &secret.source {
+        ResolvedSource::Uri { target, alias_name, .. } => (target, alias_name.clone()),
         ResolvedSource::Default(_) => {
             // Unreachable: `build_env` only calls `fetch_one` for
             // `Uri` entries. Kept as defensive no-op rather than a
@@ -532,7 +544,7 @@ async fn fetch_one(
         crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await.with_context(
             || format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw),
         )?;
-    Ok(Some(EnvEntry { key: secret.env_var.clone(), value }))
+    Ok(Some(EnvEntry { key: secret.env_var.clone(), alias_name: Some(alias_name), value }))
 }
 
 /// Combine N>1 fetch failures into a single anyhow error whose
@@ -733,7 +745,11 @@ mod tests {
             env_var: env_var.to_owned(),
             // Tests don't exercise cascade-source surfacing; use the
             // target URI as the source placeholder.
-            source: ResolvedSource::Uri { target: parsed.clone(), source: parsed },
+            source: ResolvedSource::Uri {
+                target: parsed.clone(),
+                source: parsed,
+                alias_name: format!("test_{}", env_var.to_lowercase()),
+            },
         }
     }
 

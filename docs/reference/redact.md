@@ -58,13 +58,13 @@ secretenv redact <path>
 
 | Flag | Default | Effect |
 |---|---|---|
-| `<path>` | required | File to scrub. `-` reads stdin (writes stdout). |
+| `<path>` | required | File to scrub. v0.14 requires a regular-file path; stdin (`-`) is reserved for a future cycle. |
 | `--registry <r>` | active | Same semantics as `run --registry`. Determines which aliases populate the tainted set. |
 | `--alias <name>` | every alias | Restrict the tainted set. Repeatable; comma-separated also accepted. |
-| `--in-place` | off | Atomic rewrite via sibling tempfile + `rename(2)`. Mode (`0o600` etc.) is preserved. Conflicts with `--dry-run`. |
-| `--backup <suffix>` | (none) | When `--in-place` is set, also keep a backup at `<path><suffix>` (e.g. `--backup .bak`). |
+| `--in-place` | off | Atomic rewrite via sibling tempfile + `rename(2)`. **Mode** (`0o600` etc.) is preserved. **Ownership is NOT preserved** — the persisted file is owned by the caller's EUID; root-run scrubs of a sub-user-owned file end up root-owned. Conflicts with `--dry-run`. |
+| `--backup <suffix>` | (none) | When `--in-place` is set, also keep a backup at `<path><suffix>` (e.g. `--backup .bak`). The backup write uses `O_CREAT \| O_EXCL \| O_NOFOLLOW`; refuses if `<path><suffix>` already exists or is a symlink. |
 | `--dry-run` | off | Count matches without writing. Implies neither `--in-place` nor stdout emission. |
-| `--allow-foreign-owner` | off | Allow scrubbing files owned by a UID other than the caller's EUID. Off by default. |
+| `--allow-foreign-owner` | off | Bypass the foreign-owner refusal that fires when the target file's UID differs from the caller's EUID. By default mode B refuses such files (defense against a maliciously-planted log file in a shared directory). |
 | `--redact-token <s>` | (alias-aware) | Override the substitution (same as mode A). |
 
 ### Example

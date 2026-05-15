@@ -21,5 +21,11 @@ readme.workspace       = true
 # show opentelemetry as a transitive dep at this version.
 tracing.workspace = true
 
+[dev-dependencies]
+# `trybuild` powers the SEC-INV-19 compile-fail guard at
+# `tests/no_redact_alias_in_otel.rs`. Dev-dep only; never enters the
+# default-feature binary closure.
+trybuild = "1"
+
 [lints]
 workspace = true

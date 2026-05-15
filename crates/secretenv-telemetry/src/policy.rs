@@ -113,7 +113,13 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     // --- redact ---
     ("secretenv.redact.match_count", AttributeClassification::Allow),
     ("secretenv.redact.byte_count", AttributeClassification::Allow),
-    ("secretenv.redact.alias_name", AttributeClassification::Allow),
+    // SEC-INV-19 (v0.14 Phase 9 Sec-B2): alias name remains in the
+    // operator-local terminal substitution token only. The OTel
+    // emission must NOT carry it — alias names are sensitive enough
+    // to belong off shared trace surfaces (the security council's
+    // position overrode otel/concept-C's ALLOW vote per the
+    // invariant ledger §9).
+    ("secretenv.redact.alias_name", AttributeClassification::Deny),
     ("secretenv.redact.stream", AttributeClassification::Allow),
     ("secretenv.redact.source", AttributeClassification::Allow),
 ];

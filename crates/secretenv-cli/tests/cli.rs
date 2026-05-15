@@ -810,7 +810,10 @@ fn run_execs_with_secrets_injected_as_env_vars() {
         .args(["run", "--", "sh", "-c", "echo STRIPE=$STRIPE; echo LOG_LEVEL=$LOG_LEVEL"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("STRIPE=[redacted:STRIPE]"))
+        // Phase 9 Code-H4: mode-A substitution uses the REGISTRY
+        // alias (`stripe-key` per the fixture), not the manifest
+        // env-var name. Aligns with mode B for consistency.
+        .stdout(predicate::str::contains("STRIPE=[redacted:stripe-key]"))
         .stdout(predicate::str::contains("LOG_LEVEL=debug"))
         // Hard invariant: the raw value must NEVER appear in
         // stdout under the v0.14 default.

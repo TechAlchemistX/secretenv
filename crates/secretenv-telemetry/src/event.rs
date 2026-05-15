@@ -78,8 +78,17 @@ pub struct RedactionEvent {
     pub stream: RedactionStream,
     /// Which redact mode raised the event.
     pub source: RedactionSource,
-    /// Alias name whose value was matched. ALLOW per synthesis §6
-    /// (`secretenv.redact.alias_name`); operator's explicit rule.
+    /// Alias name whose value was matched.
+    ///
+    /// **DENY for OTel attribute emission** per SEC-INV-19 (v0.14
+    /// Phase 9 Sec-B2). This field exists so the redact engine can
+    /// render the operator-local terminal substitution token
+    /// (`[redacted:<alias>]`); it must NOT cross into a
+    /// `secretenv.redact.alias_name` OTel attribute. v0.17's OTel
+    /// sink consumes the count/byte_count/stream/source fields only;
+    /// any future sink that needs the alias does so for terminal
+    /// rendering only.
+    ///
     /// `None` when an aggregate event covers multiple aliases.
     pub alias_name: Option<String>,
 }

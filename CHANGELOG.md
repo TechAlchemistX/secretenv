@@ -8,7 +8,7 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-XX-XX
+## [0.14.0] - 2026-05-15
 
 **Headline:** `secretenv redact` lands in two modes, plus the foundation machinery three downstream cycles (v0.15 migrate, v0.16 MCP, v0.17 OTel) depend on. Backend total stays at **15**.
 

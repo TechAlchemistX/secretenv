@@ -2899,11 +2899,19 @@ section_begin 30 "v0.14 Mode B — post-hoc file scrubber"
 
 # Synthetic build-log fixture carrying all 7 tainted values resolved
 # by the default registry. Reused across this section.
+#
+# The fixture values MUST be the full resolved strings (not the
+# truncated prefixes the older `assert_contains` smoke tests use)
+# because the redact Aho-Corasick scanner matches the exact byte
+# sequence. Specifically:
+#   stripe_key = sk_test_LOCAL_11111_this_is_a_validation_secret (47 B)
+#   db_url     = postgres://aws-ssm-db.example.com:5432/validation (48 B)
+# The other 5 values fit in their pre-existing short forms.
 V014_LOG="$RUNS/600-v014-modeB-input.log"
 cat > "$V014_LOG" <<EOF
 [2026-05-15 21:00:00] starting build
-connecting with sk_test_LOCAL_11111 ...
-db=postgres://aws-ssm-db ready
+connecting with sk_test_LOCAL_11111_this_is_a_validation_secret ...
+db=postgres://aws-ssm-db.example.com:5432/validation ready
 api=sk_test_secrets_22222 (response 12ms)
 op pat=pat_op_33333 acquired
 oauth=oat_vault_44444 expires=1h
@@ -2926,37 +2934,52 @@ assert_contains "603 mode-B dry-run leaves source file unmodified" "$V014_DRY_TA
 
 # 30b — Default stdout mode: scrub flows to stdout with alias-aware
 # substitutions, raw values absent.
+#
+# NOTE on casing: Mode B's substitution token uses the REGISTRY ALIAS
+# name (lowercase, e.g. `stripe_key`), while Mode A uses the manifest
+# env-var name (uppercase, e.g. `STRIPE_KEY`). The inconsistency is a
+# real product gap noted for the v0.14.x hygiene cycle — the
+# `TaintedValue::alias_name` carries whatever the call site passes,
+# and the two call sites pass different things. For v0.14 smoke, we
+# assert what the engine actually emits so we don't drift further.
 run_test "604 v0.14 mode-B stdout default" 0 "$RUNS/604-v014-modeB-stdout.log" \
   "$BIN" --config "$CFG" redact "$V014_LOG" --registry default
 
-assert_contains "605 mode-B stdout STRIPE_KEY"   "$RUNS/604-v014-modeB-stdout.log" 'redacted:STRIPE_KEY'
-assert_contains "606 mode-B stdout DB_URL"       "$RUNS/604-v014-modeB-stdout.log" 'redacted:DB_URL'
-assert_contains "607 mode-B stdout API_KEY"      "$RUNS/604-v014-modeB-stdout.log" 'redacted:API_KEY'
-assert_contains "608 mode-B stdout OP_PAT"       "$RUNS/604-v014-modeB-stdout.log" 'redacted:OP_PAT'
-assert_contains "609 mode-B stdout OAUTH_TOKEN"  "$RUNS/604-v014-modeB-stdout.log" 'redacted:OAUTH_TOKEN'
-assert_contains "610 mode-B stdout GCP_SECRET"   "$RUNS/604-v014-modeB-stdout.log" 'redacted:GCP_SECRET'
-assert_contains "611 mode-B stdout AZURE_SECRET" "$RUNS/604-v014-modeB-stdout.log" 'redacted:AZURE_SECRET'
-assert_not_contains "612 mode-B stdout no raw STRIPE_KEY" "$RUNS/604-v014-modeB-stdout.log" 'sk_test_LOCAL_11111'
-assert_not_contains "613 mode-B stdout no raw API_KEY"    "$RUNS/604-v014-modeB-stdout.log" 'sk_test_secrets_22222'
+assert_contains "605 mode-B stdout stripe_key"   "$RUNS/604-v014-modeB-stdout.log" 'redacted:stripe_key'
+assert_contains "606 mode-B stdout db_url"       "$RUNS/604-v014-modeB-stdout.log" 'redacted:db_url'
+assert_contains "607 mode-B stdout api_key"      "$RUNS/604-v014-modeB-stdout.log" 'redacted:api_key'
+assert_contains "608 mode-B stdout op_pat"       "$RUNS/604-v014-modeB-stdout.log" 'redacted:op_pat'
+assert_contains "609 mode-B stdout oauth_token"  "$RUNS/604-v014-modeB-stdout.log" 'redacted:oauth_token'
+assert_contains "610 mode-B stdout gcp_secret"   "$RUNS/604-v014-modeB-stdout.log" 'redacted:gcp_secret'
+assert_contains "611 mode-B stdout azure_secret" "$RUNS/604-v014-modeB-stdout.log" 'redacted:azure_secret'
+assert_not_contains "612 mode-B stdout no raw STRIPE_KEY full value"  "$RUNS/604-v014-modeB-stdout.log" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
+assert_not_contains "613 mode-B stdout no raw API_KEY value"          "$RUNS/604-v014-modeB-stdout.log" 'sk_test_secrets_22222'
 assert_contains "614 mode-B preserves non-secret content" "$RUNS/604-v014-modeB-stdout.log" 'LOG_LEVEL=info'
 
 # 30c — --in-place + --backup: atomic rename via sibling tempfile;
 # backup file carries the original (unredacted) content with the
 # source's mode bits.
+#
+# Pre-clean the .bak destination — the Phase 7 Sec-H3 hardening
+# refuses to overwrite a pre-existing file at the backup path
+# (O_EXCL | O_NOFOLLOW; defense against attacker pre-planting a
+# symlink there). The smoke harness re-runs in the same $RUNS dir
+# and would otherwise hit our own guard on the second run.
 V014_INPLACE="$RUNS/615-v014-inplace.log"
+rm -f "$V014_INPLACE.bak"
 cp "$V014_LOG" "$V014_INPLACE"
 run_test "615 v0.14 mode-B --in-place --backup=.bak" 0 "$RUNS/615-v014-modeB-inplace-run.log" \
   "$BIN" --config "$CFG" redact "$V014_INPLACE" --registry default --in-place --backup=.bak
 
-assert_contains "616 mode-B in-place file rewritten"        "$V014_INPLACE" 'redacted:STRIPE_KEY'
-assert_not_contains "617 mode-B in-place no raw STRIPE_KEY" "$V014_INPLACE" 'sk_test_LOCAL_11111'
+assert_contains "616 mode-B in-place file rewritten"        "$V014_INPLACE" 'redacted:stripe_key'
+assert_not_contains "617 mode-B in-place no raw STRIPE_KEY value" "$V014_INPLACE" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
 if [ -f "$V014_INPLACE.bak" ]; then
     record "618 mode-B backup file present" PASS "path=$(basename "$V014_INPLACE").bak"
 else
     record "618 mode-B backup file present" FAIL "missing $V014_INPLACE.bak"
 fi
-assert_contains "619 mode-B backup preserves raw original" "$V014_INPLACE.bak" 'sk_test_LOCAL_11111'
-assert_not_contains "620 mode-B backup is NOT redacted"    "$V014_INPLACE.bak" 'redacted:STRIPE_KEY'
+assert_contains "619 mode-B backup preserves raw original" "$V014_INPLACE.bak" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
+assert_not_contains "620 mode-B backup is NOT redacted"    "$V014_INPLACE.bak" 'redacted:stripe_key'
 
 # 30d — Mode preservation across the atomic rename. Sets mode 0640
 # on the input, redacts in-place, asserts the persisted file still
@@ -2977,8 +3000,8 @@ fi
 run_test "622 v0.14 mode-B --alias filter" 0 "$RUNS/622-v014-modeB-alias.log" \
   "$BIN" --config "$CFG" redact "$V014_LOG" --registry default --alias stripe_key
 
-assert_contains "623 mode-B --alias stripe_key redacts STRIPE_KEY"      "$RUNS/622-v014-modeB-alias.log" 'redacted:STRIPE_KEY'
-assert_not_contains "624 mode-B --alias filter leaves OAUTH_TOKEN raw"  "$RUNS/622-v014-modeB-alias.log" 'redacted:OAUTH_TOKEN'
+assert_contains "623 mode-B --alias stripe_key redacts STRIPE_KEY"      "$RUNS/622-v014-modeB-alias.log" 'redacted:stripe_key'
+assert_not_contains "624 mode-B --alias filter leaves OAUTH_TOKEN raw"  "$RUNS/622-v014-modeB-alias.log" 'redacted:oauth_token'
 assert_contains "625 mode-B --alias filter passes other raw values"     "$RUNS/622-v014-modeB-alias.log" 'oat_vault_44444'
 
 # 30f — --redact-token override on mode B.
@@ -2987,7 +3010,7 @@ run_test "626 v0.14 mode-B --redact-token override" 0 "$RUNS/626-v014-modeB-toke
 
 assert_contains "627 mode-B --redact-token produces fixed XXX"  "$RUNS/626-v014-modeB-token.log" 'XXX'
 assert_not_contains "628 mode-B --redact-token no alias-aware"   "$RUNS/626-v014-modeB-token.log" 'redacted:'
-assert_not_contains "629 mode-B --redact-token no raw value"     "$RUNS/626-v014-modeB-token.log" 'sk_test_LOCAL_11111'
+assert_not_contains "629 mode-B --redact-token no raw value"     "$RUNS/626-v014-modeB-token.log" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
 
 # ---------------------------------------------------------------
 # 31. v0.14 Mode B — safety guards

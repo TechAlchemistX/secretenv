@@ -34,12 +34,17 @@ pub mod status;
 pub mod timeouts;
 pub mod uri;
 
-// `Backend` is intentionally re-exported only when the `mcp-safe`
-// feature is OFF. Crates linking with `mcp-safe` (the v0.16 MCP
-// server) must reach the trait via its full module path
-// (`secretenv_core::backend::Backend`) — a small friction tax that
-// prevents the trait from leaking into MCP-exposed API signatures by
-// reflex. Per [[build-plan-v0.14-redact]] §Phase 1 BREAKING #2 (Q-O1.c).
+// `Backend` and the value-producing surfaces (`run`, `run_with_options`,
+// `build_env`, `EnvEntry`) are intentionally re-exported only when the
+// `mcp-safe` feature is OFF. Crates linking with `mcp-safe` (the v0.16
+// MCP server) must reach these via their module paths
+// (`secretenv_core::backend::Backend`, `secretenv_core::runner::...`)
+// — a small friction tax that prevents value-producing APIs from
+// leaking into MCP-exposed signatures by reflex. Per
+// [[build-plan-v0.14-redact]] §Phase 1 BREAKING #2 (Q-O1.c) and the
+// Phase 7 security-audit B1/H4 findings (the unconditional re-export
+// of `build_env` and `EnvEntry::value` bypassed the cfg gate on
+// `Secret::expose_secret`).
 #[cfg(not(feature = "mcp-safe"))]
 pub use backend::Backend;
 pub use backend::{BackendFactory, HistoryEntry};
@@ -56,6 +61,7 @@ pub use resolver::{
     resolve_manifest, resolve_registry, AliasMap, CascadeLayer, RegistryCache, RegistrySelection,
     ResolvedSecret, ResolvedSource,
 };
+#[cfg(not(feature = "mcp-safe"))]
 pub use runner::{build_env, run, run_with_options, EnvEntry, RedactMode, RunOptions};
 pub use secret::Secret;
 pub use status::BackendStatus;

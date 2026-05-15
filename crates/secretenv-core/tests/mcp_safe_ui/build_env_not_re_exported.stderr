@@ -1,0 +1,22 @@
+error[E0425]: cannot find value `build_env` in crate `secretenv_core`
+  --> tests/mcp_safe_ui/build_env_not_re_exported.rs:13:29
+   |
+13 |     let _ = secretenv_core::build_env;
+   |                             ^^^^^^^^^ not found in `secretenv_core`
+   |
+note: found an item that was configured out
+  --> src/lib.rs
+   |
+   | #[cfg(not(feature = "mcp-safe"))]
+   |          ---------------------- the item is gated here
+   | pub use runner::{build_env, run, run_with_options, EnvEntry, RedactMode, RunOptions};
+   |                  ^^^^^^^^^
+help: consider importing this function
+   |
+12 + use secretenv_core::runner::build_env;
+   |
+help: if you import `build_env`, refer to it directly
+   |
+13 -     let _ = secretenv_core::build_env;
+13 +     let _ = build_env;
+   |

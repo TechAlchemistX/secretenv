@@ -105,6 +105,13 @@ pub struct EnvEntry {
 impl EnvEntry {
     /// Borrow the value as a `&str` for the duration of the borrow.
     /// The underlying buffer is zeroed on drop.
+    ///
+    /// Gated behind `cfg(not(feature = "mcp-safe"))` for the same
+    /// reason as [`Secret::expose_secret`]: crates linking with
+    /// `mcp-safe` (the v0.16 MCP server) must not be able to read
+    /// resolved values through any safe public API. Per Phase 7
+    /// security audit finding B1.
+    #[cfg(not(feature = "mcp-safe"))]
     #[must_use]
     pub fn value(&self) -> &str {
         self.value.as_str_internal()
@@ -173,7 +180,10 @@ pub async fn run_with_options(
             // whether to fall back to exec. Build the tainted set here.
             let mut tainted = TaintedSet::new();
             for entry in &env {
-                tainted.insert(TaintedValue::from_alias(entry.key.clone(), entry.value()));
+                tainted.insert(TaintedValue::from_alias(
+                    entry.key.clone(),
+                    entry.value.as_str_internal(),
+                ));
             }
             let token = options
                 .redact_token
@@ -281,9 +291,17 @@ async fn run_with_pipe_redaction(
     let stderr_task = tokio::spawn(relay_stream(scrubber_err, child_stderr, StreamKind::Stderr));
 
     let exit_status = child.wait().await.context("waiting for child to exit")?;
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
+    // Per Phase 7 code-review H2: previously the relay tasks were
+    // `let _ = ... .await`-discarded, hiding mid-stream scrubber
+    // errors and parent-stdout write failures. Now we collect them
+    // and surface a single error if either relay reported one.
+    // A `BrokenPipe` on the parent side (`secretenv run ... | head`)
+    // is mapped to a clean exit inside `relay_stream`.
+    let stdout_res = stdout_task.await.context("redact stdout relay panicked")?;
+    let stderr_res = stderr_task.await.context("redact stderr relay panicked")?;
     signal_task.abort();
+    stdout_res.context("redact stdout relay failed")?;
+    stderr_res.context("redact stderr relay failed")?;
 
     let code = exit_status.code().unwrap_or(128);
     std::process::exit(code);
@@ -316,14 +334,34 @@ where
         }
         out_buf.clear();
         let _ = scrubber.push(&buf[..n], &mut out_buf)?;
-        write_kind(kind, &out_buf)?;
+        if let Err(err) = write_kind(kind, &out_buf) {
+            if is_broken_pipe(&err) {
+                return Ok(()); // parent's stdout was closed early — clean exit.
+            }
+            return Err(err);
+        }
     }
     out_buf.clear();
     let _ = scrubber.flush(&mut out_buf)?;
     if !out_buf.is_empty() {
-        write_kind(kind, &out_buf)?;
+        if let Err(err) = write_kind(kind, &out_buf) {
+            if is_broken_pipe(&err) {
+                return Ok(());
+            }
+            return Err(err);
+        }
     }
     Ok(())
+}
+
+/// Whether the error chain at `err` includes a `BrokenPipe` io error.
+/// Used to convert "parent closed stdout early" (legitimate, e.g.
+/// `secretenv run ... | head`) into a clean relay exit.
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+    })
 }
 
 fn write_kind(kind: StreamKind, bytes: &[u8]) -> Result<()> {

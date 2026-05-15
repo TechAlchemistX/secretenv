@@ -402,23 +402,99 @@ pub fn open_no_follow(path: &Path) -> io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
+/// Write a backup of `source` to `dest` with the source's mode bits,
+/// refusing to follow a symlink at `dest` and refusing to overwrite
+/// an existing file at `dest`.
+///
+/// Phase 7 security audit H3: the original `std::fs::copy`-based
+/// path was vulnerable to a pre-planted symlink at the backup
+/// destination (the in-place rename's `O_NOFOLLOW` guard didn't
+/// extend to the backup path) and to inherit-existing-mode-bits if
+/// the destination already existed.
+///
+/// # Errors
+/// Returns an error on read/write/open failure, refuses if the
+/// destination already exists (`O_EXCL`), and refuses if the
+/// destination path resolves through a symlink (`O_NOFOLLOW`).
+#[cfg(unix)]
+#[allow(clippy::similar_names)] // source/dest are the natural names for a backup-write
+fn write_backup_secure(source: &Path, dest: &Path) -> Result<()> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    use rustix::fs::{Mode, OFlags};
+
+    let mut src = open_no_follow(source)
+        .with_context(|| format!("redact: open backup-source '{}'", source.display()))?;
+    let src_mode = src
+        .metadata()
+        .with_context(|| format!("redact: fstat backup-source '{}'", source.display()))?
+        .permissions()
+        .mode();
+
+    let dest_mode_u16: u16 = u16::try_from(src_mode & 0o777).unwrap_or(0o600);
+    let owned_fd = rustix::fs::open(
+        dest,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
+        Mode::from_raw_mode(dest_mode_u16),
+    )
+    .with_context(|| {
+        format!(
+            "redact: create backup at '{}' (O_EXCL | O_NOFOLLOW; pre-existing or symlink \
+             at destination is refused)",
+            dest.display()
+        )
+    })?;
+    let mut dst = std::fs::File::from(owned_fd);
+
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = src
+            .read(&mut buf)
+            .with_context(|| format!("redact: reading backup-source '{}'", source.display()))?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n])
+            .with_context(|| format!("redact: writing backup at '{}'", dest.display()))?;
+    }
+    dst.sync_data().with_context(|| format!("redact: fsync backup at '{}'", dest.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_backup_secure(source: &Path, dest: &Path) -> Result<()> {
+    // On non-Unix the O_EXCL | O_NOFOLLOW combo is not portable in
+    // std::fs::OpenOptions; v0.14 falls back to a best-effort copy.
+    std::fs::copy(source, dest)
+        .map(|_| ())
+        .with_context(|| format!("redact: writing backup at '{}'", dest.display()))
+}
+
 /// Scrub `path` in place. Atomic semantics:
 ///
 /// 1. Stat (lstat) — refuse special paths, refuse foreign owner.
 /// 2. Open with `O_NOFOLLOW` — refuses symlink swap.
 /// 3. Scrub through a sibling tempfile in the same directory
 ///    (same filesystem → rename is atomic).
-/// 4. Optionally copy the original to `<path><backup_suffix>`
-///    before the rename.
+/// 4. Optionally copy the original to `<path><backup_suffix>` via
+///    [`write_backup_secure`] (`O_EXCL | O_NOFOLLOW`) before the
+///    rename.
 /// 5. Atomic `rename(temp, path)`.
 ///
-/// Mode + ownership are preserved on the renamed file (the temp
-/// inherits the original's metadata via `fchmod` after the scrub).
+/// **Mode is preserved** on the renamed file (the temp inherits the
+/// original's mode via `fchmod` after the scrub). **Ownership is NOT
+/// preserved**: the persisted file is owned by the current EUID. For
+/// the default same-EUID case this is a no-op; for root-run scrubs
+/// of a sub-user-owned file the persisted file is owned by root;
+/// for `--allow-foreign-owner` scrubs ownership transfers to the
+/// current EUID (intentional). If true ownership preservation is
+/// needed for a use case, file a v0.14.x chip.
 ///
 /// # Errors
 /// Returns an error for any of: special-path refusal, foreign-owner
-/// refusal, symlink swap (O_NOFOLLOW), read/write failure, or
-/// rename failure.
+/// refusal, symlink swap (O_NOFOLLOW), read/write failure, backup
+/// destination already exists or is a symlink, or rename failure.
 pub fn scrub_file_in_place(
     path: &Path,
     scrubber: &Scrubber,
@@ -446,11 +522,14 @@ pub fn scrub_file_in_place(
     if let Some(suffix) = backup_suffix {
         let mut backup_path = path.as_os_str().to_owned();
         backup_path.push(suffix);
-        std::fs::copy(path, std::path::Path::new(&backup_path))
-            .with_context(|| format!("redact: writing backup at '{}'", path.display()))?;
+        write_backup_secure(path, std::path::Path::new(&backup_path))?;
     }
 
-    // Preserve mode + ownership.
+    // Preserve mode on the renamed file. Ownership is NOT preserved
+    // — non-root scrubs deliberately persist the file owned by the
+    // current EUID. The build plan documents this behavior. Phase 7
+    // code-review H1 caught a doc/impl mismatch fixed in the
+    // function-level doc comment above.
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -460,12 +539,6 @@ pub fn scrub_file_in_place(
         tmp.as_file_mut()
             .set_permissions(perms)
             .with_context(|| format!("redact: fchmod tempfile for '{}'", path.display()))?;
-        // Ownership: only attempt when running as root; otherwise a
-        // non-root scrub of a self-owned file keeps the current UID
-        // (correct), and a foreign-owned file was already refused
-        // earlier unless `--allow-foreign-owner` opted in (in which
-        // case we deliberately drop ownership to the current UID).
-        let _ = md.uid();
     }
 
     tmp.persist(path).map_err(|e| {

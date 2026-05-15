@@ -179,7 +179,9 @@ pub struct RunArgs {
 
     /// Acknowledge the audit consequences of `--no-redact` on a
     /// non-TTY parent. Required by `--no-redact` per the v0.14
-    /// security invariants (SEC-INV-09).
+    /// security invariants (SEC-INV-07). On a TTY parent, an
+    /// additional interactive "type yes" prompt fires regardless of
+    /// this flag.
     #[arg(long)]
     pub i_know: bool,
 
@@ -504,6 +506,33 @@ async fn cmd_run(
     let resolved = resolve_manifest(&manifest, &aliases)?;
 
     let alias_count = resolved.len() as u64;
+
+    // SEC-INV-07 (Phase 7 security audit H1): `--no-redact` on a TTY
+    // requires an interactive "type yes" confirmation in addition to
+    // the clap-enforced `--i-know` flag. On a non-TTY parent the
+    // `--i-know` requirement alone provides friction; on a TTY the
+    // operator is explicitly walking themselves into the unsafe path
+    // and must type the word out. CI environments (non-TTY) skip the
+    // prompt by definition; developer workstations (TTY) hit it.
+    if args.no_redact {
+        use std::io::IsTerminal as _;
+        if io::stderr().is_terminal() {
+            eprintln!(
+                "WARNING: --no-redact disables runtime secret filtering. Resolved \
+                 values will appear verbatim in the child's stdout/stderr."
+            );
+            eprint!("Type \"yes\" to continue: ");
+            io::stderr().flush().ok();
+            let mut input = String::new();
+            io::stdin()
+                .read_line(&mut input)
+                .context("reading --no-redact confirmation from stdin")?;
+            if input.trim() != "yes" {
+                bail!("--no-redact aborted by user (did not type \"yes\")");
+            }
+        }
+    }
+
     let redact = if args.no_redact {
         RedactMode::ForceExec
     } else if args.redact {
@@ -877,11 +906,20 @@ async fn cmd_redact(
 
     let path = std::path::Path::new(&args.path);
 
-    // Dispatch: --dry-run (count only), --in-place (atomic rename), or
-    // default (stdout).
+    // Per Phase 7 code-review H4: every dispatch arm now goes
+    // through the same special-path + foreign-owner gate. The
+    // `--dry-run` path previously skipped both — defense-in-depth
+    // should not have an opt-out for "just count, don't write."
+    // `scrub_file_in_place` re-applies the same guards internally,
+    // so the in-place arm sees them at both layers.
+    secretenv_core::redact::refuse_special_paths(path)?;
+    secretenv_core::redact::refuse_foreign_owner(path, args.allow_foreign_owner)?;
+
     if args.dry_run {
         let mut sink = std::io::sink();
-        let mut reader = secretenv_core::redact::open_no_follow(path)?;
+        let mut reader = secretenv_core::redact::open_no_follow(path).with_context(|| {
+            format!("redact: opening '{}' with O_NOFOLLOW for dry-run", path.display())
+        })?;
         let rep = scrubber.scrub_reader(&mut reader, &mut sink)?;
         eprintln!(
             "secretenv redact: would redact {} match(es) totaling {} byte(s) in '{}'",
@@ -918,8 +956,6 @@ async fn cmd_redact(
     }
 
     // Default: stream to stdout.
-    secretenv_core::redact::refuse_special_paths(path)?;
-    secretenv_core::redact::refuse_foreign_owner(path, args.allow_foreign_owner)?;
     let mut reader = secretenv_core::redact::open_no_follow(path)
         .with_context(|| format!("redact: opening '{}' with O_NOFOLLOW", path.display()))?;
     let mut stdout = io::stdout().lock();

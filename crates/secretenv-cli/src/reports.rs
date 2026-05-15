@@ -5,10 +5,9 @@
 //!
 //! Every CLI handler returns one of these structs instead of `()`.
 //! In v0.14 the structs are minimal data carriers — the dispatcher
-//! discards them via `let _ = handler.await?;`. In v0.17 each
-//! struct's [`Drop`] impl emits an OTel span carrying its ALLOW
-//! attributes (per the synthesis §6 matrix), and the dispatcher
-//! consumes them through that side effect.
+//! discards them via `let _ = handler.await?;`. v0.17 will read
+//! the populated fields and emit them as OTel span attributes (per
+//! the synthesis §6 matrix).
 //!
 //! Naming: one type per top-level subcommand. Fields are restricted
 //! to ALLOW attributes from the v0.14+ §6 matrix; DENY data
@@ -17,10 +16,30 @@
 //! See [[build-plan-v0.14-redact]] §Phase 6 and
 //! [[v0.14-plus-synthesis]] §6 for the rationale.
 //!
+//! # Phase 7 code-review B1: `Drop` does not fire on `secretenv run`
+//!
+//! The Phase 6 commit message described v0.17 wiring as "the
+//! report's `Drop` impl emits the root span." That works for handler
+//! paths whose function bodies return normally (`cmd_get`, `cmd_redact`,
+//! `cmd_resolve`, `cmd_registry`, `cmd_setup`, `cmd_profile`,
+//! `cmd_completions`) but **does not work for `cmd_run`'s exec /
+//! pipe-redact happy paths**: both end in `std::process::exit(...)`
+//! or `cmd.exec()`, which replace the process / terminate without
+//! running Rust destructors. As written, v0.17 would silently emit
+//! zero spans for every successful `secretenv run`.
+//!
+//! **v0.17 must add a pre-exec emission hook** — synchronously
+//! flush whatever the v0.17 OTel exporter requires before the
+//! `exec()` / `exit()` call. Concretely: in `runner::run_with_options`
+//! and `runner::run_with_pipe_redaction`, just before the terminal
+//! `exec_with_env(...)` / `std::process::exit(...)`, emit a
+//! [`RunReport`]-equivalent span via the v0.17 telemetry sink and
+//! flush. The `RunReport` returned to the dispatcher then becomes a
+//! no-op for those paths; the other handlers continue to rely on
+//! `Drop` emission.
+//!
 //! v0.14 `#[allow(dead_code)]`: every report field exists for
-//! v0.17 OTel attribute emission via `Drop` — fields are populated
-//! by handlers and discarded by the dispatcher in v0.14. v0.17
-//! will read them.
+//! v0.17 emission (whether via `Drop` or pre-exec hook).
 
 #![allow(dead_code, clippy::doc_markdown)]
 

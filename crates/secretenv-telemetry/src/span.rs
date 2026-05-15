@@ -54,126 +54,126 @@ impl SecretEnvSpan {
 
     /// `secretenv.version` — the SecretEnv release that produced
     /// the span. ALLOW.
-    pub fn record_version(&self, _v: &str) -> &Self {
+    pub fn record_version(&mut self, _v: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.run_id` — UUIDv4 per invocation. ALLOW.
-    pub fn record_run_id(&self, _id: &str) -> &Self {
+    pub fn record_run_id(&mut self, _id: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.command` — `run` / `get` / `migrate` / `doctor` /
     /// `mcp` / `redact`. ALLOW.
-    pub fn record_command(&self, _cmd: &str) -> &Self {
+    pub fn record_command(&mut self, _cmd: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.exit_code`. ALLOW.
-    pub fn record_exit_code(&self, _code: i32) -> &Self {
+    pub fn record_exit_code(&mut self, _code: i32) -> &mut Self {
         self
     }
 
     /// `secretenv.duration_ms`. ALLOW.
-    pub fn record_duration_ms(&self, _ms: u64) -> &Self {
+    pub fn record_duration_ms(&mut self, _ms: u64) -> &mut Self {
         self
     }
 
     /// `secretenv.alias.name`. ALLOW (operator's explicit rule —
     /// alias names are operator-chosen and treated as
     /// non-sensitive).
-    pub fn record_alias_name(&self, _name: &str) -> &Self {
+    pub fn record_alias_name(&mut self, _name: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.alias.env_var`. ALLOW.
-    pub fn record_alias_env_var(&self, _env: &str) -> &Self {
+    pub fn record_alias_env_var(&mut self, _env: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.alias.count`. ALLOW.
-    pub fn record_alias_count(&self, _n: u64) -> &Self {
+    pub fn record_alias_count(&mut self, _n: u64) -> &mut Self {
         self
     }
 
     /// `secretenv.alias.cascade_layer_index`. ALLOW.
-    pub fn record_cascade_layer_index(&self, _idx: u32) -> &Self {
+    pub fn record_cascade_layer_index(&mut self, _idx: u32) -> &mut Self {
         self
     }
 
     /// `secretenv.alias.outcome` — closed enum. ALLOW.
-    pub fn record_alias_outcome(&self, _outcome: AliasOutcome) -> &Self {
+    pub fn record_alias_outcome(&mut self, _outcome: AliasOutcome) -> &mut Self {
         self
     }
 
     /// `secretenv.backend.type`. ALLOW.
-    pub fn record_backend_type(&self, _ty: &str) -> &Self {
+    pub fn record_backend_type(&mut self, _ty: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.backend.instance_name`. ALLOW.
-    pub fn record_backend_instance(&self, _name: &str) -> &Self {
+    pub fn record_backend_instance(&mut self, _name: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.backend.region`. ALLOW.
-    pub fn record_backend_region(&self, _region: &str) -> &Self {
+    pub fn record_backend_region(&mut self, _region: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.backend.cli.name`. ALLOW.
-    pub fn record_backend_cli_name(&self, _cli: &str) -> &Self {
+    pub fn record_backend_cli_name(&mut self, _cli: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.backend.cli.version`. ALLOW.
-    pub fn record_backend_cli_version(&self, _version: &str) -> &Self {
+    pub fn record_backend_cli_version(&mut self, _version: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.backend.auth_method` — closed enum. ALLOW.
-    pub fn record_backend_auth_method(&self, _m: AuthMethod) -> &Self {
+    pub fn record_backend_auth_method(&mut self, _m: AuthMethod) -> &mut Self {
         self
     }
 
     /// `secretenv.error.kind`. ALLOW.
-    pub fn record_error_kind(&self, _kind: SecretEnvErrorKind) -> &Self {
+    pub fn record_error_kind(&mut self, _kind: SecretEnvErrorKind) -> &mut Self {
         self
     }
 
     /// `secretenv.process.command_name` — argv[0] only. ALLOW.
-    pub fn record_process_command_name(&self, _name: &str) -> &Self {
+    pub fn record_process_command_name(&mut self, _name: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.process.env_var_count`. ALLOW.
-    pub fn record_process_env_var_count(&self, _n: u64) -> &Self {
+    pub fn record_process_env_var_count(&mut self, _n: u64) -> &mut Self {
         self
     }
 
     /// `secretenv.redact.match_count`. ALLOW.
-    pub fn record_redact_match_count(&self, _n: u64) -> &Self {
+    pub fn record_redact_match_count(&mut self, _n: u64) -> &mut Self {
         self
     }
 
     /// `secretenv.redact.byte_count`. ALLOW.
-    pub fn record_redact_byte_count(&self, _bytes: u64) -> &Self {
+    pub fn record_redact_byte_count(&mut self, _bytes: u64) -> &mut Self {
         self
     }
 
     /// `secretenv.redact.alias_name`. ALLOW (per operator's
     /// emission rule).
-    pub fn record_redact_alias_name(&self, _alias: &str) -> &Self {
+    pub fn record_redact_alias_name(&mut self, _alias: &str) -> &mut Self {
         self
     }
 
     /// `secretenv.redact.stream`. ALLOW.
-    pub fn record_redact_stream(&self, _s: RedactionStream) -> &Self {
+    pub fn record_redact_stream(&mut self, _s: RedactionStream) -> &mut Self {
         self
     }
 
     /// `secretenv.redact.source`. ALLOW.
-    pub fn record_redact_source(&self, _src: RedactionSource) -> &Self {
+    pub fn record_redact_source(&mut self, _src: RedactionSource) -> &mut Self {
         self
     }
 
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn span_records_silently_at_v0_14() {
-        let (span, _guard) = SecretEnvSpan::start("redact.match");
+        let (mut span, _guard) = SecretEnvSpan::start("redact.match");
         span.record_version("0.14.0")
             .record_run_id("11111111-1111-1111-1111-111111111111")
             .record_command("run")

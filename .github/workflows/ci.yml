@@ -68,17 +68,31 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: grep for forbidden Secret-leaking patterns
+        # Per Phase 7 security audit H2 — the previous `grep -E` with a
+        # literal `\n` was structurally broken (grep is line-oriented).
+        # Switched to `ripgrep --multiline` (preinstalled on ubuntu-latest
+        # runners) for true cross-line matching, and broadened coverage
+        # to include hand-written impls (Display / Serialize / Hash /
+        # PartialEq / Clone / From) and the `from_lossy`/`expose`-style
+        # workaround attempts.
         run: |
           set -euo pipefail
           fail=0
-          # Forbid Display / Serialize / Deserialize / Clone derives on
-          # Secret itself, and `format!`-style stringification of any
-          # `Secret<...>` binding in the workspace. Scans .rs only.
-          if grep -rn --include='*.rs' -E 'impl[[:space:]]+(std::)?fmt::Display[[:space:]]+for[[:space:]]+Secret' crates/; then
-            echo "FAIL: Display impl on Secret leaks values."; fail=1
+          # 1. Hand-written impls of forbidden traits for Secret<T>.
+          #    Matches both single-line and `impl<T>\n    Trait for Secret`
+          #    forms.
+          if rg --multiline --type=rust 'impl(?:\s*<[^>]+>)?\s+(?:std::fmt::|fmt::)?(?:Display|Serialize|Deserialize|Hash|PartialEq|Eq|Clone)\s+for\s+Secret\b' crates/; then
+            echo "FAIL: forbidden hand-written impl on Secret."; fail=1
           fi
-          if grep -rn --include='*.rs' -E '#\[derive[^)]*\b(Clone|Serialize|Deserialize|Display)\b[^)]*\)\][[:space:]]*\n[[:space:]]*pub[[:space:]]+struct[[:space:]]+Secret' crates/; then
+          # 2. derive(...) on the Secret struct itself with any forbidden
+          #    trait. The `pub struct Secret<` line is on the next line;
+          #    `--multiline -U` lets the regex cross newlines.
+          if rg --multiline -U --type=rust '#\[derive\([^)]*\b(?:Clone|Serialize|Deserialize|Display|Hash|PartialEq|Eq)\b[^)]*\)\]\s*\n\s*pub\s+struct\s+Secret\b' crates/; then
             echo "FAIL: forbidden derive on Secret."; fail=1
+          fi
+          # 3. From<Secret<...>> for String — the `Into<String>` escape.
+          if rg --multiline --type=rust 'impl(?:\s*<[^>]+>)?\s+From\s*<\s*Secret\s*<' crates/; then
+            echo "FAIL: From<Secret<...>> conversion would create an Into<String> escape."; fail=1
           fi
           exit $fail
 

@@ -921,6 +921,7 @@ dependencies = [
  "futures",
  "indexmap",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

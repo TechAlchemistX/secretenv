@@ -762,7 +762,7 @@ async fn registry_set(
     // produced non-reproducible diffs on every `registry set`.
     let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.insert(alias.to_owned(), target_uri.to_owned());
-    let serialized = serialize_registry(backend.backend_type(), &map)?;
+    let serialized = backend.serialize_registry_doc(&map)?;
     backend
         .set(&source_uri, &serialized)
         .await
@@ -879,7 +879,7 @@ async fn registry_unset(
     if map.remove(alias).is_none() {
         bail!("alias '{alias}' not found in registry at '{}'", source_uri.raw);
     }
-    let serialized = serialize_registry(backend.backend_type(), &map)?;
+    let serialized = backend.serialize_registry_doc(&map)?;
     backend
         .set(&source_uri, &serialized)
         .await
@@ -916,31 +916,6 @@ fn pick_registry_source<'a>(
         )
     })?;
     Ok((source_uri, backend))
-}
-
-/// Serialize `map` in whatever format `backend_type` uses for its
-/// registry documents. Unknown types error — v0.2 supports local,
-/// aws-ssm, 1password only.
-///
-/// A `BTreeMap` is required (not just preferred): it guarantees
-/// alphabetical key order, so `registry set`/`unset` writes are
-/// deterministic and diff-friendly.
-fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Result<String> {
-    match backend_type {
-        "local" | "1password" => toml::to_string(map).with_context(|| {
-            format!("serializing registry as TOML for backend type '{backend_type}'")
-        }),
-        // `vault` stores registry documents as a single KV secret whose
-        // value is a JSON alias→URI map — same wire shape as aws-ssm.
-        // `aws-secrets` uses the same shape (one AWS secret, JSON body).
-        "aws-ssm" | "vault" | "aws-secrets" | "gcp" | "azure" | "openbao" | "conjur"
-        | "bitwarden-sm" => serde_json::to_string(map).with_context(|| {
-            format!("serializing registry as JSON for backend type '{backend_type}'")
-        }),
-        other => Err(anyhow!(
-            "writing registry documents through backend type '{other}' is not supported"
-        )),
-    }
 }
 
 /// Join every cascade source URI into a comma-separated list for
@@ -1222,50 +1197,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serialize_registry_produces_toml_for_local() {
-        let mut m = BTreeMap::new();
-        m.insert("k".to_owned(), "aws-ssm:///v".to_owned());
-        let s = serialize_registry("local", &m).unwrap();
-        assert!(s.contains("k = \"aws-ssm:///v\""), "TOML shape: {s}");
-    }
-
-    #[test]
-    fn serialize_registry_produces_json_for_aws_ssm() {
-        let mut m = BTreeMap::new();
-        m.insert("k".to_owned(), "aws-ssm:///v".to_owned());
-        let s = serialize_registry("aws-ssm", &m).unwrap();
-        assert!(s.starts_with('{'), "JSON shape: {s}");
-        assert!(s.contains("\"k\""));
-    }
-
-    #[test]
-    fn serialize_registry_rejects_unknown_type() {
-        let m = BTreeMap::new();
-        let err = serialize_registry("unknown-backend", &m).unwrap_err();
-        assert!(format!("{err:#}").contains("not supported"));
-    }
-
-    /// `BTreeMap` must produce alphabetical output for both TOML and
-    /// JSON, independent of insertion order. This is the v0.2 CV-4
-    /// determinism fix.
-    #[test]
-    fn serialize_registry_is_alphabetical_regardless_of_insertion_order() {
-        let mut m = BTreeMap::new();
-        m.insert("zeta".to_owned(), "local:///z".to_owned());
-        m.insert("alpha".to_owned(), "local:///a".to_owned());
-        m.insert("mu".to_owned(), "local:///m".to_owned());
-
-        let toml_out = serialize_registry("local", &m).unwrap();
-        let alpha = toml_out.find("alpha").unwrap();
-        let mu = toml_out.find("mu").unwrap();
-        let zeta = toml_out.find("zeta").unwrap();
-        assert!(alpha < mu && mu < zeta, "TOML not alphabetical: {toml_out}");
-
-        let json_out = serialize_registry("aws-ssm", &m).unwrap();
-        let j_alpha = json_out.find("alpha").unwrap();
-        let j_mu = json_out.find("mu").unwrap();
-        let j_zeta = json_out.find("zeta").unwrap();
-        assert!(j_alpha < j_mu && j_mu < j_zeta, "JSON not alphabetical: {json_out}");
-    }
+    // Pre-v0.14 `serialize_registry(backend_type, map)` helper tests
+    // were removed when the dispatch moved to the `Backend` trait
+    // (Phase 3 BREAKING #3). Per-backend serialization round-trips
+    // are now tested inside each backend's own crate; the
+    // alphabetical-ordering invariant is preserved by `BTreeMap`'s
+    // intrinsic ordering and is no longer a CLI-layer concern.
 }

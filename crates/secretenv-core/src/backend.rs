@@ -16,10 +16,10 @@
 //! Core never constructs a plugin directly.
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
 use crate::{BackendStatus, BackendUri, Secret, DEFAULT_GET_TIMEOUT};
@@ -159,6 +159,53 @@ pub trait Backend: Send + Sync {
             "history() is not implemented for backend type '{}' — supported in v0.4: local, aws-ssm, vault",
             self.backend_type()
         ))
+    }
+
+    /// Whether this backend supports native password generation
+    /// (e.g. `op item create --generate-password`). v0.16 routes
+    /// the MCP `gen_password` tool through backends that return
+    /// `true`. v0.14 default is `false`; no backend overrides yet.
+    ///
+    /// Per SEC-INV-16 ([[v0.14-plus-security-invariants]]), there
+    /// is NO standalone `secretenv gen` CLI surface — generation
+    /// rides on MCP only.
+    fn supports_native_gen(&self) -> bool {
+        false
+    }
+
+    /// Serialize an alias → backend-URI registry document into the
+    /// wire format this backend uses on disk / over the wire.
+    ///
+    /// Default: JSON. The `local` and `1password` backends override
+    /// to TOML for human-readability (`local`) and field-storage
+    /// compatibility (`1password`'s field bodies are
+    /// human-edited).
+    ///
+    /// A [`BTreeMap`] is required: it guarantees alphabetical key
+    /// order so writes are deterministic and diff-friendly.
+    ///
+    /// # Errors
+    /// Returns an error if the map cannot be encoded in the target
+    /// wire format.
+    fn serialize_registry_doc(&self, map: &BTreeMap<String, String>) -> Result<String> {
+        serde_json::to_string(map).with_context(|| {
+            format!("serializing registry doc as JSON for backend type '{}'", self.backend_type(),)
+        })
+    }
+
+    /// Inverse of [`Self::serialize_registry_doc`]. Default: JSON.
+    /// `local` and `1password` override to TOML.
+    ///
+    /// # Errors
+    /// Returns an error if `body` is not a valid wire-format
+    /// registry document for this backend.
+    fn deserialize_registry_doc(&self, body: &str) -> Result<BTreeMap<String, String>> {
+        serde_json::from_str(body).with_context(|| {
+            format!(
+                "deserializing registry doc as JSON for backend type '{}'",
+                self.backend_type(),
+            )
+        })
     }
 }
 

@@ -254,6 +254,24 @@ impl Backend for LocalBackend {
         })?;
         Ok(parse_git_log(&stdout))
     }
+
+    fn serialize_registry_doc(
+        &self,
+        map: &std::collections::BTreeMap<String, String>,
+    ) -> Result<String> {
+        toml::to_string(map).with_context(|| {
+            format!("local backend '{}': serializing registry doc as TOML", self.instance_name,)
+        })
+    }
+
+    fn deserialize_registry_doc(
+        &self,
+        body: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>> {
+        toml::from_str(body).with_context(|| {
+            format!("local backend '{}': deserializing registry doc as TOML", self.instance_name,)
+        })
+    }
 }
 
 /// Parse the tab-separated git-log payload into `HistoryEntry` rows.

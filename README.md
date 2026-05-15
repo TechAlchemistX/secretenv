@@ -652,6 +652,18 @@ The model is simple: SecretEnv has no credential storage, no login command, and 
 
 The honest line: **encryption posture is comparable across SecretEnv and fnox-KMS-mode.** The differentiator is alias indirection — SecretEnv's registry decouples the alias from the backend URI so a migration is one `registry set` instead of editing every config. That property is orthogonal to encryption.
 
+### Redaction (v0.14)
+
+SecretEnv redacts resolved values from child-process stdout/stderr **by default**. `secretenv run` pipes the child's stdio through a streaming scrubber that substitutes resolved values with `[redacted:<alias>]`. For post-hoc cleanup of existing files, `secretenv redact <path>` performs the same substitution against a tainted set built from the active registry.
+
+- **Default on** for non-TTY parents (CI, pipelines, scripts). The default invocation requires no flag changes.
+- **Auto-fallback to `exec()`** for interactive TTY parents — preserves `psql`, `vim`, `ssh`, and any other PTY-bound child. One-line stderr advisory tells you when fallback fires.
+- **`--redact`** forces pipe-based redaction on a TTY (PTY-bound children may misbehave).
+- **`--no-redact --i-know`** opts out entirely. The two-flag dance prevents CI typos from accidentally printing values.
+- **`secretenv redact <path>`** scrubs an existing file post-hoc. `--in-place` rewrites atomically (sibling tempfile + `rename(2)`); `--backup .bak` keeps the original; `--dry-run` counts without writing.
+
+Defense-in-depth, not a complete protection. The full Limits matrix (writes to `/dev/tty`, `syslog`, `mmap`, core dumps, etc.) lives in [docs/security.md](docs/security.md#redaction-v014); the operator reference for both modes is at [docs/reference/redact.md](docs/reference/redact.md).
+
 ### Full threat model + responsible disclosure
 
 A 14-category threat-model comparison across `.env`, `direnv`, `op run`, `doppler run`, `fnox`, and SecretEnv lives in [docs/security.md](docs/security.md). For responsible disclosure, see [SECURITY.md](SECURITY.md).

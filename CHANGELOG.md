@@ -8,6 +8,50 @@ Dates are in `YYYY-MM-DD` (UTC).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-XX-XX
+
+**Headline:** `secretenv redact` lands in two modes, plus the foundation machinery three downstream cycles (v0.15 migrate, v0.16 MCP, v0.17 OTel) depend on. Backend total stays at **15**.
+
+v0.13.0 → v0.14.0: workspace unit tests **893 → 918** (+25 from redact unit/integration + telemetry + Secret + McpSafe trybuild coverage).
+
+### BREAKING
+
+Three deliberate breaking changes, bundled per the v0.14+ Q-O1 resolution (one CHANGELOG block instead of three separate patch tags). Pre-launch install-base is zero; the window for one bundled break before public announcement is honored per the [[feedback_prelaunch_breaking_changes]] policy.
+
+- **`Backend::get(&self, uri: &BackendUri) -> Result<Secret<String>>`** (was `Result<String>`). Cascades across all 15 backends, `secretenv-testing` mocks, the CLI's `get` handler, the resolver, and the runner's `EnvEntry`. External backend plugins must update their `get()` return type and wrap their fetched value with `Secret::new(...)`. Internal consumers (`build_env` → child `exec`) extract via the crate-internal `as_str_internal()`; CLI callers use `value.expose_secret()`. **Q-O1.a.**
+- **`Backend::serialize_registry_doc` + `Backend::deserialize_registry_doc`** moved from `secretenv-cli`'s match-arm helper to trait methods on `Backend`. Default impl is JSON; `local` and `1password` override to TOML. Removes the v0.13-era silent "not supported" failure mode where a new backend without a CLI dispatch update produced a runtime error. **Q-O1.b.**
+- **`pub use backend::Backend`** is cfg-gated to `not(feature = "mcp-safe")` on `secretenv-core`. Crates linking with the new `mcp-safe` feature (the v0.16 MCP server) must reach the trait via the module path `secretenv_core::backend::Backend`. The CLI never enables `mcp-safe`. **Q-O1.c.**
+
+### Added
+
+- **`secretenv redact <path>`** — Mode B post-hoc file scrubber. Aho-Corasick byte scanner over the resolved-value set; substitutes with `[redacted:<alias>]` (or `--redact-token <fixed>`). `--in-place` rewrites atomically through a sibling tempfile + `rename(2)` with mode preservation; `--backup <suffix>` keeps a copy; `--dry-run` counts without writing.
+- **Runtime redaction** in `secretenv run` (Mode A) — on by default. Pipes stdout/stderr through a streaming Aho-Corasick scrubber with a `max(pattern_len) - 1`-byte carry-over window so matches across read-chunk boundaries fire correctly. `--redact` forces pipe-based mode on a TTY; `--no-redact --i-know` opts out entirely. Default (`Auto`) falls back to `exec()` when stdin is a TTY and emits a one-line stderr advisory.
+- **Signal forwarding** in mode A — `SIGINT`, `SIGTERM`, `SIGHUP` to the parent are forwarded to the child via `rustix::process::kill_process`.
+- **`secretenv-core::Secret<T>`** — generic newtype wrapping `Zeroizing<T>`. Custom `Debug` redacts; no `Display`, `Clone`, `Serialize`, `Deserialize`, `From<String>`, or `Into<String>`. `expose_secret()` is cfg-gated behind `not(feature = "mcp-safe")`.
+- **`secretenv-core::McpSafe`** — sealed marker trait. v0.14 seals `HistoryEntry`; v0.16 adds `AliasList`, `ResolveStatus`, `DoctorReport` when those types crystallize. Critically, `Secret<T>` is **not** sealed — the MCP server's tool signatures will be typed against `T: McpSafe`, so a missing impl is a compile-time refusal to expose values.
+- **`mcp-safe` Cargo feature** on `secretenv-core` — subtractive: removes `expose_secret` and the crate-root `Backend` re-export. CI gate: `cargo test -p secretenv-core --features mcp-safe --test mcp_safe_trybuild` runs as a dedicated job and verifies the compile-fail surface.
+- **`secretenv-telemetry` crate** — new workspace member. Ships `SecretEnvSpan` typed attribute builder (one method per ALLOW attribute in the v0.14+ §6 matrix; no `set_attribute(&str, &str)` escape hatch), `SecretEnvErrorKind` closed enum, `RedactionEvent` / `RedactionStream` / `RedactionSource`, `RedactionPolicy` (declarative ALLOW/DENY classification of every span attribute), and `RedactionSink` trait + `NoopRedactionSink`. **No `opentelemetry` dependency at v0.14** — the load-bearing v0.14 deliverable is the typed surface; v0.17 wires the OTLP exporter through the same trait without restructuring any call site.
+- **`Backend::supports_native_gen()`** — default `false`. Reserved for v0.16's MCP `gen_password` tool routing.
+- **Typed per-handler reports** (`crates/secretenv-cli/src/reports.rs`) — `RunReport`, `RedactReport`, `RegistryReport`, `ResolveReport`, `GetReport`, `SetupReport`, `ProfileReport`, `CompletionsReport`, plus `CommandOutcome` and `RedactMode` enums. v0.14 discards them via `let _ = handler.await?;` in the dispatcher; v0.17 wires the report's `Drop` to OTel span emission without touching the handlers again.
+
+### Changed
+
+- `secretenv run` defaults to redacted output. Non-TTY parents (CI, scripts) get pipe-based redaction; TTY parents get the auto-fallback advisory.
+- Internal `serialize_registry(backend_type, &map)` helper removed from `secretenv-cli`; dispatch is now `backend.serialize_registry_doc(&map)`. The four CLI-layer unit tests covering the helper are removed; equivalent round-trip tests live in each backend's own crate.
+- Workspace deps: `aho-corasick = "1"`, `rustix = { version = "1", features = ["fs", "process"] }` added. `tokio` gains the `"signal"` feature. `tempfile` promoted from dev-dep to runtime dep on `secretenv-core` (consumed by `redact::scrub_file_in_place`).
+- `EnvEntry.value` switched from `Zeroizing<String>` to `Secret<String>` (preserves the zero-on-drop property via `Zeroizing`'s presence inside `Secret`).
+- CI: workspace `cargo test` no longer passes `--all-features`. `mcp-safe` is subtractive and feature-unification under `--all-features` would cascade it across the 15 backends and break injection. The dedicated `mcp-safe-trybuild` CI job covers that surface. A `secret-no-leak-grep` CI job fails the build on a `Display` impl for `Secret` or a forbidden derive.
+
+### Security
+
+- New `docs/security.md#redaction-v014` section covers the redact threat model and the **Limits matrix**: writes to `/dev/tty`, `syslog(3)` / `journald`, `mmap`'d output, core dumps + post-mortem analysis, and PTY-bound interactive children are **not** covered by redaction. Operators are explicitly told this.
+- `O_NOFOLLOW` on every redact file open; symlink-swap-between-stat-and-open is rejected.
+- Foreign-owner refusal: redact refuses files owned by a UID other than the caller's EUID unless `--allow-foreign-owner` opts in.
+- `/proc`, `/sys`, `/dev` are refused outright — "scrubbing" a kernel pseudofile is meaningless.
+- Minimum tainted-value length of 8 bytes. Shorter values are dropped from the tainted set with a `tracing::warn!` that carries the alias name but never the value or its length.
+- 64 KiB max tainted-value length for mode A. Larger patterns refuse mode-A startup with a clear error (matches cannot reliably fire across the stream's chunk boundaries).
+- Foundation work for v0.16's MCP-server boundary (`Secret<T>`, `McpSafe`, `mcp-safe` feature) and v0.17's OTel attribute discipline (`SecretEnvSpan`, `SecretEnvErrorKind`, `RedactionPolicy`) lands in this cycle so neither downstream cycle has to retrofit instrumentation across the codebase.
+
 ## [0.13.0] - 2026-05-06
 
 **Headline:** **hygiene + docs release** absorbing both v0.12.x carry-forward queues. Originally queued as Delinea Secret Server (per [[roadmap]]); Delinea remains blocked on invite-only trial access (vendor-side), so v0.13 fills the slot with the merged-not-tagged hygiene work that would otherwise have rolled forward to the next backend cycle. **No new backend, no new platform, no schema change.** Backend total stays at **15**.

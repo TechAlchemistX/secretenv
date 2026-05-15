@@ -18,6 +18,7 @@ mod cli;
 mod doctor;
 mod invite;
 mod profile;
+mod reports;
 mod setup;
 
 use cli::Cli;

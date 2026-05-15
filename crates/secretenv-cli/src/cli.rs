@@ -383,11 +383,28 @@ impl Cli {
     /// # Errors
     /// Forwarded from the individual subcommand handlers.
     pub async fn run(&self, config: &Config, backends: &BackendRegistry) -> Result<()> {
+        // Each branch awaits a handler that returns a typed report
+        // (per Phase 6 of [[build-plan-v0.14-redact]]). v0.14 discards
+        // the reports via `let _ = ...`; v0.17 wires the OTel span
+        // emission to the report's `Drop` (see [[v0.14-plus-synthesis]]
+        // §6) and the discard remains a no-op.
         match &self.command {
-            Command::Run(args) => cmd_run(args, config, backends).await,
-            Command::Registry(rc) => cmd_registry(rc, config, backends).await,
-            Command::Resolve(args) => cmd_resolve(args, config, backends).await,
-            Command::Get(args) => cmd_get(args, config, backends).await,
+            Command::Run(args) => {
+                let _: crate::reports::RunReport = cmd_run(args, config, backends).await?;
+                Ok(())
+            }
+            Command::Registry(rc) => {
+                let _: crate::reports::RegistryReport = cmd_registry(rc, config, backends).await?;
+                Ok(())
+            }
+            Command::Resolve(args) => {
+                let _: crate::reports::ResolveReport = cmd_resolve(args, config, backends).await?;
+                Ok(())
+            }
+            Command::Get(args) => {
+                let _: crate::reports::GetReport = cmd_get(args, config, backends).await?;
+                Ok(())
+            }
             Command::Doctor(args) => {
                 crate::doctor::run_doctor(
                     config,
@@ -400,10 +417,24 @@ impl Cli {
                 )
                 .await
             }
-            Command::Profile(pc) => cmd_profile(pc, self.config.as_deref()).await,
-            Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
-            Command::Completions(args) => cmd_completions(args),
-            Command::Redact(args) => cmd_redact(args, config, backends).await,
+            Command::Profile(pc) => {
+                let _: crate::reports::ProfileReport =
+                    cmd_profile(pc, self.config.as_deref()).await?;
+                Ok(())
+            }
+            Command::Setup(args) => {
+                let _: crate::reports::SetupReport =
+                    cmd_setup(args, self.config.as_deref()).await?;
+                Ok(())
+            }
+            Command::Completions(args) => {
+                let _: crate::reports::CompletionsReport = cmd_completions(args)?;
+                Ok(())
+            }
+            Command::Redact(args) => {
+                let _: crate::reports::RedactReport = cmd_redact(args, config, backends).await?;
+                Ok(())
+            }
         }
     }
 }
@@ -457,7 +488,11 @@ fn resolve_selection_from_env(
 
 // ---- run ---------------------------------------------------------------
 
-async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+async fn cmd_run(
+    args: &RunArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<crate::reports::RunReport> {
     use secretenv_core::{run_with_options, RedactMode, RunOptions};
 
     let starting_dir = std::env::current_dir().context("determining current directory")?;
@@ -468,6 +503,7 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
     let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let resolved = resolve_manifest(&manifest, &aliases)?;
 
+    let alias_count = resolved.len() as u64;
     let redact = if args.no_redact {
         RedactMode::ForceExec
     } else if args.redact {
@@ -481,7 +517,26 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
         redact,
         redact_token: args.redact_token.clone(),
     };
-    run_with_options(&resolved, backends, &args.command, &options).await
+
+    // Capture the dispatch up front so the report reflects what we
+    // actually did, not what we requested. `Auto` may degrade to
+    // `Exec` inside the runner when stdin is a TTY; for the v0.14
+    // report we record the requested intent (the runner emits the
+    // operator-facing one-line advisory when the auto fallback fires).
+    let dispatch = if args.dry_run {
+        crate::reports::RunDispatch::DryRun
+    } else if matches!(redact, RedactMode::ForceExec) {
+        crate::reports::RunDispatch::Exec
+    } else {
+        crate::reports::RunDispatch::PipeRedact
+    };
+
+    run_with_options(&resolved, backends, &args.command, &options).await?;
+    Ok(crate::reports::RunReport {
+        alias_count,
+        dispatch,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 // ---- resolve -----------------------------------------------------------
@@ -490,7 +545,7 @@ async fn cmd_resolve(
     args: &ResolveArgs,
     config: &Config,
     backends: &BackendRegistry,
-) -> Result<()> {
+) -> Result<crate::reports::ResolveReport> {
     use secretenv_core::{Manifest, DEFAULT_CHECK_TIMEOUT};
 
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
@@ -547,7 +602,7 @@ async fn cmd_resolve(
         None => ResolveBackendCheck::UnregisteredScheme,
     };
 
-    let report = ResolveReport {
+    let report = ResolveOutput {
         alias: args.alias.clone(),
         env_var,
         resolved: target.raw.clone(),
@@ -562,7 +617,12 @@ async fn cmd_resolve(
     } else {
         print!("{}", report.render_human());
     }
-    Ok(())
+
+    Ok(crate::reports::ResolveReport {
+        cascade_layer_index: u32::try_from(report.layer_index).unwrap_or(u32::MAX),
+        backend_type: report.backend_scheme,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 /// Scan the manifest's `[secrets]` entries for the first key whose
@@ -595,7 +655,7 @@ enum ResolveBackendCheck {
     UnregisteredScheme,
 }
 
-struct ResolveReport {
+struct ResolveOutput {
     alias: String,
     env_var: Option<String>,
     resolved: String,
@@ -605,7 +665,7 @@ struct ResolveReport {
     check: ResolveBackendCheck,
 }
 
-impl ResolveReport {
+impl ResolveOutput {
     fn render_human(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -712,7 +772,11 @@ impl ResolveReport {
 
 // ---- get (with confirmation) -------------------------------------------
 
-async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+async fn cmd_get(
+    args: &GetArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<crate::reports::GetReport> {
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
     let mut cache = RegistryCache::new();
     let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
@@ -728,21 +792,32 @@ async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) ->
         .0
         .clone();
 
-    if !args.yes && !confirm_print_secret(&args.alias)? {
+    let confirmed = args.yes || confirm_print_secret(&args.alias)?;
+    if !confirmed {
         bail!("aborted by user");
     }
 
     let backend = backends
         .get(&target.scheme)
         .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
+    let backend_type = backend.backend_type().to_owned();
     let value = backend.get(&target).await?;
     println!("{}", value.expose_secret());
-    Ok(())
+    Ok(crate::reports::GetReport {
+        backend_type,
+        confirmed,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 // ---- redact (Mode B post-hoc) -----------------------------------------
 
-async fn cmd_redact(args: &RedactArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+#[allow(clippy::too_many_lines)] // dispatch + three exits + typed report
+async fn cmd_redact(
+    args: &RedactArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<crate::reports::RedactReport> {
     use secretenv_core::redact::{
         scrub_file_in_place, Scrubber, SubstitutionToken, TaintedSet, TaintedValue,
     };
@@ -792,7 +867,12 @@ async fn cmd_redact(args: &RedactArgs, config: &Config, backends: &BackendRegist
              nothing to redact.",
             secretenv_core::redact::MIN_TAINTED_LEN,
         );
-        return Ok(());
+        return Ok(crate::reports::RedactReport {
+            mode: crate::reports::RedactMode::Stdout,
+            match_count: 0,
+            byte_count: 0,
+            outcome: crate::reports::CommandOutcome::Ok,
+        });
     };
 
     let path = std::path::Path::new(&args.path);
@@ -809,7 +889,12 @@ async fn cmd_redact(args: &RedactArgs, config: &Config, backends: &BackendRegist
             rep.byte_count,
             path.display(),
         );
-        return Ok(());
+        return Ok(crate::reports::RedactReport {
+            mode: crate::reports::RedactMode::DryRun,
+            match_count: rep.match_count,
+            byte_count: rep.byte_count,
+            outcome: crate::reports::CommandOutcome::DryRun,
+        });
     }
 
     if args.in_place {
@@ -824,7 +909,12 @@ async fn cmd_redact(args: &RedactArgs, config: &Config, backends: &BackendRegist
                 .as_deref()
                 .map_or(String::new(), |s| format!("; backup at '{}{s}'", path.display())),
         );
-        return Ok(());
+        return Ok(crate::reports::RedactReport {
+            mode: crate::reports::RedactMode::InPlace,
+            match_count: rep.match_count,
+            byte_count: rep.byte_count,
+            outcome: crate::reports::CommandOutcome::Ok,
+        });
     }
 
     // Default: stream to stdout.
@@ -841,7 +931,12 @@ async fn cmd_redact(args: &RedactArgs, config: &Config, backends: &BackendRegist
         rep.byte_count,
         path.display(),
     );
-    Ok(())
+    Ok(crate::reports::RedactReport {
+        mode: crate::reports::RedactMode::Stdout,
+        match_count: rep.match_count,
+        byte_count: rep.byte_count,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 fn confirm_print_secret(alias: &str) -> Result<bool> {
@@ -858,27 +953,38 @@ async fn cmd_registry(
     rc: &RegistryCommand,
     config: &Config,
     backends: &BackendRegistry,
-) -> Result<()> {
-    match rc {
+) -> Result<crate::reports::RegistryReport> {
+    let (subcommand, aliases_touched) = match rc {
         RegistryCommand::List { registry } => {
-            registry_list(registry.as_deref(), config, backends).await
+            registry_list(registry.as_deref(), config, backends).await?;
+            ("list", 0)
         }
         RegistryCommand::Get { alias, registry } => {
-            registry_get(alias, registry.as_deref(), config, backends).await
+            registry_get(alias, registry.as_deref(), config, backends).await?;
+            ("get", 1)
         }
         RegistryCommand::Set { alias, uri, registry } => {
-            registry_set(alias, uri, registry.as_deref(), config, backends).await
+            registry_set(alias, uri, registry.as_deref(), config, backends).await?;
+            ("set", 1)
         }
         RegistryCommand::Unset { alias, registry } => {
-            registry_unset(alias, registry.as_deref(), config, backends).await
+            registry_unset(alias, registry.as_deref(), config, backends).await?;
+            ("unset", 1)
         }
         RegistryCommand::History { alias, registry, json } => {
-            registry_history(alias, registry.as_deref(), *json, config, backends).await
+            registry_history(alias, registry.as_deref(), *json, config, backends).await?;
+            ("history", 1)
         }
         RegistryCommand::Invite { registry, invitee, json } => {
-            registry_invite(registry.as_deref(), invitee.as_deref(), *json, config)
+            registry_invite(registry.as_deref(), invitee.as_deref(), *json, config)?;
+            ("invite", 0)
         }
-    }
+    };
+    Ok(crate::reports::RegistryReport {
+        subcommand,
+        aliases_touched,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 fn registry_invite(
@@ -1125,7 +1231,10 @@ fn format_sources(aliases: &secretenv_core::AliasMap) -> String {
 
 // ---- setup --------------------------------------------------------------
 
-async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) -> Result<()> {
+async fn cmd_setup(
+    args: &SetupArgs,
+    target_config: Option<&std::path::Path>,
+) -> Result<crate::reports::SetupReport> {
     let opts = crate::setup::SetupOpts {
         registry_uri: args.registry_uri.clone(),
         region: args.region.clone(),
@@ -1142,12 +1251,19 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         skip_doctor: args.skip_doctor,
         target: target_config.map(std::path::Path::to_path_buf),
     };
-    crate::setup::run_setup(&opts).await
+    crate::setup::run_setup(&opts).await?;
+    Ok(crate::reports::SetupReport {
+        force: args.force,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 // ---- profile ------------------------------------------------------------
 
-async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path>) -> Result<()> {
+async fn cmd_profile(
+    pc: &ProfileCommand,
+    target_config: Option<&std::path::Path>,
+) -> Result<crate::reports::ProfileReport> {
     // The profiles dir sits next to the active config.toml. If the user
     // passed `--config <path>`, use that path's parent; otherwise fall
     // back to the XDG-default location. Both paths go through the
@@ -1160,13 +1276,15 @@ async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path
         profiles_dir: secretenv_core::profiles_dir_for(&config_path),
     };
 
-    match pc {
+    let subcommand = match pc {
         ProfileCommand::Install { name, url } => {
-            crate::profile::install(name, url.as_deref(), &opts).await
+            crate::profile::install(name, url.as_deref(), &opts).await?;
+            "install"
         }
         ProfileCommand::List { json } => {
             let installed = crate::profile::list(&opts)?;
-            render_profile_list(&installed, *json)
+            render_profile_list(&installed, *json)?;
+            "list"
         }
         ProfileCommand::Update { name } => {
             if let Some(n) = name {
@@ -1179,14 +1297,18 @@ async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path
                         eprintln!("Profile '{n}' refreshed.");
                     }
                 }
-                Ok(())
             } else {
                 let reports = crate::profile::update_all(&opts).await?;
-                render_profile_update_reports(&reports)
+                render_profile_update_reports(&reports)?;
             }
+            "update"
         }
-        ProfileCommand::Uninstall { name } => crate::profile::uninstall(name, &opts),
-    }
+        ProfileCommand::Uninstall { name } => {
+            crate::profile::uninstall(name, &opts)?;
+            "uninstall"
+        }
+    };
+    Ok(crate::reports::ProfileReport { subcommand, outcome: crate::reports::CommandOutcome::Ok })
 }
 
 fn render_profile_list(installed: &[crate::profile::InstalledProfile], json: bool) -> Result<()> {
@@ -1235,7 +1357,7 @@ fn render_profile_update_reports(reports: &[crate::profile::UpdateReport]) -> Re
 
 // ---- completions --------------------------------------------------------
 
-fn cmd_completions(args: &CompletionsArgs) -> Result<()> {
+fn cmd_completions(args: &CompletionsArgs) -> Result<crate::reports::CompletionsReport> {
     use std::io::IsTerminal as _;
 
     let mut cmd = Cli::command();
@@ -1277,7 +1399,7 @@ fn cmd_completions(args: &CompletionsArgs) -> Result<()> {
             eprintln!("{}", args.shell.install_hint());
         }
     }
-    Ok(())
+    Ok(crate::reports::CompletionsReport { outcome: crate::reports::CommandOutcome::Ok })
 }
 
 impl Shell {

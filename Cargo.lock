@@ -673,6 +673,7 @@ dependencies = [
  "secretenv-backend-openbao",
  "secretenv-backend-vault",
  "secretenv-core",
+ "secretenv-telemetry",
  "secretenv-testing",
  "serde",
  "serde_json",

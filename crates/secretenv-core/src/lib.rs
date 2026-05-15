@@ -56,7 +56,7 @@ pub use resolver::{
     resolve_manifest, resolve_registry, AliasMap, CascadeLayer, RegistryCache, RegistrySelection,
     ResolvedSecret, ResolvedSource,
 };
-pub use runner::{build_env, run, EnvEntry};
+pub use runner::{build_env, run, run_with_options, EnvEntry, RedactMode, RunOptions};
 pub use secret::Secret;
 pub use status::BackendStatus;
 pub use timeouts::{with_timeout, DEFAULT_CHECK_TIMEOUT, DEFAULT_GET_TIMEOUT};

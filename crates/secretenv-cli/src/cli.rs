@@ -16,8 +16,8 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use secretenv_core::{
-    resolve_manifest, resolve_registry, run as runner_run, Backend, BackendRegistry, BackendUri,
-    Config, HistoryEntry, Manifest, RegistryCache, RegistrySelection,
+    resolve_manifest, resolve_registry, Backend, BackendRegistry, BackendUri, Config, HistoryEntry,
+    Manifest, RegistryCache, RegistrySelection,
 };
 
 /// Command-line arguments for `secretenv`.
@@ -140,6 +140,13 @@ pub enum ProfileCommand {
 }
 
 /// `secretenv run [...] -- <command>`
+///
+/// `clippy::struct_excessive_bools`: this is a clap-derived
+/// arg struct; refactoring booleans into a state-enum loses the
+/// flag/argument-name automation. The mutex constraints between
+/// `--redact` / `--no-redact` / `--i-know` are enforced by clap's
+/// `conflicts_with` + `requires` attrs above.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Registry selection — name (from `[registries.<name>]`) or a
@@ -155,6 +162,32 @@ pub struct RunArgs {
     /// Emit fetch progress to stderr.
     #[arg(long)]
     pub verbose: bool,
+
+    /// Force pipe-based stdout/stderr redaction even when stdin is
+    /// a TTY. PTY-bound programs (`psql`, `vim`, `ssh`) may
+    /// misbehave under pipe-based stdio; use only when you've
+    /// confirmed your child works without a controlling terminal.
+    #[arg(long, conflicts_with = "no_redact")]
+    pub redact: bool,
+
+    /// Disable runtime stdout/stderr redaction. Falls back to the
+    /// pre-v0.14 `exec()` path. Requires `--i-know` on non-TTY
+    /// parents so CI logs don't accidentally print secret values
+    /// when a developer typos away the default protection.
+    #[arg(long, conflicts_with = "redact", requires = "i_know")]
+    pub no_redact: bool,
+
+    /// Acknowledge the audit consequences of `--no-redact` on a
+    /// non-TTY parent. Required by `--no-redact` per the v0.14
+    /// security invariants (SEC-INV-09).
+    #[arg(long)]
+    pub i_know: bool,
+
+    /// Override the substitution token. Default is
+    /// `[redacted:<alias-name>]`. Same syntax as `redact
+    /// --redact-token`.
+    #[arg(long)]
+    pub redact_token: Option<String>,
 
     /// Program + arguments to execute. Use `--` to separate
     /// secretenv flags from the command.
@@ -425,6 +458,8 @@ fn resolve_selection_from_env(
 // ---- run ---------------------------------------------------------------
 
 async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+    use secretenv_core::{run_with_options, RedactMode, RunOptions};
+
     let starting_dir = std::env::current_dir().context("determining current directory")?;
     let manifest = Manifest::load(&starting_dir)
         .context("loading secretenv.toml (walked upward from $CWD)")?;
@@ -432,7 +467,21 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
     let mut cache = RegistryCache::new();
     let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let resolved = resolve_manifest(&manifest, &aliases)?;
-    runner_run(&resolved, backends, &args.command, args.dry_run, args.verbose).await
+
+    let redact = if args.no_redact {
+        RedactMode::ForceExec
+    } else if args.redact {
+        RedactMode::ForcePipe
+    } else {
+        RedactMode::Auto
+    };
+    let options = RunOptions {
+        dry_run: args.dry_run,
+        verbose: args.verbose,
+        redact,
+        redact_token: args.redact_token.clone(),
+    };
+    run_with_options(&resolved, backends, &args.command, &options).await
 }
 
 // ---- resolve -----------------------------------------------------------

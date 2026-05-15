@@ -50,9 +50,48 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::backend::Backend;
+use crate::redact::{StreamingScrubber, SubstitutionToken, TaintedSet, TaintedValue};
 use crate::registry::BackendRegistry;
 use crate::resolver::{ResolvedSecret, ResolvedSource};
 use crate::Secret;
+
+/// How `secretenv run` should treat its child's stdout/stderr w.r.t.
+/// the redact engine.
+///
+/// Default: [`RedactMode::Auto`] (pipe + redact when the child's
+/// stdin is non-TTY; fall back to `exec()` otherwise).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RedactMode {
+    /// Default: pipe-based redact when stdin is non-TTY; auto
+    /// fall back to `exec()` on a TTY (preserves interactive
+    /// programs like `psql`, `vim`, `ssh`).
+    #[default]
+    Auto,
+    /// Force pipe-based redaction even when stdin is a TTY.
+    /// Operator opts in via `--redact`; PTY-bound programs may
+    /// misbehave.
+    ForcePipe,
+    /// Force `exec()` path — no redaction. Operator opts out via
+    /// `--no-redact --i-know`.
+    ForceExec,
+}
+
+/// Options for [`run`].
+///
+/// Constructed by the CLI from `--dry-run` / `--verbose` /
+/// `--redact` / `--no-redact` flags. Defaults match v0.13
+/// behavior except `redact` which is `Auto` (the v0.14 default).
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    /// Print what would happen without fetching or executing.
+    pub dry_run: bool,
+    /// Emit fetch progress to stderr.
+    pub verbose: bool,
+    /// How to handle stdout/stderr redaction.
+    pub redact: RedactMode,
+    /// Override the substitution token. `None` → alias-aware default.
+    pub redact_token: Option<String>,
+}
 
 /// A fully-resolved env-var pair, ready for injection into the child
 /// process. The value is wrapped in [`Secret`]; the inner buffer is
@@ -94,17 +133,242 @@ pub async fn run(
     dry_run: bool,
     verbose: bool,
 ) -> Result<()> {
+    run_with_options(
+        resolved,
+        backends,
+        command,
+        &RunOptions { dry_run, verbose, ..RunOptions::default() },
+    )
+    .await
+}
+
+/// Like [`run`] but takes a full [`RunOptions`] including
+/// redact-mode selection. The v0.14 CLI uses this entry point.
+///
+/// # Errors
+/// Same set as [`run`], plus a redact-mode-A startup error if any
+/// tainted value exceeds the 64 KiB tail-window cap.
+pub async fn run_with_options(
+    resolved: &[ResolvedSecret],
+    backends: &BackendRegistry,
+    command: &[String],
+    options: &RunOptions,
+) -> Result<()> {
     if command.is_empty() {
         bail!("no command specified — 'secretenv run' needs a program to execute");
     }
 
-    let env = build_env(resolved, backends, dry_run, verbose).await?;
+    let env = build_env(resolved, backends, options.dry_run, options.verbose).await?;
 
-    if dry_run {
+    if options.dry_run {
         return Ok(());
     }
 
-    exec_with_env(command, &env)
+    // Decide redact dispatch.
+    let mode = effective_redact_mode(options.redact);
+    match mode {
+        RedactMode::ForceExec => exec_with_env(command, &env),
+        RedactMode::ForcePipe | RedactMode::Auto => {
+            // For Auto, we've already decided via effective_redact_mode
+            // whether to fall back to exec. Build the tainted set here.
+            let mut tainted = TaintedSet::new();
+            for entry in &env {
+                tainted.insert(TaintedValue::from_alias(entry.key.clone(), entry.value()));
+            }
+            let token = options
+                .redact_token
+                .as_ref()
+                .map_or(SubstitutionToken::AliasAware, |s| SubstitutionToken::Fixed(s.clone()));
+            run_with_pipe_redaction(command, &env, &tainted, token).await
+        }
+    }
+}
+
+/// Resolve the effective dispatch given the operator-chosen
+/// [`RedactMode`] and the current stdin TTY state.
+#[cfg(unix)]
+fn effective_redact_mode(requested: RedactMode) -> RedactMode {
+    use std::io::IsTerminal;
+    match requested {
+        RedactMode::ForceExec => RedactMode::ForceExec,
+        RedactMode::ForcePipe => RedactMode::ForcePipe,
+        RedactMode::Auto => {
+            if std::io::stdin().is_terminal() {
+                eprintln!(
+                    "secretenv: interactive TTY detected; runtime redaction disabled \
+                     for this invocation. Run with --redact to force pipe-based \
+                     redaction (may break PTY-bound prompts).",
+                );
+                RedactMode::ForceExec
+            } else {
+                RedactMode::ForcePipe
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+const fn effective_redact_mode(requested: RedactMode) -> RedactMode {
+    // No `exec()` semantics off Unix anyway; pipe-based is the only
+    // option. ForceExec falls back to spawn+wait inside
+    // exec_with_env.
+    match requested {
+        RedactMode::ForceExec => RedactMode::ForceExec,
+        _ => RedactMode::ForcePipe,
+    }
+}
+
+/// Spawn `command` with `env`, pipe stdout + stderr through a
+/// streaming redact scrubber, forward signals, and exit with the
+/// child's exit code.
+///
+/// # Errors
+/// Returns an error on spawn failure, redact-scrubber construction
+/// failure (oversize pattern), or any I/O failure during the
+/// streaming relay.
+async fn run_with_pipe_redaction(
+    command: &[String],
+    env: &[EnvEntry],
+    tainted: &TaintedSet,
+    token: SubstitutionToken,
+) -> Result<()> {
+    use std::process::Stdio;
+
+    use tokio::process::Command as TokioCommand;
+
+    // Build two independent streaming scrubbers — one per stream.
+    // Sharing one through a Mutex would serialize the relay and
+    // negate the parallel-pipe model.
+    let Some(scrubber_out) = StreamingScrubber::new(tainted, token.clone())? else {
+        // No redactable values (set was empty after the min-length
+        // filter). Fall back to the simple exec() path.
+        return exec_with_env(command, env);
+    };
+    let scrubber_err = StreamingScrubber::new(tainted, token)?
+        .ok_or_else(|| anyhow!("internal: streaming scrubber surprise-empty for stderr"))?;
+
+    let program = &command[0];
+    let args = &command[1..];
+    let mut cmd = TokioCommand::new(program);
+    cmd.args(args);
+    for reserved in RESERVED_ENV_VARS {
+        cmd.env_remove(reserved);
+    }
+    for entry in env {
+        cmd.env(&entry.key, entry.value.as_str_internal());
+    }
+    cmd.stdin(Stdio::inherit());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().with_context(|| format!("failed to spawn '{program}'"))?;
+    let child_id = child.id();
+
+    let child_stdout = child.stdout.take().ok_or_else(|| anyhow!("child has no stdout"))?;
+    let child_stderr = child.stderr.take().ok_or_else(|| anyhow!("child has no stderr"))?;
+
+    // Wire signal forwarding so SIGINT/SIGTERM to the parent
+    // propagate to the child. Without this, Ctrl-C in the parent
+    // terminal would leave the child orphaned.
+    #[cfg(unix)]
+    let signal_task = tokio::spawn(forward_signals_to(child_id));
+    #[cfg(not(unix))]
+    let signal_task: tokio::task::JoinHandle<()> = tokio::spawn(async {
+        let _ = child_id;
+    });
+
+    let stdout_task = tokio::spawn(relay_stream(scrubber_out, child_stdout, StreamKind::Stdout));
+    let stderr_task = tokio::spawn(relay_stream(scrubber_err, child_stderr, StreamKind::Stderr));
+
+    let exit_status = child.wait().await.context("waiting for child to exit")?;
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    signal_task.abort();
+
+    let code = exit_status.code().unwrap_or(128);
+    std::process::exit(code);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StreamKind {
+    Stdout,
+    Stderr,
+}
+
+/// Relay a child stream through a streaming scrubber to the
+/// parent's matching stream. Chunks of 8 KiB; flush on EOF.
+async fn relay_stream<R>(
+    mut scrubber: StreamingScrubber,
+    mut reader: R,
+    kind: StreamKind,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = vec![0u8; 8 * 1024];
+    let mut out_buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    loop {
+        let n = reader.read(&mut buf).await.context("redact stream: reading from child pipe")?;
+        if n == 0 {
+            break;
+        }
+        out_buf.clear();
+        let _ = scrubber.push(&buf[..n], &mut out_buf)?;
+        write_kind(kind, &out_buf)?;
+    }
+    out_buf.clear();
+    let _ = scrubber.flush(&mut out_buf)?;
+    if !out_buf.is_empty() {
+        write_kind(kind, &out_buf)?;
+    }
+    Ok(())
+}
+
+fn write_kind(kind: StreamKind, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    match kind {
+        StreamKind::Stdout => {
+            let mut out = std::io::stdout().lock();
+            out.write_all(bytes).context("redact: writing to parent stdout")?;
+            out.flush().context("redact: flush parent stdout")?;
+        }
+        StreamKind::Stderr => {
+            let mut out = std::io::stderr().lock();
+            out.write_all(bytes).context("redact: writing to parent stderr")?;
+            out.flush().context("redact: flush parent stderr")?;
+        }
+    }
+    Ok(())
+}
+
+/// Forward SIGINT / SIGTERM / SIGHUP from the parent to the child
+/// process so Ctrl-C in the parent terminal cleanly tears down
+/// `secretenv run`'s subprocess instead of leaving it orphaned.
+///
+/// Uses rustix's `kill_process` for the actual signal delivery —
+/// avoids `unsafe extern "C" { fn kill }` and keeps the crate's
+/// `forbid(unsafe_code)` intact.
+#[cfg(unix)]
+async fn forward_signals_to(child_pid: Option<u32>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let Some(pid_raw) = child_pid else { return };
+    let Some(pid) = i32::try_from(pid_raw).ok().and_then(rustix::process::Pid::from_raw) else {
+        return;
+    };
+    let Ok(mut sigint) = signal(SignalKind::interrupt()) else { return };
+    let Ok(mut sigterm) = signal(SignalKind::terminate()) else { return };
+    let Ok(mut sighup) = signal(SignalKind::hangup()) else { return };
+
+    loop {
+        let sig = tokio::select! {
+            _ = sigint.recv() => rustix::process::Signal::INT,
+            _ = sigterm.recv() => rustix::process::Signal::TERM,
+            _ = sighup.recv() => rustix::process::Signal::HUP,
+        };
+        let _ = rustix::process::kill_process(pid, sig);
+    }
 }
 
 /// Fetch every secret and build the env map. Visible to tests and

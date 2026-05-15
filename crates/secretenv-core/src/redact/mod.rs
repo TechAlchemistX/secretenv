@@ -51,11 +51,15 @@
 //   happens to be the same but would lose the docstring binding.
 #![allow(clippy::doc_markdown, clippy::too_long_first_doc_paragraph, clippy::derivable_impls)]
 
+pub mod stream;
+
 use std::io::{self, Read, Write};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tracing::warn;
+
+pub use stream::StreamingScrubber;
 
 /// Minimum length (in bytes) for a tainted value to be considered
 /// for redaction. Values shorter than this are skipped (with a
@@ -220,6 +224,28 @@ pub struct Scrubber {
 }
 
 impl Scrubber {
+    /// Borrow the internal Aho-Corasick automaton. Used by
+    /// [`stream::StreamingScrubber`].
+    pub(crate) const fn ac(&self) -> &aho_corasick::AhoCorasick {
+        &self.ac
+    }
+
+    /// Look up the alias name attached to pattern `id`. Used by
+    /// [`stream::StreamingScrubber`].
+    pub(crate) fn alias_for(&self, id: usize) -> Option<&str> {
+        self.alias_names.get(id).and_then(Option::as_deref)
+    }
+
+    /// Length of pattern `id`.
+    pub(crate) fn pattern_len(&self, id: usize) -> usize {
+        self.pattern_lengths[id]
+    }
+
+    /// Borrow the substitution token.
+    pub(crate) const fn token(&self) -> &SubstitutionToken {
+        &self.token
+    }
+
     /// Build a scrubber over `set` with the given substitution
     /// token. Returns `Ok(None)` when the set is empty (caller can
     /// skip the scrub entirely).

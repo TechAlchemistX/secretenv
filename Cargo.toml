@@ -78,6 +78,8 @@ regex              = "1"
 directories        = "5"
 futures            = "0.3"
 tempfile           = "3"
+aho-corasick       = "1"
+rustix             = { version = "1", features = ["fs", "process"] }
 assert_cmd         = "2"
 predicates         = "3"
 

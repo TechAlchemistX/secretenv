@@ -25,6 +25,7 @@ pub mod config;
 pub mod factory_helpers;
 pub mod manifest;
 pub mod mcp_safe;
+pub mod redact;
 pub mod registry;
 pub mod resolver;
 pub mod runner;

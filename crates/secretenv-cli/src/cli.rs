@@ -61,6 +61,51 @@ pub enum Command {
     Setup(SetupArgs),
     /// Generate shell completion scripts.
     Completions(CompletionsArgs),
+    /// Post-hoc redaction: scrub secret values out of an existing
+    /// file or stream. Reads every alias's resolved value into the
+    /// tainted set and rewrites the file with `[redacted:<alias>]`
+    /// substitutions (or `--redact-token <fixed>`).
+    Redact(RedactArgs),
+}
+
+/// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
+#[derive(Debug, Args)]
+pub struct RedactArgs {
+    /// Path to the file to scrub. Use `-` for stdin (writes to stdout).
+    pub path: String,
+    /// Registry selection — name or direct URI. Same semantics as
+    /// `secretenv run --registry`. Determines which aliases'
+    /// resolved values populate the tainted set.
+    #[arg(long)]
+    pub registry: Option<String>,
+    /// Restrict the tainted set to these alias names. Repeatable;
+    /// comma-separated values also accepted. Default: every alias
+    /// resolvable from the active manifest + registry cascade.
+    #[arg(long, value_delimiter = ',')]
+    pub alias: Vec<String>,
+    /// Rewrite the file in place (atomic rename). Without this flag,
+    /// the scrubbed output is written to stdout and the original
+    /// file is untouched.
+    #[arg(long, conflicts_with = "dry_run")]
+    pub in_place: bool,
+    /// When `--in-place` is set, also keep a backup of the original
+    /// content at `<path><suffix>` (e.g. `--backup=.bak`).
+    #[arg(long, requires = "in_place")]
+    pub backup: Option<String>,
+    /// Count matches without writing any output. Implies neither
+    /// `--in-place` nor stdout emission.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Allow scrubbing a file owned by a different UID. Off by
+    /// default; enabling this re-enables the foreign-owner refusal
+    /// (mode B's defense against a maliciously-planted log file).
+    #[arg(long)]
+    pub allow_foreign_owner: bool,
+    /// Override the substitution token. Default is
+    /// `[redacted:<alias-name>]`; pass e.g. `--redact-token '***'`
+    /// for the paranoid fixed-string form.
+    #[arg(long)]
+    pub redact_token: Option<String>,
 }
 
 /// `secretenv profile <subcommand>` — distribution-profile operations.
@@ -325,6 +370,7 @@ impl Cli {
             Command::Profile(pc) => cmd_profile(pc, self.config.as_deref()).await,
             Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
             Command::Completions(args) => cmd_completions(args),
+            Command::Redact(args) => cmd_redact(args, config, backends).await,
         }
     }
 }
@@ -642,6 +688,110 @@ async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) ->
         .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
     let value = backend.get(&target).await?;
     println!("{}", value.expose_secret());
+    Ok(())
+}
+
+// ---- redact (Mode B post-hoc) -----------------------------------------
+
+async fn cmd_redact(args: &RedactArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+    use secretenv_core::redact::{
+        scrub_file_in_place, Scrubber, SubstitutionToken, TaintedSet, TaintedValue,
+    };
+
+    let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
+
+    // Build the alias filter: either explicit `--alias <names>` or
+    // every alias in the resolved cascade.
+    let alias_names: Vec<String> = if args.alias.is_empty() {
+        aliases.iter().map(|(name, _target, _source)| name.clone()).collect()
+    } else {
+        args.alias.clone()
+    };
+
+    if alias_names.is_empty() {
+        bail!(
+            "secretenv redact: no aliases to redact — registry cascade is empty \
+             ({}). Add aliases via `secretenv registry set` first.",
+            format_sources(&aliases),
+        );
+    }
+
+    // Fetch each alias's value, build the tainted set.
+    let mut tainted = TaintedSet::new();
+    for name in &alias_names {
+        let Some((target, _src)) = aliases.get(name) else {
+            bail!("alias '{name}' not found in registry cascade [{}]", format_sources(&aliases),);
+        };
+        let backend = backends
+            .get(&target.scheme)
+            .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
+        let value = backend.get(target).await.with_context(|| {
+            format!("fetching value for alias '{name}' (target='{}')", target.raw)
+        })?;
+        tainted.insert(TaintedValue::from_alias(name.clone(), value.expose_secret()));
+    }
+
+    let token = args
+        .redact_token
+        .as_ref()
+        .map_or(SubstitutionToken::AliasAware, |s| SubstitutionToken::Fixed(s.clone()));
+    let Some(scrubber) = Scrubber::new(&tainted, token)? else {
+        eprintln!(
+            "secretenv redact: tainted set is empty after the {}-byte minimum filter; \
+             nothing to redact.",
+            secretenv_core::redact::MIN_TAINTED_LEN,
+        );
+        return Ok(());
+    };
+
+    let path = std::path::Path::new(&args.path);
+
+    // Dispatch: --dry-run (count only), --in-place (atomic rename), or
+    // default (stdout).
+    if args.dry_run {
+        let mut sink = std::io::sink();
+        let mut reader = secretenv_core::redact::open_no_follow(path)?;
+        let rep = scrubber.scrub_reader(&mut reader, &mut sink)?;
+        eprintln!(
+            "secretenv redact: would redact {} match(es) totaling {} byte(s) in '{}'",
+            rep.match_count,
+            rep.byte_count,
+            path.display(),
+        );
+        return Ok(());
+    }
+
+    if args.in_place {
+        let rep =
+            scrub_file_in_place(path, &scrubber, args.backup.as_deref(), args.allow_foreign_owner)?;
+        eprintln!(
+            "secretenv redact: rewrote '{}' — {} match(es), {} byte(s) replaced{}",
+            path.display(),
+            rep.match_count,
+            rep.byte_count,
+            args.backup
+                .as_deref()
+                .map_or(String::new(), |s| format!("; backup at '{}{s}'", path.display())),
+        );
+        return Ok(());
+    }
+
+    // Default: stream to stdout.
+    secretenv_core::redact::refuse_special_paths(path)?;
+    secretenv_core::redact::refuse_foreign_owner(path, args.allow_foreign_owner)?;
+    let mut reader = secretenv_core::redact::open_no_follow(path)
+        .with_context(|| format!("redact: opening '{}' with O_NOFOLLOW", path.display()))?;
+    let mut stdout = io::stdout().lock();
+    let rep = scrubber.scrub_reader(&mut reader, &mut stdout)?;
+    drop(stdout);
+    eprintln!(
+        "secretenv redact: {} match(es), {} byte(s) replaced in '{}'",
+        rep.match_count,
+        rep.byte_count,
+        path.display(),
+    );
     Ok(())
 }
 

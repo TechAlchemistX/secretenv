@@ -915,11 +915,13 @@ dependencies = [
 name = "secretenv-core"
 version = "0.13.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "directories",
  "futures",
  "indexmap",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

@@ -20,7 +20,13 @@ readme.workspace       = true
 mcp-safe = []
 
 [dependencies]
+aho-corasick.workspace = true
 anyhow.workspace      = true
+
+[target.'cfg(unix)'.dependencies]
+# Safe syscall wrappers for `getuid` + `openat(O_NOFOLLOW)`. Keeps
+# `forbid(unsafe_code)` intact for the entire crate.
+rustix.workspace      = true
 async-trait.workspace = true
 directories.workspace = true
 futures.workspace     = true
@@ -28,6 +34,9 @@ indexmap.workspace    = true
 serde.workspace       = true
 serde_json.workspace  = true
 thiserror.workspace   = true
+# `tempfile` is a runtime dep (used by `redact::scrub_file_in_place`'s
+# atomic-rename path), in addition to staying as a dev-dep.
+tempfile.workspace    = true
 tokio.workspace       = true
 toml.workspace        = true
 tracing.workspace     = true

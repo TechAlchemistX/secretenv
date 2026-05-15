@@ -47,7 +47,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
-    BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
+    BackendStatus, BackendUri, Secret, DEFAULT_GET_TIMEOUT,
 };
 use tokio::process::Command;
 
@@ -337,13 +337,13 @@ impl Backend for GcpBackend {
         BackendStatus::Ok { cli_version, identity }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         // Fragment + secret-name validation happen BEFORE any network
         // call so invalid URIs surface locally without burning IAM
         // permissions, latency, or a `gcloud` subprocess. v0.2.6
         // aws-secrets pattern.
         let version = self.resolve_version(uri)?;
-        self.get_raw(uri, &version).await
+        self.get_raw(uri, &version).await.map(Secret::new)
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -743,7 +743,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("gcp-prod:///stripe_key").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_abc");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_abc");
     }
 
     #[tokio::test]
@@ -754,7 +754,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("gcp-prod:///stripe_key#version=5").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "older");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "older");
     }
 
     #[tokio::test]
@@ -766,7 +766,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("gcp-prod:///multi_line").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "line1\nline2");
     }
 
     #[tokio::test]
@@ -777,7 +777,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("gcp-prod:///empty_secret").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "");
     }
 
     #[tokio::test]

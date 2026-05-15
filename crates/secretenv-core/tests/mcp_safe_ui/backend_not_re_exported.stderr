@@ -1,0 +1,22 @@
+error[E0405]: cannot find trait `Backend` in crate `secretenv_core`
+ --> tests/mcp_safe_ui/backend_not_re_exported.rs:9:42
+  |
+9 |     fn _wants_backend<T: secretenv_core::Backend>() {}
+  |                                          ^^^^^^^ not found in `secretenv_core`
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(not(feature = "mcp-safe"))]
+  |          ---------------------- the item is gated here
+  | pub use backend::Backend;
+  |                  ^^^^^^^
+help: consider importing this trait
+  |
+8 + use secretenv_core::backend::Backend;
+  |
+help: if you import `Backend`, refer to it directly
+  |
+9 -     fn _wants_backend<T: secretenv_core::Backend>() {}
+9 +     fn _wants_backend<T: Backend>() {}
+  |

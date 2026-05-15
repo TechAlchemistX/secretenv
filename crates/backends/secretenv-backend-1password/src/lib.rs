@@ -55,7 +55,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_bool, optional_duration_secs, Backend, BackendFactory, BackendStatus, BackendUri,
-    DEFAULT_GET_TIMEOUT,
+    Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -221,7 +221,7 @@ impl Backend for OnePasswordBackend {
 
     // `check_extensive` uses the `Backend` trait default (list().len()).
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         uri.reject_any_fragment("1password")?;
         let (vault, item, field) = Self::parse_path(uri)?;
         // Defensive post-condition: parse_path only returns 3 segments
@@ -247,7 +247,7 @@ impl Backend for OnePasswordBackend {
                 self.instance_name, uri.raw
             )
         })?;
-        Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+        Ok(Secret::new(stdout.strip_suffix("\n").unwrap_or(&stdout).to_owned()))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -326,13 +326,14 @@ impl Backend for OnePasswordBackend {
 
     async fn list(&self, uri: &BackendUri) -> Result<Vec<(String, String)>> {
         let body = self.get(uri).await?;
-        let parsed: HashMap<String, String> = toml::from_str(&body).with_context(|| {
-            format!(
-                "1password backend '{}': field at '{}' is not a flat TOML key→string map \
+        let parsed: HashMap<String, String> =
+            toml::from_str(body.expose_secret()).with_context(|| {
+                format!(
+                    "1password backend '{}': field at '{}' is not a flat TOML key→string map \
                  (v0.1 only supports registry-document shape)",
-                self.instance_name, uri.raw
-            )
-        })?;
+                    self.instance_name, uri.raw
+                )
+            })?;
         Ok(parsed.into_iter().collect())
     }
 }
@@ -575,7 +576,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://Eng/API/key").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "super-secret-value");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "super-secret-value");
     }
 
     #[tokio::test]
@@ -589,7 +590,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, Some("myteam.1password.com"));
         let uri = BackendUri::parse("1password-team://Eng/API/key").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "value-from-team");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "value-from-team");
     }
 
     #[tokio::test]
@@ -600,7 +601,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("1password-personal://V/I/F").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "raw-secret");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "raw-secret");
     }
 
     // ---- get errors ----

@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 
-use crate::{BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT};
+use crate::{BackendStatus, BackendUri, Secret, DEFAULT_GET_TIMEOUT};
 
 /// One historical version of a secret or registry document, produced
 /// by [`Backend::history`].
@@ -105,11 +105,18 @@ pub trait Backend: Send + Sync {
 
     /// Fetch the secret value at `uri`.
     ///
+    /// Returns a [`Secret<String>`] wrapper. The newtype prevents the
+    /// value from being accidentally logged, cloned without explicit
+    /// re-wrapping, or serialized. Callers extract the inner `&str`
+    /// via `expose_secret()` only at the moment of injection into the
+    /// child process environment.
+    ///
     /// # Errors
     /// Returns an error if the secret is missing, the caller is
     /// unauthorized, or the backend itself is unreachable. Error
-    /// context includes the instance name and `uri.raw`.
-    async fn get(&self, uri: &BackendUri) -> Result<String>;
+    /// context includes the instance name and `uri.raw` — never the
+    /// value.
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>>;
 
     /// Write `value` at `uri`. Used by `secretenv registry set` and
     /// backend migration flows.

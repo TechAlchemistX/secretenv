@@ -61,7 +61,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
-    BackendStatus, BackendUri, HistoryEntry, DEFAULT_GET_TIMEOUT,
+    BackendStatus, BackendUri, HistoryEntry, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -297,7 +297,7 @@ impl Backend for VaultBackend {
 
     // `check_extensive` uses the `Backend` trait default (list().len()).
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         uri.reject_any_fragment("vault")?;
         let path = Self::vault_path(uri);
         let mut cmd = self.vault_command("kv", &["get", "-field=value", &path]);
@@ -319,7 +319,7 @@ impl Backend for VaultBackend {
         // `-field=value` output ends with exactly one '\n'. Strip
         // it but keep any other trailing whitespace (operators who
         // deliberately stored trailing spaces deserve them back).
-        Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+        Ok(Secret::new(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -812,7 +812,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/db").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "supersekrit");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "supersekrit");
     }
 
     #[tokio::test]
@@ -825,7 +825,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/empty").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "");
     }
 
     #[tokio::test]
@@ -837,7 +837,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("vault-eng://secret/myapp/ws").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "line1\nline2");
     }
 
     #[tokio::test]

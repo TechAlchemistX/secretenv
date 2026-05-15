@@ -78,7 +78,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
-    BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
+    BackendStatus, BackendUri, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -291,7 +291,7 @@ impl Backend for AwsSecretsBackend {
 
     // `check_extensive` uses the `Backend` trait default (list().len()).
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         // Validate the fragment directive BEFORE any AWS API call. An
         // invalid fragment (legacy shorthand like `#password`, or an
         // unsupported directive like `#version=5`) is a local
@@ -340,8 +340,8 @@ impl Backend for AwsSecretsBackend {
         };
         let raw = self.get_raw(uri).await?;
         match json_key {
-            None => Ok(raw),
-            Some(key) => extract_json_field(&self.instance_name, uri, &raw, &key),
+            None => Ok(Secret::new(raw)),
+            Some(key) => extract_json_field(&self.instance_name, uri, &raw, &key).map(Secret::new),
         }
     }
 
@@ -797,7 +797,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/stripe").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_abc");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_abc");
     }
 
     #[tokio::test]
@@ -813,8 +813,8 @@ mod tests {
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg").unwrap();
         let out = b.get(&uri).await.unwrap();
-        assert!(out.contains("\"password\":\"hunter2\""));
-        assert!(out.contains("\"host\":\"db\""));
+        assert!(out.expose_secret().contains("\"password\":\"hunter2\""));
+        assert!(out.expose_secret().contains("\"host\":\"db\""));
     }
 
     // ---- get — #fragment dispatch ----
@@ -830,7 +830,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=password").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "hunter2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "hunter2");
     }
 
     #[tokio::test]
@@ -844,9 +844,9 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let port_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=port").unwrap();
-        assert_eq!(b.get(&port_uri).await.unwrap(), "5432");
+        assert_eq!(b.get(&port_uri).await.unwrap().expose_secret(), "5432");
         let tls_uri = BackendUri::parse("aws-secrets-prod:///myapp/cfg#json-key=tls").unwrap();
-        assert_eq!(b.get(&tls_uri).await.unwrap(), "true");
+        assert_eq!(b.get(&tls_uri).await.unwrap().expose_secret(), "true");
     }
 
     #[tokio::test]

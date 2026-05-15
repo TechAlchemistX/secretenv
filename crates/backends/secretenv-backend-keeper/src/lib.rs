@@ -103,7 +103,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_bool, optional_duration_secs, optional_string, Backend, BackendFactory, BackendStatus,
-    BackendUri, DEFAULT_GET_TIMEOUT,
+    BackendUri, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -445,7 +445,7 @@ impl Backend for KeeperBackend {
         BackendStatus::Ok { cli_version, identity }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         let target = self.resolve_target(uri)?;
         let field = self.parse_field_fragment(uri)?;
 
@@ -483,7 +483,7 @@ impl Backend for KeeperBackend {
                 })?;
                 // `keeper get --format=password` writes the value
                 // followed by a single newline. Strip exactly one.
-                Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+                Ok(Secret::new(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()))
             }
             Some(field_name) => {
                 // Response body is secret-bearing — parse via a
@@ -505,7 +505,7 @@ impl Backend for KeeperBackend {
                         uri.raw
                     )
                 })?;
-                Ok(value.to_owned())
+                Ok(Secret::new(value.to_owned()))
             }
         }
     }
@@ -1047,7 +1047,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, false);
         let uri = BackendUri::parse("keeper-prod:///MY_RECORD").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_42");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_42");
     }
 
     #[tokio::test]
@@ -1058,7 +1058,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, false);
         let uri = BackendUri::parse("keeper-prod:///kF3aBcDeFgHiJkLmNoPqRs").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "token_via_uid");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "token_via_uid");
     }
 
     #[tokio::test]
@@ -1078,7 +1078,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, false);
         let uri = BackendUri::parse("keeper-prod:///MY_RECORD#field=api_key").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "ak_42");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "ak_42");
     }
 
     #[tokio::test]
@@ -1092,7 +1092,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, false);
         let uri = BackendUri::parse("keeper-prod:///MY_RECORD#field=api_key").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "ak_upper");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "ak_upper");
     }
 
     #[tokio::test]
@@ -1380,7 +1380,7 @@ mod tests {
         let mut b = backend(&mock, false);
         b.keeper_config_path = Some("/custom/path/config.json".to_owned());
         let uri = BackendUri::parse("keeper-prod:///R").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "value");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "value");
     }
 
     // ---- factory ----

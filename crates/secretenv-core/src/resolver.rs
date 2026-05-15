@@ -497,6 +497,7 @@ mod tests {
     use crate::backend::{Backend, BackendFactory};
     use crate::config::BackendConfig;
     use crate::status::BackendStatus;
+    use crate::Secret;
 
     // ---- FakeListBackend: returns canned list entries per-instance ----
 
@@ -524,8 +525,8 @@ mod tests {
         async fn check_extensive(&self, _: &BackendUri) -> Result<usize> {
             Ok(self.entries.len())
         }
-        async fn get(&self, _: &BackendUri) -> Result<String> {
-            Ok("fake-body".into())
+        async fn get(&self, _: &BackendUri) -> Result<Secret<String>> {
+            Ok(Secret::new("fake-body".into()))
         }
         async fn set(&self, _: &BackendUri, _: &str) -> Result<()> {
             Ok(())

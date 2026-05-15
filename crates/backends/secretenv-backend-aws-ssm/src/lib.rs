@@ -53,7 +53,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
-    BackendStatus, BackendUri, HistoryEntry, DEFAULT_GET_TIMEOUT,
+    BackendStatus, BackendUri, HistoryEntry, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -256,7 +256,7 @@ impl Backend for AwsSsmBackend {
 
     // `check_extensive` uses the `Backend` trait default (list().len()).
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         uri.reject_any_fragment("aws-ssm")?;
         let name = Self::parameter_name(uri);
         let mut cmd = self.ssm_command(
@@ -286,7 +286,7 @@ impl Backend for AwsSsmBackend {
                 self.instance_name, uri.raw
             )
         })?;
-        Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+        Ok(Secret::new(stdout.strip_suffix("\n").unwrap_or(&stdout).to_owned()))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -373,13 +373,14 @@ impl Backend for AwsSsmBackend {
 
     async fn list(&self, uri: &BackendUri) -> Result<Vec<(String, String)>> {
         let body = self.get(uri).await?;
-        let map: HashMap<String, String> = serde_json::from_str(&body).with_context(|| {
-            format!(
-                "aws-ssm backend '{}': parameter body at '{}' is not a JSON string-map \
+        let map: HashMap<String, String> = serde_json::from_str(body.expose_secret())
+            .with_context(|| {
+                format!(
+                    "aws-ssm backend '{}': parameter body at '{}' is not a JSON string-map \
                  (v0.1 only supports registry-document shape)",
-                self.instance_name, uri.raw
-            )
-        })?;
+                    self.instance_name, uri.raw
+                )
+            })?;
         Ok(map.into_iter().collect())
     }
 
@@ -628,7 +629,7 @@ mod tests {
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let v = b.get(&uri).await.unwrap();
-        assert_eq!(v, "super-secret-value");
+        assert_eq!(v.expose_secret(), "super-secret-value");
     }
 
     #[tokio::test]
@@ -646,7 +647,7 @@ mod tests {
         let b = backend(&mock, Some("prod"));
         let uri = BackendUri::parse("aws-ssm-prod:///prod/api-key").unwrap();
         let v = b.get(&uri).await.unwrap();
-        assert_eq!(v, "value-from-prod");
+        assert_eq!(v.expose_secret(), "value-from-prod");
     }
 
     #[tokio::test]
@@ -670,7 +671,7 @@ mod tests {
             StrictMock::new("aws").on(argv, Response::success("raw-value\n")).install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("aws-ssm-prod:///k").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "raw-value");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "raw-value");
     }
 
     // ---- get error paths ----

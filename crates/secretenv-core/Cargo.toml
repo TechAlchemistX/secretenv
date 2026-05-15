@@ -12,6 +12,13 @@ keywords.workspace     = true
 categories.workspace   = true
 readme.workspace       = true
 
+[features]
+# When enabled, `Secret<T>::expose_secret` is removed from the public
+# API. Crates that link with this feature (the v0.16 MCP server crate)
+# cannot read secret values through any safe API by construction.
+# The CLI links without the feature and retains value access.
+mcp-safe = []
+
 [dependencies]
 anyhow.workspace      = true
 async-trait.workspace = true
@@ -27,6 +34,10 @@ zeroize.workspace     = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# `trybuild` is only used by the `mcp_safe_trybuild` integration test
+# which is `cfg(feature = "mcp-safe")`-gated. Listed as a dev-dep so it
+# never enters the default-feature binary closure.
+trybuild = "1"
 
 [lints]
 workspace = true

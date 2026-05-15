@@ -66,7 +66,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, Backend, BackendFactory, BackendStatus, BackendUri,
-    DEFAULT_GET_TIMEOUT,
+    Secret, DEFAULT_GET_TIMEOUT,
 };
 use tokio::process::Command;
 
@@ -308,7 +308,7 @@ impl Backend for KeychainBackend {
         }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         uri.reject_any_fragment("keychain")?;
         let (service, account) = Self::parse_path(uri)?;
 
@@ -356,7 +356,7 @@ impl Backend for KeychainBackend {
             )
         })?;
         // `security -w` always appends a single '\n'. Strip it.
-        Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+        Ok(Secret::new(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned()))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -733,7 +733,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None, Kind::GenericPassword);
         let uri = BackendUri::parse("keychain-default://stripe/prod").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_secret_value");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_secret_value");
     }
 
     #[tokio::test]
@@ -747,7 +747,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None, Kind::InternetPassword);
         let uri = BackendUri::parse("keychain-default://api.example.com/svc").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "basic-auth-token");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "basic-auth-token");
     }
 
     #[tokio::test]
@@ -762,7 +762,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, Some(path), Kind::GenericPassword);
         let uri = BackendUri::parse("keychain-default://stripe/prod").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "value");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "value");
     }
 
     #[tokio::test]

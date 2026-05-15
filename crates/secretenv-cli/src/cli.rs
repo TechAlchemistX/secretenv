@@ -641,7 +641,7 @@ async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) ->
         .get(&target.scheme)
         .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
     let value = backend.get(&target).await?;
-    println!("{value}");
+    println!("{}", value.expose_secret());
     Ok(())
 }
 

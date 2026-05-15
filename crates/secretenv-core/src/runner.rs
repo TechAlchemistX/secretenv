@@ -48,26 +48,27 @@
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use zeroize::Zeroizing;
 
 use crate::backend::Backend;
 use crate::registry::BackendRegistry;
 use crate::resolver::{ResolvedSecret, ResolvedSource};
+use crate::Secret;
 
 /// A fully-resolved env-var pair, ready for injection into the child
-/// process. The value is zeroed on drop via [`zeroize::Zeroizing`].
+/// process. The value is wrapped in [`Secret`]; the inner buffer is
+/// zeroed on drop.
 pub struct EnvEntry {
     /// The environment variable name.
     pub key: String,
-    value: Zeroizing<String>,
+    value: Secret<String>,
 }
 
 impl EnvEntry {
-    /// Borrow the value as a `&str`. The underlying string is zeroed
-    /// on drop.
+    /// Borrow the value as a `&str` for the duration of the borrow.
+    /// The underlying buffer is zeroed on drop.
     #[must_use]
     pub fn value(&self) -> &str {
-        &self.value
+        self.value.as_str_internal()
     }
 }
 
@@ -147,7 +148,7 @@ pub async fn build_env(
                 }
                 slots[idx] = Some(EnvEntry {
                     key: secret.env_var.clone(),
-                    value: Zeroizing::new(value.clone()),
+                    value: Secret::new(value.clone()),
                 });
             }
             ResolvedSource::Uri { .. } => uri_indices.push(idx),
@@ -229,7 +230,7 @@ async fn fetch_one(
         crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await.with_context(
             || format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw),
         )?;
-    Ok(Some(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) }))
+    Ok(Some(EnvEntry { key: secret.env_var.clone(), value }))
 }
 
 /// Combine N>1 fetch failures into a single anyhow error whose
@@ -267,7 +268,7 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
         cmd.env_remove(reserved);
     }
     for entry in env {
-        cmd.env(&entry.key, entry.value.as_str());
+        cmd.env(&entry.key, entry.value.as_str_internal());
     }
     // exec() replaces the current process on success and only returns
     // on failure — so the io::Error it produces is always a real one.
@@ -285,7 +286,7 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
         cmd.env_remove(reserved);
     }
     for entry in env {
-        cmd.env(&entry.key, entry.value.as_str());
+        cmd.env(&entry.key, entry.value.as_str_internal());
     }
     let status = cmd.status().with_context(|| format!("failed to spawn '{program}'"))?;
     std::process::exit(status.code().unwrap_or(1));
@@ -333,7 +334,7 @@ mod tests {
         async fn check_extensive(&self, _: &BackendUri) -> Result<usize> {
             Ok(0)
         }
-        async fn get(&self, uri: &BackendUri) -> Result<String> {
+        async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
             self.get_count.fetch_add(1, Ordering::SeqCst);
             if !self.delay.is_zero() {
                 tokio::time::sleep(self.delay).await;
@@ -344,6 +345,7 @@ mod tests {
             self.values
                 .get(&uri.path)
                 .cloned()
+                .map(Secret::new)
                 .ok_or_else(|| anyhow!("no canned value for path '{}'", uri.path))
         }
         async fn set(&self, _: &BackendUri, _: &str) -> Result<()> {
@@ -665,15 +667,16 @@ mod tests {
         assert_eq!(keys, vec!["FIRST", "SECOND", "THIRD"]);
     }
 
-    // ---- Zeroizing smoke test ----
+    // ---- Secret<String> smoke test ----
 
     #[tokio::test]
     async fn env_entries_can_be_consumed_as_str() {
         let (backends, _) = set_up(&[("/k", "the-secret-value")], None);
         let resolved = vec![secret_alias("K", "fake:///k")];
         let env = build_env(&resolved, &backends, false, false).await.unwrap();
-        // Sanity: value() returns &str without touching Zeroizing's
-        // public API; the wrapper lives only inside the struct.
+        // Sanity: `value()` returns `&str` without exposing the inner
+        // `Secret<String>` newtype; consumers (the exec path) only
+        // ever borrow.
         let s: &str = env[0].value();
         assert_eq!(s, "the-secret-value");
     }

@@ -45,7 +45,42 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+      # NOTE: `--all-features` is deliberately NOT used.
+      # `secretenv-core::mcp-safe` is a *subtractive* feature (it
+      # removes `expose_secret` from the public API); Cargo feature
+      # unification under `--all-features` would cascade `mcp-safe`
+      # across the workspace and break every backend that injects
+      # values. The `mcp-safe` trybuild harness has its own job below.
+      - run: cargo test --workspace
+
+  mcp-safe-trybuild:
+    name: mcp-safe trybuild (compile-fail harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p secretenv-core --features mcp-safe --test mcp_safe_trybuild
+
+  secret-no-leak-grep:
+    name: Secret<T> no-leak grep gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: grep for forbidden Secret-leaking patterns
+        run: |
+          set -euo pipefail
+          fail=0
+          # Forbid Display / Serialize / Deserialize / Clone derives on
+          # Secret itself, and `format!`-style stringification of any
+          # `Secret<...>` binding in the workspace. Scans .rs only.
+          if grep -rn --include='*.rs' -E 'impl[[:space:]]+(std::)?fmt::Display[[:space:]]+for[[:space:]]+Secret' crates/; then
+            echo "FAIL: Display impl on Secret leaks values."; fail=1
+          fi
+          if grep -rn --include='*.rs' -E '#\[derive[^)]*\b(Clone|Serialize|Deserialize|Display)\b[^)]*\)\][[:space:]]*\n[[:space:]]*pub[[:space:]]+struct[[:space:]]+Secret' crates/; then
+            echo "FAIL: forbidden derive on Secret."; fail=1
+          fi
+          exit $fail
 
   smoke-local:
     name: smoke harness (--local-only)

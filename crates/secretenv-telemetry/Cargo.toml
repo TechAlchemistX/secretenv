@@ -1,0 +1,25 @@
+[package]
+name        = "secretenv-telemetry"
+description = "SecretEnv — telemetry skeleton: RedactionPolicy, RedactionEvent, SecretEnvSpan typed attribute builder, and SecretEnvErrorKind. No-op exporters in v0.14; OTLP wiring lands in v0.17."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[dependencies]
+# NOTE: `opentelemetry` / `tracing-opentelemetry` are DELIBERATELY
+# absent at v0.14. The crate defines the no-op exporter surface and
+# the typed attribute builder; v0.17 (`Phase OTel`) adds the real
+# SDK + OTLP exporter behind a feature flag without restructuring
+# any call site. CI `cargo tree -p secretenv-telemetry` should never
+# show opentelemetry as a transitive dep at this version.
+tracing.workspace = true
+
+[lints]
+workspace = true

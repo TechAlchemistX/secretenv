@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/secretenv-core",
+    "crates/secretenv-telemetry",
     "crates/secretenv-cli",
     "crates/secretenv-testing",
     "crates/backends/secretenv-backend-local",
@@ -41,6 +42,7 @@ readme       = "README.md"
 # lives at `crates/secretenv-cli/` but publishes as `secretenv` so
 # `cargo install secretenv` and the binary name line up.
 secretenv-core               = { path = "crates/secretenv-core",                           version = "0.13.0" }
+secretenv-telemetry          = { path = "crates/secretenv-telemetry",                      version = "0.13.0" }
 secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.13.0" }
 secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.13.0" }
 secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.13.0" }

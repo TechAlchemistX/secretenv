@@ -931,6 +931,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretenv-telemetry"
+version = "0.13.0"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "secretenv-testing"
 version = "0.13.0"
 dependencies = [

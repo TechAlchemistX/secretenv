@@ -269,7 +269,7 @@ secretenv registry set stripe-key "vault-prod://secret/payments/stripe_key"
 # No PRs. No re-encryption. No coordination.
 ```
 
-> **Coming in v0.14 — `secretenv registry migrate`.** Today's flow is two steps: move the value to the new backend with your existing tooling, then `registry set` to repoint the alias. The next release folds both into one operation — read from the current backend, write to the new one (where you have write permission), update the pointer atomically. Exact CLI shape is being figured out now; the indirection guarantee doesn't change — repos still inherit on next run.
+> **Coming in v0.15 — `secretenv registry migrate`.** Today's flow is two steps: move the value to the new backend with your existing tooling, then `registry set` to repoint the alias. A future release folds both into one operation — read from the current backend, write to the new one (where you have write permission), update the pointer atomically. The indirection guarantee doesn't change — repos still inherit on next run.
 
 
 ### Workflow 4 — Offboarding an engineer

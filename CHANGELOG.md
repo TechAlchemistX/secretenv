@@ -52,6 +52,11 @@ Three deliberate breaking changes, bundled per the v0.14+ Q-O1 resolution (one C
 - 64 KiB max tainted-value length for mode A. Larger patterns refuse mode-A startup with a clear error (matches cannot reliably fire across the stream's chunk boundaries).
 - Foundation work for v0.16's MCP-server boundary (`Secret<T>`, `McpSafe`, `mcp-safe` feature) and v0.17's OTel attribute discipline (`SecretEnvSpan`, `SecretEnvErrorKind`, `RedactionPolicy`) lands in this cycle so neither downstream cycle has to retrofit instrumentation across the codebase.
 
+### Known limitations
+
+- **Typed-report `Drop` does not fire on `secretenv run`'s exec/exit happy paths.** The per-handler typed reports (`RunReport` et al.) reach their `Drop` impl on early-return error paths but not when `run` reaches the end of `cmd_run` and the process exits with the child's status. Surfaced by the Phase 9b architecture review (arch-H5). v0.14 ships this honestly: the report types are the load-bearing surface for v0.16+v0.17 consumers, and the v0.14 dispatcher already discards them via `let _ = handler.await?`. v0.17 adds a pre-exec hook (~30 LOC in the runner) that forces the report's emission before the `exec`/exit. Until then, OTel emission for `secretenv run` will use the `RunOptions`-resident hook path; reports remain authoritative for all other handlers.
+- **Three v0.15 architectural follow-ups identified during Phase 9b review** (none blocking v0.14 ship): polarity-flip the `mcp-safe` feature to additive `value-access` before v0.16's MCP crate locks in the subtractive surface; relocate `serialize_registry_doc`/`deserialize_registry_doc` from the `Backend` trait to a free function + `RegistryFormat` enum; lift `crates/secretenv-cli/src/reports.rs` down into `secretenv-core` once v0.16 MCP becomes the second consumer.
+
 ## [0.13.0] - 2026-05-06
 
 **Headline:** **hygiene + docs release** absorbing both v0.12.x carry-forward queues. Originally queued as Delinea Secret Server (per [[roadmap]]); Delinea remains blocked on invite-only trial access (vendor-side), so v0.13 fills the slot with the merged-not-tagged hygiene work that would otherwise have rolled forward to the next backend cycle. **No new backend, no new platform, no schema change.** Backend total stays at **15**.

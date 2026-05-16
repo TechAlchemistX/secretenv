@@ -519,31 +519,45 @@ pub fn scrub_file_in_place(
         .scrub_reader(&mut reader, tmp.as_file_mut())
         .with_context(|| format!("redact: scrubbing '{}'", path.display()))?;
 
-    if let Some(suffix) = backup_suffix {
-        let mut backup_path = path.as_os_str().to_owned();
-        backup_path.push(suffix);
-        write_backup_secure(path, std::path::Path::new(&backup_path))?;
-    }
-
-    // Preserve mode on the renamed file. Ownership is NOT preserved
-    // — non-root scrubs deliberately persist the file owned by the
-    // current EUID. The build plan documents this behavior. Phase 7
-    // code-review H1 caught a doc/impl mismatch fixed in the
-    // function-level doc comment above.
+    // Preserve mode on the renamed file. Read mode bits from the
+    // already-open `reader` fd (which holds the O_NOFOLLOW-protected
+    // inode) rather than re-stat'ing the path — closes a TOCTOU
+    // window where the path could be swapped between open and stat.
+    // Mask to permission bits only (& 0o7777) to drop file-type bits
+    // and avoid persisting setuid/setgid from a pathological source.
+    // Ownership is NOT preserved — see function-level doc comment.
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let md = std::fs::symlink_metadata(path)
-            .with_context(|| format!("redact: stat('{}') before rename", path.display()))?;
-        let perms = std::fs::Permissions::from_mode(md.mode());
+        let md = reader
+            .metadata()
+            .with_context(|| format!("redact: fstat open fd for '{}'", path.display()))?;
+        let perms = std::fs::Permissions::from_mode(md.mode() & 0o7777);
         tmp.as_file_mut()
             .set_permissions(perms)
             .with_context(|| format!("redact: fchmod tempfile for '{}'", path.display()))?;
     }
 
-    tmp.persist(path).map_err(|e| {
-        anyhow!("redact: atomic rename to '{}' failed: {}", path.display(), e.error)
-    })?;
+    let backup_path_buf = if let Some(suffix) = backup_suffix {
+        let mut backup_path = path.as_os_str().to_owned();
+        backup_path.push(suffix);
+        let bp = std::path::PathBuf::from(backup_path);
+        write_backup_secure(path, &bp)?;
+        Some(bp)
+    } else {
+        None
+    };
+
+    // Sec-H1 cleanup: if the atomic rename fails after we've already
+    // written the plaintext backup, unlink the backup so we don't
+    // leave a plaintext copy of the original on disk at a predictable
+    // path. Best-effort — surface the rename error regardless.
+    if let Err(e) = tmp.persist(path) {
+        if let Some(bp) = backup_path_buf.as_ref() {
+            let _ = std::fs::remove_file(bp);
+        }
+        return Err(anyhow!("redact: atomic rename to '{}' failed: {}", path.display(), e.error));
+    }
 
     Ok(report)
 }

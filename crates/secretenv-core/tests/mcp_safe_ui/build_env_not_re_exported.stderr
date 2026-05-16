@@ -11,12 +11,3 @@ note: found an item that was configured out
    |          ---------------------- the item is gated here
    | pub use runner::{build_env, run, run_with_options, EnvEntry, RedactMode, RunOptions};
    |                  ^^^^^^^^^
-help: consider importing this function
-   |
-12 + use secretenv_core::runner::build_env;
-   |
-help: if you import `build_env`, refer to it directly
-   |
-13 -     let _ = secretenv_core::build_env;
-13 +     let _ = build_env;
-   |

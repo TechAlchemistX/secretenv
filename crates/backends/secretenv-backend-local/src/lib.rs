@@ -260,7 +260,7 @@ impl Backend for LocalBackend {
         map: &std::collections::BTreeMap<String, String>,
     ) -> Result<String> {
         toml::to_string(map).with_context(|| {
-            format!("local backend '{}': serializing registry doc as TOML", self.instance_name,)
+            format!("local backend '{}': serializing registry doc as TOML", self.instance_name)
         })
     }
 
@@ -269,7 +269,7 @@ impl Backend for LocalBackend {
         body: &str,
     ) -> Result<std::collections::BTreeMap<String, String>> {
         toml::from_str(body).with_context(|| {
-            format!("local backend '{}': deserializing registry doc as TOML", self.instance_name,)
+            format!("local backend '{}': deserializing registry doc as TOML", self.instance_name)
         })
     }
 }

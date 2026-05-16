@@ -342,7 +342,7 @@ impl Backend for OnePasswordBackend {
         map: &std::collections::BTreeMap<String, String>,
     ) -> Result<String> {
         toml::to_string(map).with_context(|| {
-            format!("1password backend '{}': serializing registry doc as TOML", self.instance_name,)
+            format!("1password backend '{}': serializing registry doc as TOML", self.instance_name)
         })
     }
 

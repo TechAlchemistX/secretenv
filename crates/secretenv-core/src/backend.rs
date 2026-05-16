@@ -189,7 +189,7 @@ pub trait Backend: Send + Sync {
     /// wire format.
     fn serialize_registry_doc(&self, map: &BTreeMap<String, String>) -> Result<String> {
         serde_json::to_string(map).with_context(|| {
-            format!("serializing registry doc as JSON for backend type '{}'", self.backend_type(),)
+            format!("serializing registry doc as JSON for backend type '{}'", self.backend_type())
         })
     }
 

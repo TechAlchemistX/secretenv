@@ -880,7 +880,7 @@ async fn cmd_redact(
     let mut tainted = TaintedSet::new();
     for name in &alias_names {
         let Some((target, _src)) = aliases.get(name) else {
-            bail!("alias '{name}' not found in registry cascade [{}]", format_sources(&aliases),);
+            bail!("alias '{name}' not found in registry cascade [{}]", format_sources(&aliases));
         };
         let backend = backends
             .get(&target.scheme)

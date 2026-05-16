@@ -64,7 +64,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_bool, optional_duration_secs, optional_string, required_string, Backend,
-    BackendFactory, BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
+    BackendFactory, BackendStatus, BackendUri, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -327,15 +327,15 @@ impl Backend for OpenBaoBackend {
         }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         // Fragment validation BEFORE any network call — a bad fragment
         // is a local grammar error and shelling out to OpenBao would
         // waste latency + leak access patterns.
         let json_key = self.parse_json_key_fragment(uri)?;
         let raw = self.get_raw_value(uri).await?;
         match json_key {
-            None => Ok(raw),
-            Some(key) => extract_json_field(&self.instance_name, uri, &raw, &key),
+            None => Ok(Secret::new(raw)),
+            Some(key) => extract_json_field(&self.instance_name, uri, &raw, &key).map(Secret::new),
         }
     }
 
@@ -868,7 +868,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("openbao-dev://secret/myapp/db").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "supersekrit");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "supersekrit");
     }
 
     #[tokio::test]
@@ -879,7 +879,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("openbao-dev://secret/myapp/empty").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "");
     }
 
     #[tokio::test]
@@ -890,7 +890,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("openbao-dev://secret/myapp/ws").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "line1\nline2");
     }
 
     #[tokio::test]
@@ -960,7 +960,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("openbao-dev://secret/myapp/db#json-key=password").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "smoke-pw");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "smoke-pw");
     }
 
     #[tokio::test]

@@ -119,7 +119,7 @@ mod tests {
 
     use super::*;
     use crate::config::BackendConfig;
-    use crate::{BackendStatus, BackendUri};
+    use crate::{BackendStatus, BackendUri, Secret};
 
     struct FakeBackend {
         backend_type: String,
@@ -140,8 +140,8 @@ mod tests {
         async fn check_extensive(&self, _: &BackendUri) -> Result<usize> {
             Ok(0)
         }
-        async fn get(&self, _: &BackendUri) -> Result<String> {
-            Ok("fake-value".into())
+        async fn get(&self, _: &BackendUri) -> Result<Secret<String>> {
+            Ok(Secret::new("fake-value".into()))
         }
         async fn set(&self, _: &BackendUri, _: &str) -> Result<()> {
             Ok(())

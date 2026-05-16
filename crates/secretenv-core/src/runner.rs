@@ -48,26 +48,79 @@
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use zeroize::Zeroizing;
 
 use crate::backend::Backend;
+use crate::redact::{StreamingScrubber, SubstitutionToken, TaintedSet, TaintedValue};
 use crate::registry::BackendRegistry;
 use crate::resolver::{ResolvedSecret, ResolvedSource};
+use crate::Secret;
+
+/// How `secretenv run` should treat its child's stdout/stderr w.r.t.
+/// the redact engine.
+///
+/// Default: [`RedactMode::Auto`] (pipe + redact when the child's
+/// stdin is non-TTY; fall back to `exec()` otherwise).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RedactMode {
+    /// Default: pipe-based redact when stdin is non-TTY; auto
+    /// fall back to `exec()` on a TTY (preserves interactive
+    /// programs like `psql`, `vim`, `ssh`).
+    #[default]
+    Auto,
+    /// Force pipe-based redaction even when stdin is a TTY.
+    /// Operator opts in via `--redact`; PTY-bound programs may
+    /// misbehave.
+    ForcePipe,
+    /// Force `exec()` path — no redaction. Operator opts out via
+    /// `--no-redact --i-know`.
+    ForceExec,
+}
+
+/// Options for [`run`].
+///
+/// Constructed by the CLI from `--dry-run` / `--verbose` /
+/// `--redact` / `--no-redact` flags. Defaults match v0.13
+/// behavior except `redact` which is `Auto` (the v0.14 default).
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    /// Print what would happen without fetching or executing.
+    pub dry_run: bool,
+    /// Emit fetch progress to stderr.
+    pub verbose: bool,
+    /// How to handle stdout/stderr redaction.
+    pub redact: RedactMode,
+    /// Override the substitution token. `None` → alias-aware default.
+    pub redact_token: Option<String>,
+}
 
 /// A fully-resolved env-var pair, ready for injection into the child
-/// process. The value is zeroed on drop via [`zeroize::Zeroizing`].
+/// process. The value is wrapped in [`Secret`]; the inner buffer is
+/// zeroed on drop.
 pub struct EnvEntry {
     /// The environment variable name.
     pub key: String,
-    value: Zeroizing<String>,
+    /// The registry alias name the value came from, when resolved
+    /// via a `secretenv://<alias>` reference. `None` for manifest
+    /// defaults (which have no registry alias). Carried so mode-A
+    /// redact emits `[redacted:<alias>]` consistent with mode B
+    /// per Phase 9 Code-H4.
+    pub alias_name: Option<String>,
+    value: Secret<String>,
 }
 
 impl EnvEntry {
-    /// Borrow the value as a `&str`. The underlying string is zeroed
-    /// on drop.
+    /// Borrow the value as a `&str` for the duration of the borrow.
+    /// The underlying buffer is zeroed on drop.
+    ///
+    /// Gated behind `cfg(not(feature = "mcp-safe"))` for the same
+    /// reason as [`Secret::expose_secret`]: crates linking with
+    /// `mcp-safe` (the v0.16 MCP server) must not be able to read
+    /// resolved values through any safe public API. Per Phase 7
+    /// security audit finding B1.
+    #[cfg(not(feature = "mcp-safe"))]
     #[must_use]
     pub fn value(&self) -> &str {
-        &self.value
+        self.value.as_str_internal()
     }
 }
 
@@ -93,17 +146,278 @@ pub async fn run(
     dry_run: bool,
     verbose: bool,
 ) -> Result<()> {
+    run_with_options(
+        resolved,
+        backends,
+        command,
+        &RunOptions { dry_run, verbose, ..RunOptions::default() },
+    )
+    .await
+}
+
+/// Like [`run`] but takes a full [`RunOptions`] including
+/// redact-mode selection. The v0.14 CLI uses this entry point.
+///
+/// # Errors
+/// Same set as [`run`], plus a redact-mode-A startup error if any
+/// tainted value exceeds the 64 KiB tail-window cap.
+pub async fn run_with_options(
+    resolved: &[ResolvedSecret],
+    backends: &BackendRegistry,
+    command: &[String],
+    options: &RunOptions,
+) -> Result<()> {
     if command.is_empty() {
         bail!("no command specified — 'secretenv run' needs a program to execute");
     }
 
-    let env = build_env(resolved, backends, dry_run, verbose).await?;
+    let env = build_env(resolved, backends, options.dry_run, options.verbose).await?;
 
-    if dry_run {
+    if options.dry_run {
         return Ok(());
     }
 
-    exec_with_env(command, &env)
+    // Decide redact dispatch.
+    let mode = effective_redact_mode(options.redact);
+    match mode {
+        RedactMode::ForceExec => exec_with_env(command, &env),
+        RedactMode::ForcePipe | RedactMode::Auto => {
+            // For Auto, we've already decided via effective_redact_mode
+            // whether to fall back to exec. Build the tainted set here.
+            let mut tainted = TaintedSet::new();
+            for entry in &env {
+                // Phase 9 Code-H4 fix: use the registry alias name
+                // (lowercase, e.g. `stripe_key`) for the
+                // substitution token when one is available, so mode
+                // A's `[redacted:<alias>]` matches mode B's. Falls
+                // back to the env-var name for manifest-default
+                // entries (which have no registry alias).
+                let alias_label = entry.alias_name.clone().unwrap_or_else(|| entry.key.clone());
+                tainted
+                    .insert(TaintedValue::from_alias(alias_label, entry.value.as_str_internal()));
+            }
+            let token = options
+                .redact_token
+                .as_ref()
+                .map_or(SubstitutionToken::AliasAware, |s| SubstitutionToken::Fixed(s.clone()));
+            run_with_pipe_redaction(command, &env, &tainted, token).await
+        }
+    }
+}
+
+/// Resolve the effective dispatch given the operator-chosen
+/// [`RedactMode`] and the current stdin TTY state.
+#[cfg(unix)]
+fn effective_redact_mode(requested: RedactMode) -> RedactMode {
+    use std::io::IsTerminal;
+    match requested {
+        RedactMode::ForceExec => RedactMode::ForceExec,
+        RedactMode::ForcePipe => RedactMode::ForcePipe,
+        RedactMode::Auto => {
+            if std::io::stdin().is_terminal() {
+                eprintln!(
+                    "secretenv: interactive TTY detected; runtime redaction disabled \
+                     for this invocation. Run with --redact to force pipe-based \
+                     redaction (may break PTY-bound prompts).",
+                );
+                RedactMode::ForceExec
+            } else {
+                RedactMode::ForcePipe
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+const fn effective_redact_mode(requested: RedactMode) -> RedactMode {
+    // No `exec()` semantics off Unix anyway; pipe-based is the only
+    // option. ForceExec falls back to spawn+wait inside
+    // exec_with_env.
+    match requested {
+        RedactMode::ForceExec => RedactMode::ForceExec,
+        _ => RedactMode::ForcePipe,
+    }
+}
+
+/// Spawn `command` with `env`, pipe stdout + stderr through a
+/// streaming redact scrubber, forward signals, and exit with the
+/// child's exit code.
+///
+/// # Errors
+/// Returns an error on spawn failure, redact-scrubber construction
+/// failure (oversize pattern), or any I/O failure during the
+/// streaming relay.
+async fn run_with_pipe_redaction(
+    command: &[String],
+    env: &[EnvEntry],
+    tainted: &TaintedSet,
+    token: SubstitutionToken,
+) -> Result<()> {
+    use std::process::Stdio;
+
+    use tokio::process::Command as TokioCommand;
+
+    // Build two independent streaming scrubbers — one per stream.
+    // Sharing one through a Mutex would serialize the relay and
+    // negate the parallel-pipe model.
+    let Some(scrubber_out) = StreamingScrubber::new(tainted, token.clone())? else {
+        // No redactable values (set was empty after the min-length
+        // filter). Fall back to the simple exec() path.
+        return exec_with_env(command, env);
+    };
+    let scrubber_err = StreamingScrubber::new(tainted, token)?
+        .ok_or_else(|| anyhow!("internal: streaming scrubber surprise-empty for stderr"))?;
+
+    let program = &command[0];
+    let args = &command[1..];
+    let mut cmd = TokioCommand::new(program);
+    cmd.args(args);
+    for reserved in RESERVED_ENV_VARS {
+        cmd.env_remove(reserved);
+    }
+    for entry in env {
+        cmd.env(&entry.key, entry.value.as_str_internal());
+    }
+    cmd.stdin(Stdio::inherit());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().with_context(|| format!("failed to spawn '{program}'"))?;
+    let child_id = child.id();
+
+    let child_stdout = child.stdout.take().ok_or_else(|| anyhow!("child has no stdout"))?;
+    let child_stderr = child.stderr.take().ok_or_else(|| anyhow!("child has no stderr"))?;
+
+    // Wire signal forwarding so SIGINT/SIGTERM to the parent
+    // propagate to the child. Without this, Ctrl-C in the parent
+    // terminal would leave the child orphaned.
+    #[cfg(unix)]
+    let signal_task = tokio::spawn(forward_signals_to(child_id));
+    #[cfg(not(unix))]
+    let signal_task: tokio::task::JoinHandle<()> = tokio::spawn(async {
+        let _ = child_id;
+    });
+
+    let stdout_task = tokio::spawn(relay_stream(scrubber_out, child_stdout, StreamKind::Stdout));
+    let stderr_task = tokio::spawn(relay_stream(scrubber_err, child_stderr, StreamKind::Stderr));
+
+    let exit_status = child.wait().await.context("waiting for child to exit")?;
+    // Per Phase 7 code-review H2: previously the relay tasks were
+    // `let _ = ... .await`-discarded, hiding mid-stream scrubber
+    // errors and parent-stdout write failures. Now we collect them
+    // and surface a single error if either relay reported one.
+    // A `BrokenPipe` on the parent side (`secretenv run ... | head`)
+    // is mapped to a clean exit inside `relay_stream`.
+    let stdout_res = stdout_task.await.context("redact stdout relay panicked")?;
+    let stderr_res = stderr_task.await.context("redact stderr relay panicked")?;
+    signal_task.abort();
+    stdout_res.context("redact stdout relay failed")?;
+    stderr_res.context("redact stderr relay failed")?;
+
+    let code = exit_status.code().unwrap_or(128);
+    std::process::exit(code);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StreamKind {
+    Stdout,
+    Stderr,
+}
+
+/// Relay a child stream through a streaming scrubber to the
+/// parent's matching stream. Chunks of 8 KiB; flush on EOF.
+async fn relay_stream<R>(
+    mut scrubber: StreamingScrubber,
+    mut reader: R,
+    kind: StreamKind,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = vec![0u8; 8 * 1024];
+    let mut out_buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    loop {
+        let n = reader.read(&mut buf).await.context("redact stream: reading from child pipe")?;
+        if n == 0 {
+            break;
+        }
+        out_buf.clear();
+        let _ = scrubber.push(&buf[..n], &mut out_buf)?;
+        if let Err(err) = write_kind(kind, &out_buf) {
+            if is_broken_pipe(&err) {
+                return Ok(()); // parent's stdout was closed early — clean exit.
+            }
+            return Err(err);
+        }
+    }
+    out_buf.clear();
+    let _ = scrubber.flush(&mut out_buf)?;
+    if !out_buf.is_empty() {
+        if let Err(err) = write_kind(kind, &out_buf) {
+            if is_broken_pipe(&err) {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Whether the error chain at `err` includes a `BrokenPipe` io error.
+/// Used to convert "parent closed stdout early" (legitimate, e.g.
+/// `secretenv run ... | head`) into a clean relay exit.
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
+fn write_kind(kind: StreamKind, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    match kind {
+        StreamKind::Stdout => {
+            let mut out = std::io::stdout().lock();
+            out.write_all(bytes).context("redact: writing to parent stdout")?;
+            out.flush().context("redact: flush parent stdout")?;
+        }
+        StreamKind::Stderr => {
+            let mut out = std::io::stderr().lock();
+            out.write_all(bytes).context("redact: writing to parent stderr")?;
+            out.flush().context("redact: flush parent stderr")?;
+        }
+    }
+    Ok(())
+}
+
+/// Forward SIGINT / SIGTERM / SIGHUP from the parent to the child
+/// process so Ctrl-C in the parent terminal cleanly tears down
+/// `secretenv run`'s subprocess instead of leaving it orphaned.
+///
+/// Uses rustix's `kill_process` for the actual signal delivery —
+/// avoids `unsafe extern "C" { fn kill }` and keeps the crate's
+/// `forbid(unsafe_code)` intact.
+#[cfg(unix)]
+async fn forward_signals_to(child_pid: Option<u32>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let Some(pid_raw) = child_pid else { return };
+    let Some(pid) = i32::try_from(pid_raw).ok().and_then(rustix::process::Pid::from_raw) else {
+        return;
+    };
+    let Ok(mut sigint) = signal(SignalKind::interrupt()) else { return };
+    let Ok(mut sigterm) = signal(SignalKind::terminate()) else { return };
+    let Ok(mut sighup) = signal(SignalKind::hangup()) else { return };
+
+    loop {
+        let sig = tokio::select! {
+            _ = sigint.recv() => rustix::process::Signal::INT,
+            _ = sigterm.recv() => rustix::process::Signal::TERM,
+            _ = sighup.recv() => rustix::process::Signal::HUP,
+        };
+        let _ = rustix::process::kill_process(pid, sig);
+    }
 }
 
 /// Fetch every secret and build the env map. Visible to tests and
@@ -147,7 +461,8 @@ pub async fn build_env(
                 }
                 slots[idx] = Some(EnvEntry {
                     key: secret.env_var.clone(),
-                    value: Zeroizing::new(value.clone()),
+                    alias_name: None, // manifest defaults have no registry alias
+                    value: Secret::new(value.clone()),
                 });
             }
             ResolvedSource::Uri { .. } => uri_indices.push(idx),
@@ -192,8 +507,8 @@ async fn fetch_one(
     dry_run: bool,
     verbose: bool,
 ) -> Result<Option<EnvEntry>> {
-    let target = match &secret.source {
-        ResolvedSource::Uri { target, .. } => target,
+    let (target, alias_name) = match &secret.source {
+        ResolvedSource::Uri { target, alias_name, .. } => (target, alias_name.clone()),
         ResolvedSource::Default(_) => {
             // Unreachable: `build_env` only calls `fetch_one` for
             // `Uri` entries. Kept as defensive no-op rather than a
@@ -229,7 +544,7 @@ async fn fetch_one(
         crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await.with_context(
             || format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw),
         )?;
-    Ok(Some(EnvEntry { key: secret.env_var.clone(), value: Zeroizing::new(value) }))
+    Ok(Some(EnvEntry { key: secret.env_var.clone(), alias_name: Some(alias_name), value }))
 }
 
 /// Combine N>1 fetch failures into a single anyhow error whose
@@ -267,7 +582,7 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
         cmd.env_remove(reserved);
     }
     for entry in env {
-        cmd.env(&entry.key, entry.value.as_str());
+        cmd.env(&entry.key, entry.value.as_str_internal());
     }
     // exec() replaces the current process on success and only returns
     // on failure — so the io::Error it produces is always a real one.
@@ -285,7 +600,7 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
         cmd.env_remove(reserved);
     }
     for entry in env {
-        cmd.env(&entry.key, entry.value.as_str());
+        cmd.env(&entry.key, entry.value.as_str_internal());
     }
     let status = cmd.status().with_context(|| format!("failed to spawn '{program}'"))?;
     std::process::exit(status.code().unwrap_or(1));
@@ -333,7 +648,7 @@ mod tests {
         async fn check_extensive(&self, _: &BackendUri) -> Result<usize> {
             Ok(0)
         }
-        async fn get(&self, uri: &BackendUri) -> Result<String> {
+        async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
             self.get_count.fetch_add(1, Ordering::SeqCst);
             if !self.delay.is_zero() {
                 tokio::time::sleep(self.delay).await;
@@ -344,6 +659,7 @@ mod tests {
             self.values
                 .get(&uri.path)
                 .cloned()
+                .map(Secret::new)
                 .ok_or_else(|| anyhow!("no canned value for path '{}'", uri.path))
         }
         async fn set(&self, _: &BackendUri, _: &str) -> Result<()> {
@@ -429,7 +745,11 @@ mod tests {
             env_var: env_var.to_owned(),
             // Tests don't exercise cascade-source surfacing; use the
             // target URI as the source placeholder.
-            source: ResolvedSource::Uri { target: parsed.clone(), source: parsed },
+            source: ResolvedSource::Uri {
+                target: parsed.clone(),
+                source: parsed,
+                alias_name: format!("test_{}", env_var.to_lowercase()),
+            },
         }
     }
 
@@ -665,15 +985,16 @@ mod tests {
         assert_eq!(keys, vec!["FIRST", "SECOND", "THIRD"]);
     }
 
-    // ---- Zeroizing smoke test ----
+    // ---- Secret<String> smoke test ----
 
     #[tokio::test]
     async fn env_entries_can_be_consumed_as_str() {
         let (backends, _) = set_up(&[("/k", "the-secret-value")], None);
         let resolved = vec![secret_alias("K", "fake:///k")];
         let env = build_env(&resolved, &backends, false, false).await.unwrap();
-        // Sanity: value() returns &str without touching Zeroizing's
-        // public API; the wrapper lives only inside the struct.
+        // Sanity: `value()` returns `&str` without exposing the inner
+        // `Secret<String>` newtype; consumers (the exec path) only
+        // ever borrow.
         let s: &str = env[0].value();
         assert_eq!(s, "the-secret-value");
     }

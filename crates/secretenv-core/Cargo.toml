@@ -12,21 +12,47 @@ keywords.workspace     = true
 categories.workspace   = true
 readme.workspace       = true
 
+[features]
+# When enabled, `Secret<T>::expose_secret` is removed from the public
+# API. Crates that link with this feature (the v0.16 MCP server crate)
+# cannot read secret values through any safe API by construction.
+# The CLI links without the feature and retains value access.
+mcp-safe = []
+
 [dependencies]
+aho-corasick.workspace = true
 anyhow.workspace      = true
 async-trait.workspace = true
 directories.workspace = true
 futures.workspace     = true
 indexmap.workspace    = true
 serde.workspace       = true
+serde_json.workspace  = true
+# `tempfile` is a runtime dep (used by `redact::scrub_file_in_place`'s
+# atomic-rename path), in addition to staying as a dev-dep.
+tempfile.workspace    = true
 thiserror.workspace   = true
 tokio.workspace       = true
 toml.workspace        = true
 tracing.workspace     = true
 zeroize.workspace     = true
 
+[target.'cfg(unix)'.dependencies]
+# `rustix` is the only legitimate Unix-only dep here — it provides
+# safe syscall wrappers for `geteuid()` + `openat(O_NOFOLLOW)` that
+# keep `forbid(unsafe_code)` intact for the entire crate. Per the
+# v0.14 Phase 9 audit Sec-H2: every other dep in this block was
+# previously also cfg(unix)-gated by accident, which would have
+# broken any future Windows build silently because tokio/zeroize/
+# serde would have been missing from the dep graph.
+rustix.workspace      = true
+
 [dev-dependencies]
 tempfile.workspace = true
+# `trybuild` is only used by the `mcp_safe_trybuild` integration test
+# which is `cfg(feature = "mcp-safe")`-gated. Listed as a dev-dep so it
+# never enters the default-feature binary closure.
+trybuild = "1"
 
 [lints]
 workspace = true

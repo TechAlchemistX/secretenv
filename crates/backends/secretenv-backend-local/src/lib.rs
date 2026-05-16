@@ -61,7 +61,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, Backend, BackendFactory, BackendStatus, BackendUri, HistoryEntry,
-    DEFAULT_GET_TIMEOUT,
+    Secret, DEFAULT_GET_TIMEOUT,
 };
 
 /// A live instance of the local filesystem backend.
@@ -101,9 +101,9 @@ impl Backend for LocalBackend {
 
     // `check_extensive` uses the `Backend` trait's default (list().len()).
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         let path = Self::file_path(uri);
-        tokio::fs::read_to_string(&path).await.with_context(|| {
+        tokio::fs::read_to_string(&path).await.map(Secret::new).with_context(|| {
             format!(
                 "local backend '{}': failed to read '{}' (uri='{}')",
                 self.instance_name,
@@ -186,12 +186,13 @@ impl Backend for LocalBackend {
 
     async fn list(&self, uri: &BackendUri) -> Result<Vec<(String, String)>> {
         let contents = self.get(uri).await?;
-        let parsed: HashMap<String, String> = toml::from_str(&contents).with_context(|| {
-            format!(
-                "local backend '{}': file at '{}' is not a flat TOML key→string map",
-                self.instance_name, uri.raw
-            )
-        })?;
+        let parsed: HashMap<String, String> = toml::from_str(contents.expose_secret())
+            .with_context(|| {
+                format!(
+                    "local backend '{}': file at '{}' is not a flat TOML key→string map",
+                    self.instance_name, uri.raw
+                )
+            })?;
         Ok(parsed.into_iter().collect())
     }
 
@@ -252,6 +253,24 @@ impl Backend for LocalBackend {
             )
         })?;
         Ok(parse_git_log(&stdout))
+    }
+
+    fn serialize_registry_doc(
+        &self,
+        map: &std::collections::BTreeMap<String, String>,
+    ) -> Result<String> {
+        toml::to_string(map).with_context(|| {
+            format!("local backend '{}': serializing registry doc as TOML", self.instance_name)
+        })
+    }
+
+    fn deserialize_registry_doc(
+        &self,
+        body: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>> {
+        toml::from_str(body).with_context(|| {
+            format!("local backend '{}': deserializing registry doc as TOML", self.instance_name)
+        })
     }
 }
 
@@ -368,7 +387,7 @@ mod tests {
 
         b.set(&uri, "DATABASE = \"secretenv://db\"\n").await.unwrap();
         let got = b.get(&uri).await.unwrap();
-        assert_eq!(got, "DATABASE = \"secretenv://db\"\n");
+        assert_eq!(got.expose_secret(), "DATABASE = \"secretenv://db\"\n");
     }
 
     #[tokio::test]

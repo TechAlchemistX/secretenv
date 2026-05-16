@@ -155,6 +155,59 @@ Per-backend specifics:
 
 ---
 
+## Redaction (v0.14+)
+
+`secretenv run` redacts resolved values from the child process's stdout and stderr **by default**. `secretenv redact <path>` scrubs an existing file post-hoc. Both modes share the same engine (Aho-Corasick byte scanner over the set of resolved values) and substitute matches with `[redacted:<alias>]` by default.
+
+### What redaction catches
+
+- Application code that prints a resolved env-var value to stdout/stderr (the `echo "key=$STRIPE_KEY"` pattern, the most common accidental-leak class).
+- Build / CI logs that capture command output and end up in shared artifact stores.
+- Post-hoc scrubbing of saved log files via `secretenv redact <file> --in-place`.
+
+### Limits — what redaction does NOT catch
+
+Redaction is **defense-in-depth**, not a complete protection. The following escape the pipe entirely or sit outside SecretEnv's view:
+
+- **Writes to `/dev/tty`** — bypasses the parent process's pipe entirely.
+- **`syslog(3)` / `journald` / kernel logging** — kernel writes never traverse the parent stdio pipes.
+- **`mmap`'d output** — file-backed shared memory; the parent never sees the bytes.
+- **Core dumps + post-mortem analysis** — the process memory at fault time contains the unwrapped values.
+- **Interactive TTY children** (default `Auto` mode falls back to `exec()` — see below — and forwards the original raw stdio without redaction, because a pipe would break the PTY contract).
+- **Children that re-fetch values via the cloud SDK directly** — bypasses SecretEnv entirely.
+- **Match-shorter-than-minimum values** — values < 8 bytes are skipped (the minimum-length filter exists because shorter substrings false-positive across normal English text, destroying log readability). 8-byte API keys are a vendor problem; rotate to a longer credential.
+
+The full bypass-coverage matrix lives in [[v0.14-plus/specialist-security]] §2.5 in the SecretEnv design knowledge base.
+
+### Modes
+
+**Mode A (runtime)** — `secretenv run <cmd>`:
+
+- Default `Auto`: pipe-based redaction when the parent's stdin is non-TTY (CI, scripts); auto fall-back to `exec()` when stdin is a TTY (preserves `psql`, `vim`, `ssh`). The fallback emits a one-line stderr advisory: `secretenv: interactive TTY detected; runtime redaction disabled for this invocation. Run with --redact to force pipe-based redaction (may break PTY-bound prompts).`
+- `--redact` — force pipe even on a TTY. PTY-bound commands may misbehave.
+- `--no-redact --i-know` — force `exec()` path, no redaction. `--i-know` is required to prevent CI accidents where a developer typos away the protection.
+
+**Mode B (post-hoc)** — `secretenv redact <path>`:
+
+- Default: writes scrubbed bytes to stdout.
+- `--in-place [--backup=<suffix>]`: atomic rename through a sibling tempfile; mode (`0o600` etc.) preserved.
+- `--dry-run`: counts matches without writing.
+
+Both modes share these safety guards (Mode B's `--in-place` and stdout paths, plus Mode A's child-spawn):
+
+- **`O_NOFOLLOW`** on `open(2)` — a symlink swap between the foreign-owner stat and the open is rejected.
+- **Foreign-owner refusal** — files owned by a UID other than the caller's EUID are refused unless `--allow-foreign-owner` opts in (defense against a maliciously-planted log file in a shared directory).
+- **Pseudo-filesystem refusal** — `/proc`, `/sys`, `/dev` are refused outright; "scrubbing" a kernel pseudofile is meaningless.
+- **64 KiB tail-window cap** (mode A only) — tainted values larger than the streaming carry-over window are refused at startup (a longer pattern cannot match mid-stream regardless of buffering).
+
+### Substitution token
+
+Default: `[redacted:<alias-name>]` — lowercase, alias-aware. The alias name is operator-chosen and treated as non-sensitive (the same name appears in your `secretenv.toml` and registry document); the substitution token gives operators a diagnostic breadcrumb in build logs without leaking the value.
+
+Override: `--redact-token '<fixed-string>'` — emits a constant substitution (e.g. `[REDACTED]` or `***`) regardless of which alias matched. Useful when alias names themselves are considered sensitive by policy.
+
+---
+
 ## Supply Chain
 
 secretenv distributed binaries are signed. Checksums are published with every release. The install script verifies checksums before executing.

@@ -45,7 +45,69 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features
+      # NOTE: `--all-features` is deliberately NOT used.
+      # `secretenv-core::mcp-safe` is a *subtractive* feature (it
+      # removes `expose_secret` from the public API); Cargo feature
+      # unification under `--all-features` would cascade `mcp-safe`
+      # across the workspace and break every backend that injects
+      # values. The `mcp-safe` trybuild harness has its own job below.
+      - run: cargo test --workspace
+
+  mcp-safe-trybuild:
+    name: mcp-safe trybuild (compile-fail harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p secretenv-core --features mcp-safe --test mcp_safe_trybuild
+
+  tracing-leak-guard:
+    name: SEC-INV-17 tracing-leak guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # ripgrep was preinstalled on the older ubuntu-latest image but
+      # was removed sometime before 2026-05; install it explicitly so
+      # the script's `command -v rg` guard stops bailing.
+      - name: install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
+      - name: SEC-INV-17 grep (tracing macro value leaks)
+        run: bash scripts/check_tracing_leaks.sh
+
+  secret-no-leak-grep:
+    name: Secret<T> no-leak grep gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: grep for forbidden Secret-leaking patterns
+        # Per Phase 7 security audit H2 — the previous `grep -E` with a
+        # literal `\n` was structurally broken (grep is line-oriented).
+        # Switched to `ripgrep --multiline` (preinstalled on ubuntu-latest
+        # runners) for true cross-line matching, and broadened coverage
+        # to include hand-written impls (Display / Serialize / Hash /
+        # PartialEq / Clone / From) and the `from_lossy`/`expose`-style
+        # workaround attempts.
+        run: |
+          set -euo pipefail
+          fail=0
+          # 1. Hand-written impls of forbidden traits for Secret<T>.
+          #    Matches both single-line and `impl<T>\n    Trait for Secret`
+          #    forms.
+          if rg --multiline --type=rust 'impl(?:\s*<[^>]+>)?\s+(?:std::fmt::|fmt::)?(?:Display|Serialize|Deserialize|Hash|PartialEq|Eq|Clone)\s+for\s+Secret\b' crates/; then
+            echo "FAIL: forbidden hand-written impl on Secret."; fail=1
+          fi
+          # 2. derive(...) on the Secret struct itself with any forbidden
+          #    trait. The `pub struct Secret<` line is on the next line;
+          #    `--multiline -U` lets the regex cross newlines.
+          if rg --multiline -U --type=rust '#\[derive\([^)]*\b(?:Clone|Serialize|Deserialize|Display|Hash|PartialEq|Eq)\b[^)]*\)\]\s*\n\s*pub\s+struct\s+Secret\b' crates/; then
+            echo "FAIL: forbidden derive on Secret."; fail=1
+          fi
+          # 3. From<Secret<...>> for String — the `Into<String>` escape.
+          if rg --multiline --type=rust 'impl(?:\s*<[^>]+>)?\s+From\s*<\s*Secret\s*<' crates/; then
+            echo "FAIL: From<Secret<...>> conversion would create an Into<String> escape."; fail=1
+          fi
+          exit $fail
 
   smoke-local:
     name: smoke harness (--local-only)

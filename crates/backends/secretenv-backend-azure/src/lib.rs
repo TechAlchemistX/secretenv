@@ -56,7 +56,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use secretenv_core::{
     optional_duration_secs, optional_string, required_string, Backend, BackendFactory,
-    BackendStatus, BackendUri, DEFAULT_GET_TIMEOUT,
+    BackendStatus, BackendUri, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -435,13 +435,13 @@ impl Backend for AzureBackend {
         }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         // Fragment + secret-name validation happen BEFORE any `az`
         // call (v0.2.6 pattern). Invalid URIs fail locally without
         // burning an Azure AD token, a network round-trip, or an
         // audit-log entry for a failed read.
         let version = self.resolve_version(uri)?;
-        self.get_raw(uri, version.as_deref()).await
+        self.get_raw(uri, version.as_deref()).await.map(Secret::new)
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -913,7 +913,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("azure-prod:///stripe-key").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_abc");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_abc");
     }
 
     #[tokio::test]
@@ -943,7 +943,7 @@ mod tests {
         let b = backend(&mock, None, None);
         let uri =
             BackendUri::parse(&format!("azure-prod:///stripe-key#version={VERSION_HEX}")).unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "older-value");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "older-value");
     }
 
     #[tokio::test]
@@ -957,7 +957,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("azure-prod:///stripe-key#version=latest").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "v");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "v");
     }
 
     #[tokio::test]
@@ -968,7 +968,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("azure-prod:///multi-line").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "line1\nline2");
     }
 
     #[tokio::test]
@@ -979,7 +979,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None, None);
         let uri = BackendUri::parse("azure-prod:///empty").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "");
     }
 
     #[tokio::test]

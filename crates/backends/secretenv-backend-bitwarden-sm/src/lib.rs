@@ -108,7 +108,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_bool, optional_duration_secs, optional_string, Backend, BackendFactory, BackendStatus,
-    BackendUri, DEFAULT_GET_TIMEOUT,
+    BackendUri, Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -514,18 +514,19 @@ impl Backend for BitwardenSmBackend {
         }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         let json_key = self.parse_json_key_fragment(uri)?;
         let raw = self.get_raw_value(uri).await?;
         match json_key {
-            None => Ok(raw),
+            None => Ok(Secret::new(raw)),
             Some(key) => extract_json_field(
                 &self.instance_name,
                 &uri.raw,
                 Self::raw_secret_id(uri),
                 &raw,
                 &key,
-            ),
+            )
+            .map(Secret::new),
         }
     }
 
@@ -1328,7 +1329,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock);
         let uri = BackendUri::parse(&format!("bws-dev://{TEST_UUID}")).unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_xyz");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_xyz");
     }
 
     #[tokio::test]
@@ -1343,7 +1344,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock);
         let uri = BackendUri::parse(&format!("bws-dev://{TEST_UUID}#json-key=password")).unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "pw");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "pw");
     }
 
     #[tokio::test]
@@ -1355,7 +1356,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock);
         let uri = BackendUri::parse(&format!("bws-dev://{TEST_UUID}")).unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "");
     }
 
     #[tokio::test]
@@ -1370,7 +1371,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock);
         let uri = BackendUri::parse(&format!("bws-dev://{TEST_UUID}")).unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "line1\nline2");
     }
 
     #[tokio::test]

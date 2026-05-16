@@ -269,7 +269,7 @@ secretenv registry set stripe-key "vault-prod://secret/payments/stripe_key"
 # No PRs. No re-encryption. No coordination.
 ```
 
-> **Coming in v0.14 — `secretenv registry migrate`.** Today's flow is two steps: move the value to the new backend with your existing tooling, then `registry set` to repoint the alias. The next release folds both into one operation — read from the current backend, write to the new one (where you have write permission), update the pointer atomically. Exact CLI shape is being figured out now; the indirection guarantee doesn't change — repos still inherit on next run.
+> **Coming in v0.15 — `secretenv registry migrate`.** Today's flow is two steps: move the value to the new backend with your existing tooling, then `registry set` to repoint the alias. A future release folds both into one operation — read from the current backend, write to the new one (where you have write permission), update the pointer atomically. The indirection guarantee doesn't change — repos still inherit on next run.
 
 
 ### Workflow 4 — Offboarding an engineer
@@ -473,7 +473,7 @@ In the v0.13 cycle, this harness caught a latent pipe-deadlock in the Infisical 
 | v0.12.0 | 2026-05-05 | 15 | 508 | +Bitwarden Secrets Manager |
 | v0.13.0 | 2026-05-07 | 15 | 508 | Hygiene cycle — caught the v0.7-era pipe-deadlock |
 
-Test surface grew with feature surface across ~3 weeks of single-backend-per-minor-release cadence. That's the boring-by-design property platform teams buy.
+Test surface grew with feature surface across ~3 weeks of single-backend-per-minor-release cadence.
 
 ---
 
@@ -651,6 +651,18 @@ The model is simple: SecretEnv has no credential storage, no login command, and 
 | Repo contains backend topology | **✓** no — aliases only | ✗ yes (paths) | ✗ yes (provider + path, encrypted) | ✗ yes (provider + path, ciphertext or reference) |
 
 The honest line: **encryption posture is comparable across SecretEnv and fnox-KMS-mode.** The differentiator is alias indirection — SecretEnv's registry decouples the alias from the backend URI so a migration is one `registry set` instead of editing every config. That property is orthogonal to encryption.
+
+### Redaction (v0.14)
+
+SecretEnv redacts resolved values from child-process stdout/stderr **by default**. `secretenv run` pipes the child's stdio through a streaming scrubber that substitutes resolved values with `[redacted:<alias>]`. For post-hoc cleanup of existing files, `secretenv redact <path>` performs the same substitution against a tainted set built from the active registry.
+
+- **Default on** for non-TTY parents (CI, pipelines, scripts). The default invocation requires no flag changes.
+- **Auto-fallback to `exec()`** for interactive TTY parents — preserves `psql`, `vim`, `ssh`, and any other PTY-bound child. One-line stderr advisory tells you when fallback fires.
+- **`--redact`** forces pipe-based redaction on a TTY (PTY-bound children may misbehave).
+- **`--no-redact --i-know`** opts out entirely. The two-flag dance prevents CI typos from accidentally printing values.
+- **`secretenv redact <path>`** scrubs an existing file post-hoc. `--in-place` rewrites atomically (sibling tempfile + `rename(2)`); `--backup .bak` keeps the original; `--dry-run` counts without writing.
+
+Defense-in-depth, not a complete protection. The full Limits matrix (writes to `/dev/tty`, `syslog`, `mmap`, core dumps, etc.) lives in [docs/security.md](docs/security.md#redaction-v014); the operator reference for both modes is at [docs/reference/redact.md](docs/reference/redact.md).
 
 ### Full threat model + responsible disclosure
 

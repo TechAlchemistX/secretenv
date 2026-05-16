@@ -114,7 +114,7 @@ STRIPE = { from = "secretenv://stripe-key" }
 
     secretenv_with_mock(fixture.path(), mock_dir.path())
         .args(["--config", fixture.path().join("config.toml").to_str().unwrap()])
-        .args(["run", "--", "sh", "-c", "echo $STRIPE"])
+        .args(["run", "--no-redact", "--i-know", "--", "sh", "-c", "echo $STRIPE"])
         .assert()
         .success()
         .stdout(predicate::str::contains("sk_live_abc"));
@@ -360,7 +360,7 @@ API_KEY = { from = "secretenv://api-key" }
 
     secretenv_with_mock(fixture.path(), mock_dir.path())
         .args(["--config", fixture.path().join("config.toml").to_str().unwrap()])
-        .args(["run", "--", "sh", "-c", "echo $API_KEY"])
+        .args(["run", "--no-redact", "--i-know", "--", "sh", "-c", "echo $API_KEY"])
         .assert()
         .success()
         .stdout(predicate::str::contains("op_api_token_xyz"));
@@ -442,7 +442,7 @@ STRIPE = { from = "secretenv://stripe_key" }
 
     secretenv_with_mock(fixture.path(), mock_dir.path())
         .args(["--config", fixture.path().join("config.toml").to_str().unwrap()])
-        .args(["run", "--", "sh", "-c", "echo $STRIPE"])
+        .args(["run", "--no-redact", "--i-know", "--", "sh", "-c", "echo $STRIPE"])
         .assert()
         .success()
         .stdout(predicate::str::contains("sk_live_strict_abc"));
@@ -513,7 +513,7 @@ STRIPE = { from = "secretenv://stripe_key" }
     // author can diagnose the drift.
     secretenv_with_mock(fixture.path(), mock_dir.path())
         .args(["--config", fixture.path().join("config.toml").to_str().unwrap()])
-        .args(["run", "--", "sh", "-c", "echo $STRIPE"])
+        .args(["run", "--no-redact", "--i-know", "--", "sh", "-c", "echo $STRIPE"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("strict-mock-no-match"))

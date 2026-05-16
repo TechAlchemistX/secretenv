@@ -799,16 +799,40 @@ fn setup_rejects_unknown_scheme() {
 #[test]
 fn run_execs_with_secrets_injected_as_env_vars() {
     let (dir, config) = full_fixture();
-    // Use `sh -c` to check both env vars are present. `printenv X && printenv Y`
-    // succeeds only when both are set.
+    // v0.14 default: stdout/stderr go through the pipe-based redact
+    // scrubber (parent stdin is non-TTY under cargo test). The
+    // resolved value is replaced with the alias token; LOG_LEVEL is
+    // a manifest default (not in the tainted set) and passes
+    // through verbatim.
     secretenv()
         .current_dir(dir.path())
         .args(["--config", &config])
         .args(["run", "--", "sh", "-c", "echo STRIPE=$STRIPE; echo LOG_LEVEL=$LOG_LEVEL"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("STRIPE=super-secret-value"))
-        .stdout(predicate::str::contains("LOG_LEVEL=debug"));
+        // Phase 9 Code-H4: mode-A substitution uses the REGISTRY
+        // alias (`stripe-key` per the fixture), not the manifest
+        // env-var name. Aligns with mode B for consistency.
+        .stdout(predicate::str::contains("STRIPE=[redacted:stripe-key]"))
+        .stdout(predicate::str::contains("LOG_LEVEL=debug"))
+        // Hard invariant: the raw value must NEVER appear in
+        // stdout under the v0.14 default.
+        .stdout(predicate::str::contains("super-secret-value").not());
+}
+
+#[test]
+fn run_with_no_redact_i_know_passes_value_through() {
+    let (dir, config) = full_fixture();
+    // Opt-out path. `--no-redact` requires `--i-know` (clap-enforced),
+    // and falls back to the pre-v0.14 `exec()` codepath; the raw
+    // value appears in stdout.
+    secretenv()
+        .current_dir(dir.path())
+        .args(["--config", &config])
+        .args(["run", "--no-redact", "--i-know", "--", "sh", "-c", "echo STRIPE=$STRIPE"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRIPE=super-secret-value"));
 }
 
 // ---- completions (Phase 7) ----------------------------------------------

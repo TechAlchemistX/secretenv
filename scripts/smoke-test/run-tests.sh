@@ -103,6 +103,17 @@ SECTIONS=(
     # the US Bitwarden cloud; EU / self-hosted set
     # SECRETENV_TEST_BWS_SERVER_URL.
     "28|v0.12 Bitwarden Secrets Manager backend|yes"
+    # Section 29-31 — v0.14 redaction (mode A runtime + mode B post-hoc
+    # + mode B safety guards). cloud=yes because the tainted set is
+    # resolved from the live `default` registry, which depends on every
+    # backend instance being authenticated (same precondition as
+    # sections 6/7). Mode A forces pipe-based redaction via `--redact`
+    # so the assertions are deterministic regardless of whether the
+    # smoke pane's stdin happens to be a TTY (the Auto path's `exec()`
+    # fallback is explicitly SKIP-tagged inside section 29).
+    "29|v0.14 Mode A — runtime stdout/stderr redaction|yes"
+    "30|v0.14 Mode B — post-hoc file scrubber|yes"
+    "31|v0.14 Mode B — safety guards (special-path, foreign-owner, O_NOFOLLOW)|yes"
 )
 
 print_section_inventory() {
@@ -2790,6 +2801,278 @@ EOF
     assert_contains "448 bws non-UUID error names Bitwarden UUID constraint" \
       "$RUNS/447-v012-bws-baduri.log" 'Bitwarden UUID'
 fi
+
+# ---------------------------------------------------------------
+# 29. v0.14 Mode A — runtime stdout/stderr redaction
+# ---------------------------------------------------------------
+#
+# Verifies the `secretenv run` pipe-based scrubber. Forces pipe mode
+# via `--redact` so the assertions don't depend on whether the smoke
+# pane's stdin is a TTY (the Auto path's TTY-fallback-to-exec is
+# documented behavior and SKIP-tagged here — needs a controlled TTY
+# fixture which is out of scope for shell-driven smoke).
+# ---------------------------------------------------------------
+section_begin 29 "v0.14 Mode A — runtime stdout/stderr redaction"
+
+# 29a — Default alias-aware substitution: each of 7 tainted values
+# replaced with `[redacted:<NAME>]` (the manifest env-var name). The
+# pattern `redacted:stripe_key` is bracket-free so it side-steps
+# grep BRE character-class metacharacters; the brackets are
+# implicitly tested by the surrounding LOG_LEVEL=info assertion.
+run_test "500 v0.14 mode-A redact (default substitution)" 0 "$RUNS/500-v014-redact-modeA.log" \
+  "$BIN" --config "$CFG" run --registry default --redact -- \
+  sh -c 'echo S=$STRIPE_KEY D=$DB_URL A=$API_KEY O=$OP_PAT V=$OAUTH_TOKEN G=$GCP_SECRET Z=$AZURE_SECRET L=$LOG_LEVEL'
+
+assert_contains "501 mode-A STRIPE_KEY substituted"   "$RUNS/500-v014-redact-modeA.log" 'redacted:stripe_key'
+assert_contains "502 mode-A DB_URL substituted"       "$RUNS/500-v014-redact-modeA.log" 'redacted:db_url'
+assert_contains "503 mode-A API_KEY substituted"      "$RUNS/500-v014-redact-modeA.log" 'redacted:api_key'
+assert_contains "504 mode-A OP_PAT substituted"       "$RUNS/500-v014-redact-modeA.log" 'redacted:op_pat'
+assert_contains "505 mode-A OAUTH_TOKEN substituted"  "$RUNS/500-v014-redact-modeA.log" 'redacted:oauth_token'
+assert_contains "506 mode-A GCP_SECRET substituted"   "$RUNS/500-v014-redact-modeA.log" 'redacted:gcp_secret'
+assert_contains "507 mode-A AZURE_SECRET substituted" "$RUNS/500-v014-redact-modeA.log" 'redacted:azure_secret'
+
+# Negative half: raw values must NOT appear in redacted stdout.
+assert_not_contains "508 mode-A no raw STRIPE_KEY value"  "$RUNS/500-v014-redact-modeA.log" 'sk_test_LOCAL_11111'
+assert_not_contains "509 mode-A no raw API_KEY value"     "$RUNS/500-v014-redact-modeA.log" 'sk_test_secrets_22222'
+assert_not_contains "510 mode-A no raw OP_PAT value"      "$RUNS/500-v014-redact-modeA.log" 'pat_op_33333'
+assert_not_contains "511 mode-A no raw OAUTH_TOKEN value" "$RUNS/500-v014-redact-modeA.log" 'oat_vault_44444'
+assert_not_contains "512 mode-A no raw GCP value"         "$RUNS/500-v014-redact-modeA.log" 'gsk_gcp_55555'
+assert_not_contains "513 mode-A no raw AZURE value"       "$RUNS/500-v014-redact-modeA.log" 'sk_az_66666'
+
+# LOG_LEVEL is a manifest default (non-secret) and passes through.
+assert_contains "514 mode-A LOG_LEVEL default passes through" "$RUNS/500-v014-redact-modeA.log" 'L=info'
+
+# 29b — --no-redact --i-know opt-out: raw value passes through, no
+# substitution. Locks SEC-INV-07's CI/non-TTY branch (the TTY branch
+# adds an interactive "type yes" prompt on top of the flag; that's
+# a separate test fixture).
+run_test "515 v0.14 mode-A --no-redact --i-know opt-out" 0 "$RUNS/515-v014-no-redact.log" \
+  "$BIN" --config "$CFG" run --registry default --no-redact --i-know -- \
+  sh -c 'echo STRIPE=$STRIPE_KEY'
+
+assert_contains "516 --no-redact raw STRIPE_KEY present" "$RUNS/515-v014-no-redact.log" 'STRIPE=sk_test_LOCAL_11111'
+assert_not_contains "517 --no-redact substitution absent" "$RUNS/515-v014-no-redact.log" 'redacted:stripe_key'
+
+# 29c — --redact-token override. Uses 'XXX' to side-step the `*`-as-
+# regex-quantifier in BRE; assertion intent is "the substituted form
+# is a fixed string, not the alias-aware form, and the raw value is
+# gone."
+run_test "518 v0.14 mode-A --redact-token override" 0 "$RUNS/518-v014-redact-token.log" \
+  "$BIN" --config "$CFG" run --registry default --redact --redact-token 'XXX' -- \
+  sh -c 'echo STRIPE=$STRIPE_KEY'
+
+assert_contains "519 --redact-token produces fixed XXX"   "$RUNS/518-v014-redact-token.log" 'STRIPE=XXX'
+assert_not_contains "520 --redact-token no alias-aware form" "$RUNS/518-v014-redact-token.log" 'redacted:stripe_key'
+assert_not_contains "521 --redact-token no raw value"        "$RUNS/518-v014-redact-token.log" 'sk_test_LOCAL_11111'
+
+# 29d — stderr coverage: child writes to fd 2; the redact engine runs
+# on stderr the same as stdout (both pipes are wired through
+# `relay_stream`).
+run_test "522 v0.14 mode-A stderr redaction" 0 "$RUNS/522-v014-redact-stderr.log" \
+  "$BIN" --config "$CFG" run --registry default --redact -- \
+  sh -c 'echo STRIPE=$STRIPE_KEY >&2'
+
+assert_contains "523 mode-A stderr substituted"        "$RUNS/522-v014-redact-stderr.log" 'STRIPE=\[redacted:stripe_key\]'
+assert_not_contains "524 mode-A stderr no raw value"   "$RUNS/522-v014-redact-stderr.log" 'sk_test_LOCAL_11111'
+
+# 29e — clap rejects --no-redact without --i-know. Exit code 2 is
+# clap's argument-validation conventional exit.
+run_test "525 v0.14 --no-redact requires --i-know (clap)" 2 "$RUNS/525-v014-noredact-no-iknow.log" \
+  "$BIN" --config "$CFG" run --registry default --no-redact -- true
+assert_contains "526 clap names --i-know requirement" "$RUNS/525-v014-noredact-no-iknow.log" 'i-know'
+
+# 29f — TTY-only paths. The Auto-fallback to exec() (R-A3) and the
+# `--redact` force-pipe-on-TTY combo (R-A4) require a controlled TTY
+# fixture (a pty pair). Out of scope for shell-driven smoke; unit
+# tests in `crates/secretenv-cli/tests/cli.rs` cover the non-TTY
+# branches, and the runner's `effective_redact_mode` is unit-tested
+# in core.
+record "527 v0.14 mode-A Auto fallback to exec() on TTY"  "SKIP" \
+       "needs controlled pty fixture — out of scope for shell smoke; unit-tested in core::runner"
+record "528 v0.14 mode-A --redact force pipe on TTY"      "SKIP" \
+       "needs controlled pty fixture — out of scope for shell smoke; documented in docs/reference/redact.md"
+
+# ---------------------------------------------------------------
+# 30. v0.14 Mode B — post-hoc file scrubber (`secretenv redact <path>`)
+# ---------------------------------------------------------------
+section_begin 30 "v0.14 Mode B — post-hoc file scrubber"
+
+# Synthetic build-log fixture carrying all 7 tainted values resolved
+# by the default registry. Reused across this section.
+#
+# The fixture values MUST be the full resolved strings (not the
+# truncated prefixes the older `assert_contains` smoke tests use)
+# because the redact Aho-Corasick scanner matches the exact byte
+# sequence. Specifically:
+#   stripe_key = sk_test_LOCAL_11111_this_is_a_validation_secret (47 B)
+#   db_url     = postgres://aws-ssm-db.example.com:5432/validation (48 B)
+# The other 5 values fit in their pre-existing short forms.
+V014_LOG="$RUNS/600-v014-modeB-input.log"
+cat > "$V014_LOG" <<EOF
+[2026-05-15 21:00:00] starting build
+connecting with sk_test_LOCAL_11111_this_is_a_validation_secret ...
+db=postgres://aws-ssm-db.example.com:5432/validation ready
+api=sk_test_secrets_22222 (response 12ms)
+op pat=pat_op_33333 acquired
+oauth=oat_vault_44444 expires=1h
+gcp=gsk_gcp_55555
+azure=sk_az_66666
+build complete; LOG_LEVEL=info
+EOF
+
+# 30a — --dry-run reports match-count + byte-count to stderr; the
+# file content is NOT modified.
+V014_DRY_TARGET="$RUNS/600-v014-dry-target.log"
+cp "$V014_LOG" "$V014_DRY_TARGET"
+run_test "600 v0.14 mode-B --dry-run reports counts" 0 "$RUNS/600-v014-modeB-dry.log" \
+  "$BIN" --config "$CFG" redact "$V014_DRY_TARGET" --registry default --dry-run
+
+assert_contains "601 mode-B dry-run names match-count"  "$RUNS/600-v014-modeB-dry.log" 'match(es)'
+assert_contains "602 mode-B dry-run names byte-count"   "$RUNS/600-v014-modeB-dry.log" 'byte(s)'
+# Dry-run must NOT mutate the source file — raw STRIPE_KEY still present.
+assert_contains "603 mode-B dry-run leaves source file unmodified" "$V014_DRY_TARGET" 'sk_test_LOCAL_11111'
+
+# 30b — Default stdout mode: scrub flows to stdout with alias-aware
+# substitutions, raw values absent.
+#
+# NOTE on casing: Mode B's substitution token uses the REGISTRY ALIAS
+# name (lowercase, e.g. `stripe_key`), while Mode A uses the manifest
+# env-var name (uppercase, e.g. `STRIPE_KEY`). The inconsistency is a
+# real product gap noted for the v0.14.x hygiene cycle — the
+# `TaintedValue::alias_name` carries whatever the call site passes,
+# and the two call sites pass different things. For v0.14 smoke, we
+# assert what the engine actually emits so we don't drift further.
+run_test "604 v0.14 mode-B stdout default" 0 "$RUNS/604-v014-modeB-stdout.log" \
+  "$BIN" --config "$CFG" redact "$V014_LOG" --registry default
+
+assert_contains "605 mode-B stdout stripe_key"   "$RUNS/604-v014-modeB-stdout.log" 'redacted:stripe_key'
+assert_contains "606 mode-B stdout db_url"       "$RUNS/604-v014-modeB-stdout.log" 'redacted:db_url'
+assert_contains "607 mode-B stdout api_key"      "$RUNS/604-v014-modeB-stdout.log" 'redacted:api_key'
+assert_contains "608 mode-B stdout op_pat"       "$RUNS/604-v014-modeB-stdout.log" 'redacted:op_pat'
+assert_contains "609 mode-B stdout oauth_token"  "$RUNS/604-v014-modeB-stdout.log" 'redacted:oauth_token'
+assert_contains "610 mode-B stdout gcp_secret"   "$RUNS/604-v014-modeB-stdout.log" 'redacted:gcp_secret'
+assert_contains "611 mode-B stdout azure_secret" "$RUNS/604-v014-modeB-stdout.log" 'redacted:azure_secret'
+assert_not_contains "612 mode-B stdout no raw STRIPE_KEY full value"  "$RUNS/604-v014-modeB-stdout.log" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
+assert_not_contains "613 mode-B stdout no raw API_KEY value"          "$RUNS/604-v014-modeB-stdout.log" 'sk_test_secrets_22222'
+assert_contains "614 mode-B preserves non-secret content" "$RUNS/604-v014-modeB-stdout.log" 'LOG_LEVEL=info'
+
+# 30c — --in-place + --backup: atomic rename via sibling tempfile;
+# backup file carries the original (unredacted) content with the
+# source's mode bits.
+#
+# Pre-clean the .bak destination — the Phase 7 Sec-H3 hardening
+# refuses to overwrite a pre-existing file at the backup path
+# (O_EXCL | O_NOFOLLOW; defense against attacker pre-planting a
+# symlink there). The smoke harness re-runs in the same $RUNS dir
+# and would otherwise hit our own guard on the second run.
+V014_INPLACE="$RUNS/615-v014-inplace.log"
+rm -f "$V014_INPLACE.bak"
+cp "$V014_LOG" "$V014_INPLACE"
+run_test "615 v0.14 mode-B --in-place --backup=.bak" 0 "$RUNS/615-v014-modeB-inplace-run.log" \
+  "$BIN" --config "$CFG" redact "$V014_INPLACE" --registry default --in-place --backup=.bak
+
+assert_contains "616 mode-B in-place file rewritten"        "$V014_INPLACE" 'redacted:stripe_key'
+assert_not_contains "617 mode-B in-place no raw STRIPE_KEY value" "$V014_INPLACE" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
+if [ -f "$V014_INPLACE.bak" ]; then
+    record "618 mode-B backup file present" PASS "path=$(basename "$V014_INPLACE").bak"
+else
+    record "618 mode-B backup file present" FAIL "missing $V014_INPLACE.bak"
+fi
+assert_contains "619 mode-B backup preserves raw original" "$V014_INPLACE.bak" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
+assert_not_contains "620 mode-B backup is NOT redacted"    "$V014_INPLACE.bak" 'redacted:stripe_key'
+
+# 30d — Mode preservation across the atomic rename. Sets mode 0640
+# on the input, redacts in-place, asserts the persisted file still
+# carries 0640.
+V014_MODE_TEST="$RUNS/621-v014-mode-test.log"
+cp "$V014_LOG" "$V014_MODE_TEST"
+chmod 640 "$V014_MODE_TEST" 2>/dev/null
+"$BIN" --config "$CFG" redact "$V014_MODE_TEST" --registry default --in-place >/dev/null 2>&1
+V014_MODE_AFTER=$(stat -f '%Lp' "$V014_MODE_TEST" 2>/dev/null || stat -c '%a' "$V014_MODE_TEST" 2>/dev/null)
+if [ "$V014_MODE_AFTER" = "640" ]; then
+    record "621 mode-B preserves file mode 0640" PASS "mode=$V014_MODE_AFTER"
+else
+    record "621 mode-B preserves file mode 0640" FAIL "mode=$V014_MODE_AFTER (expected 640)"
+fi
+
+# 30e — --alias filter restricts the tainted set to a single alias;
+# other aliases pass through unredacted.
+run_test "622 v0.14 mode-B --alias filter" 0 "$RUNS/622-v014-modeB-alias.log" \
+  "$BIN" --config "$CFG" redact "$V014_LOG" --registry default --alias stripe_key
+
+assert_contains "623 mode-B --alias stripe_key redacts STRIPE_KEY"      "$RUNS/622-v014-modeB-alias.log" 'redacted:stripe_key'
+assert_not_contains "624 mode-B --alias filter leaves OAUTH_TOKEN raw"  "$RUNS/622-v014-modeB-alias.log" 'redacted:oauth_token'
+assert_contains "625 mode-B --alias filter passes other raw values"     "$RUNS/622-v014-modeB-alias.log" 'oat_vault_44444'
+
+# 30f — --redact-token override on mode B.
+run_test "626 v0.14 mode-B --redact-token override" 0 "$RUNS/626-v014-modeB-token.log" \
+  "$BIN" --config "$CFG" redact "$V014_LOG" --registry default --redact-token 'XXX'
+
+assert_contains "627 mode-B --redact-token produces fixed XXX"  "$RUNS/626-v014-modeB-token.log" 'XXX'
+assert_not_contains "628 mode-B --redact-token no alias-aware"   "$RUNS/626-v014-modeB-token.log" 'redacted:'
+assert_not_contains "629 mode-B --redact-token no raw value"     "$RUNS/626-v014-modeB-token.log" 'sk_test_LOCAL_11111_this_is_a_validation_secret'
+
+# ---------------------------------------------------------------
+# 31. v0.14 Mode B — safety guards
+# ---------------------------------------------------------------
+section_begin 31 "v0.14 Mode B — safety guards (special-path, foreign-owner, O_NOFOLLOW)"
+
+# 31a — /proc, /sys, /dev refusal. The early-refusal happens before
+# any open syscall on Linux; on macOS /proc doesn't exist as a
+# mountpoint so we use /dev as the universally-present pseudo-fs.
+run_test "700 v0.14 mode-B refuses /proc" 1 "$RUNS/700-v014-refuse-proc.log" \
+  "$BIN" --config "$CFG" redact /proc/self/cmdline --registry default --dry-run
+assert_contains "701 /proc refusal names kernel pseudo-fs" "$RUNS/700-v014-refuse-proc.log" 'kernel pseudo'
+
+run_test "702 v0.14 mode-B refuses /sys" 1 "$RUNS/702-v014-refuse-sys.log" \
+  "$BIN" --config "$CFG" redact /sys/kernel/hostname --registry default --dry-run
+assert_contains "703 /sys refusal names kernel pseudo-fs" "$RUNS/702-v014-refuse-sys.log" 'kernel pseudo'
+
+run_test "704 v0.14 mode-B refuses /dev" 1 "$RUNS/704-v014-refuse-dev.log" \
+  "$BIN" --config "$CFG" redact /dev/null --registry default --dry-run
+assert_contains "705 /dev refusal names kernel pseudo-fs" "$RUNS/704-v014-refuse-dev.log" 'kernel pseudo'
+
+# 31b — Foreign-owner refusal. /etc/hosts is root-owned on every
+# Unix and world-readable, so it's the canonical foreign-owner fixture.
+# Refusal fires before any read; --allow-foreign-owner opts back in.
+run_test "706 v0.14 mode-B refuses foreign-owned file" 1 "$RUNS/706-v014-refuse-foreign.log" \
+  "$BIN" --config "$CFG" redact /etc/hosts --registry default --dry-run
+assert_contains "707 foreign-owner refusal names UID mismatch" "$RUNS/706-v014-refuse-foreign.log" 'owned by UID'
+assert_contains "708 foreign-owner refusal suggests --allow-foreign-owner" "$RUNS/706-v014-refuse-foreign.log" 'allow-foreign-owner'
+
+# 31c — --allow-foreign-owner override succeeds on the same file
+# (dry-run, no mutation). The tainted set may or may not match
+# anything inside /etc/hosts; either way the exit must be 0.
+run_test "709 v0.14 mode-B --allow-foreign-owner override" 0 "$RUNS/709-v014-allow-foreign.log" \
+  "$BIN" --config "$CFG" redact /etc/hosts --registry default --dry-run --allow-foreign-owner
+assert_contains "710 --allow-foreign-owner dry-run reports counts" "$RUNS/709-v014-allow-foreign.log" 'match(es)'
+
+# 31d — O_NOFOLLOW symlink refusal. Set up a symlink → regular file,
+# point redact at the symlink. The open with O_NOFOLLOW fires ELOOP /
+# FILESYSTEM_LOOP / "symbolic link" depending on platform.
+V014_SYMLINK_TARGET="$RUNS/711-v014-symlink-target.log"
+V014_SYMLINK_LINK="$RUNS/711-v014-symlink-link.log"
+cp "$V014_LOG" "$V014_SYMLINK_TARGET"
+ln -sf "$V014_SYMLINK_TARGET" "$V014_SYMLINK_LINK"
+run_test "711 v0.14 mode-B refuses symlink (O_NOFOLLOW)" 1 "$RUNS/711-v014-refuse-symlink.log" \
+  "$BIN" --config "$CFG" redact "$V014_SYMLINK_LINK" --registry default --dry-run
+# Error wording is platform-specific. Accept any of "symbolic", "loop",
+# "NOFOLLOW", or "Too many" as evidence the open refused.
+if grep -qE "symbolic|symlink|loop|NOFOLLOW|Too many" "$RUNS/711-v014-refuse-symlink.log" 2>/dev/null; then
+    record "712 symlink refusal error names O_NOFOLLOW path" PASS "found platform-appropriate symlink error"
+else
+    record "712 symlink refusal error names O_NOFOLLOW path" FAIL "no symlink-class error in 711-v014-refuse-symlink.log"
+fi
+
+# 31e — clap conflict: --in-place + --dry-run.
+run_test "713 v0.14 mode-B --in-place + --dry-run conflict" 2 "$RUNS/713-v014-inplace-dry-conflict.log" \
+  "$BIN" --config "$CFG" redact "$V014_LOG" --registry default --in-place --dry-run
+assert_contains "714 clap names the conflict" "$RUNS/713-v014-inplace-dry-conflict.log" 'conflict'
+
+# 31f — clap dependency: --backup requires --in-place.
+run_test "715 v0.14 mode-B --backup without --in-place rejected" 2 "$RUNS/715-v014-backup-without-inplace.log" \
+  "$BIN" --config "$CFG" redact "$V014_LOG" --registry default --backup .bak
+assert_contains "716 clap names the dependency" "$RUNS/715-v014-backup-without-inplace.log" 'in-place'
 
 # ---------------------------------------------------------------
 # Summary

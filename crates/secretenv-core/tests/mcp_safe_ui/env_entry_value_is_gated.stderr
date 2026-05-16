@@ -1,0 +1,5 @@
+error[E0599]: no method named `value` found for reference `&EnvEntry` in the current scope
+  --> tests/mcp_safe_ui/env_entry_value_is_gated.rs:13:7
+   |
+13 |     e.value()
+   |       ^^^^^ private field, not a method

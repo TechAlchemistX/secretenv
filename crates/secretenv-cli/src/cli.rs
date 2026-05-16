@@ -16,8 +16,8 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use secretenv_core::{
-    resolve_manifest, resolve_registry, run as runner_run, Backend, BackendRegistry, BackendUri,
-    Config, HistoryEntry, Manifest, RegistryCache, RegistrySelection,
+    resolve_manifest, resolve_registry, Backend, BackendRegistry, BackendUri, Config, HistoryEntry,
+    Manifest, RegistryCache, RegistrySelection,
 };
 
 /// Command-line arguments for `secretenv`.
@@ -61,6 +61,56 @@ pub enum Command {
     Setup(SetupArgs),
     /// Generate shell completion scripts.
     Completions(CompletionsArgs),
+    /// Post-hoc redaction: scrub secret values out of an existing
+    /// file or stream. Reads every alias's resolved value into the
+    /// tainted set and rewrites the file with `[redacted:<alias>]`
+    /// substitutions (or `--redact-token <fixed>`).
+    Redact(RedactArgs),
+}
+
+/// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
+#[derive(Debug, Args)]
+pub struct RedactArgs {
+    /// Path to the file to scrub. Stdin (`-`) is reserved for a
+    /// future cycle; v0.14 requires a regular-file path.
+    pub path: String,
+    /// Registry selection — name or direct URI. Same semantics as
+    /// `secretenv run --registry`. Determines which aliases'
+    /// resolved values populate the tainted set.
+    #[arg(long)]
+    pub registry: Option<String>,
+    /// Restrict the tainted set to these alias names. Repeatable;
+    /// comma-separated values also accepted. Default: every alias
+    /// resolvable from the active manifest + registry cascade.
+    #[arg(long, value_delimiter = ',')]
+    pub alias: Vec<String>,
+    /// Rewrite the file in place (atomic rename). Without this flag,
+    /// the scrubbed output is written to stdout and the original
+    /// file is untouched.
+    #[arg(long, conflicts_with = "dry_run")]
+    pub in_place: bool,
+    /// When `--in-place` is set, also keep a backup of the original
+    /// content at `<path><suffix>` (e.g. `--backup=.bak`).
+    #[arg(long, requires = "in_place")]
+    pub backup: Option<String>,
+    /// Count matches without writing any output. Implies neither
+    /// `--in-place` nor stdout emission.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Bypass the foreign-owner refusal that fires when the target
+    /// file's UID differs from the caller's effective UID. By
+    /// default, mode B refuses such files (defense against a
+    /// maliciously-planted log file in a shared directory). Pass
+    /// this flag only when scrubbing a file you intend to read but
+    /// do not own — e.g. a root-owned `/var/log/*` log as a
+    /// non-root user with read-only intent.
+    #[arg(long)]
+    pub allow_foreign_owner: bool,
+    /// Override the substitution token. Default is
+    /// `[redacted:<alias-name>]`; pass e.g. `--redact-token '***'`
+    /// for the paranoid fixed-string form.
+    #[arg(long)]
+    pub redact_token: Option<String>,
 }
 
 /// `secretenv profile <subcommand>` — distribution-profile operations.
@@ -95,6 +145,13 @@ pub enum ProfileCommand {
 }
 
 /// `secretenv run [...] -- <command>`
+///
+/// `clippy::struct_excessive_bools`: this is a clap-derived
+/// arg struct; refactoring booleans into a state-enum loses the
+/// flag/argument-name automation. The mutex constraints between
+/// `--redact` / `--no-redact` / `--i-know` are enforced by clap's
+/// `conflicts_with` + `requires` attrs above.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Registry selection — name (from `[registries.<name>]`) or a
@@ -110,6 +167,34 @@ pub struct RunArgs {
     /// Emit fetch progress to stderr.
     #[arg(long)]
     pub verbose: bool,
+
+    /// Force pipe-based stdout/stderr redaction even when stdin is
+    /// a TTY. PTY-bound programs (`psql`, `vim`, `ssh`) may
+    /// misbehave under pipe-based stdio; use only when you've
+    /// confirmed your child works without a controlling terminal.
+    #[arg(long, conflicts_with = "no_redact")]
+    pub redact: bool,
+
+    /// Disable runtime stdout/stderr redaction. Falls back to the
+    /// pre-v0.14 `exec()` path. Requires `--i-know` on non-TTY
+    /// parents so CI logs don't accidentally print secret values
+    /// when a developer typos away the default protection.
+    #[arg(long, conflicts_with = "redact", requires = "i_know")]
+    pub no_redact: bool,
+
+    /// Acknowledge the audit consequences of `--no-redact` on a
+    /// non-TTY parent. Required by `--no-redact` per the v0.14
+    /// security invariants (SEC-INV-07). On a TTY parent, an
+    /// additional interactive "type yes" prompt fires regardless of
+    /// this flag.
+    #[arg(long)]
+    pub i_know: bool,
+
+    /// Override the substitution token. Default is
+    /// `[redacted:<alias-name>]`. Same syntax as `redact
+    /// --redact-token`.
+    #[arg(long)]
+    pub redact_token: Option<String>,
 
     /// Program + arguments to execute. Use `--` to separate
     /// secretenv flags from the command.
@@ -305,11 +390,28 @@ impl Cli {
     /// # Errors
     /// Forwarded from the individual subcommand handlers.
     pub async fn run(&self, config: &Config, backends: &BackendRegistry) -> Result<()> {
+        // Each branch awaits a handler that returns a typed report
+        // (per Phase 6 of [[build-plan-v0.14-redact]]). v0.14 discards
+        // the reports via `let _ = ...`; v0.17 wires the OTel span
+        // emission to the report's `Drop` (see [[v0.14-plus-synthesis]]
+        // §6) and the discard remains a no-op.
         match &self.command {
-            Command::Run(args) => cmd_run(args, config, backends).await,
-            Command::Registry(rc) => cmd_registry(rc, config, backends).await,
-            Command::Resolve(args) => cmd_resolve(args, config, backends).await,
-            Command::Get(args) => cmd_get(args, config, backends).await,
+            Command::Run(args) => {
+                let _: crate::reports::RunReport = cmd_run(args, config, backends).await?;
+                Ok(())
+            }
+            Command::Registry(rc) => {
+                let _: crate::reports::RegistryReport = cmd_registry(rc, config, backends).await?;
+                Ok(())
+            }
+            Command::Resolve(args) => {
+                let _: crate::reports::ResolveReport = cmd_resolve(args, config, backends).await?;
+                Ok(())
+            }
+            Command::Get(args) => {
+                let _: crate::reports::GetReport = cmd_get(args, config, backends).await?;
+                Ok(())
+            }
             Command::Doctor(args) => {
                 crate::doctor::run_doctor(
                     config,
@@ -322,9 +424,24 @@ impl Cli {
                 )
                 .await
             }
-            Command::Profile(pc) => cmd_profile(pc, self.config.as_deref()).await,
-            Command::Setup(args) => cmd_setup(args, self.config.as_deref()).await,
-            Command::Completions(args) => cmd_completions(args),
+            Command::Profile(pc) => {
+                let _: crate::reports::ProfileReport =
+                    cmd_profile(pc, self.config.as_deref()).await?;
+                Ok(())
+            }
+            Command::Setup(args) => {
+                let _: crate::reports::SetupReport =
+                    cmd_setup(args, self.config.as_deref()).await?;
+                Ok(())
+            }
+            Command::Completions(args) => {
+                let _: crate::reports::CompletionsReport = cmd_completions(args)?;
+                Ok(())
+            }
+            Command::Redact(args) => {
+                let _: crate::reports::RedactReport = cmd_redact(args, config, backends).await?;
+                Ok(())
+            }
         }
     }
 }
@@ -378,7 +495,13 @@ fn resolve_selection_from_env(
 
 // ---- run ---------------------------------------------------------------
 
-async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+async fn cmd_run(
+    args: &RunArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<crate::reports::RunReport> {
+    use secretenv_core::{run_with_options, RedactMode, RunOptions};
+
     let starting_dir = std::env::current_dir().context("determining current directory")?;
     let manifest = Manifest::load(&starting_dir)
         .context("loading secretenv.toml (walked upward from $CWD)")?;
@@ -386,7 +509,68 @@ async fn cmd_run(args: &RunArgs, config: &Config, backends: &BackendRegistry) ->
     let mut cache = RegistryCache::new();
     let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
     let resolved = resolve_manifest(&manifest, &aliases)?;
-    runner_run(&resolved, backends, &args.command, args.dry_run, args.verbose).await
+
+    let alias_count = resolved.len() as u64;
+
+    // SEC-INV-07 (Phase 7 security audit H1): `--no-redact` on a TTY
+    // requires an interactive "type yes" confirmation in addition to
+    // the clap-enforced `--i-know` flag. On a non-TTY parent the
+    // `--i-know` requirement alone provides friction; on a TTY the
+    // operator is explicitly walking themselves into the unsafe path
+    // and must type the word out. CI environments (non-TTY) skip the
+    // prompt by definition; developer workstations (TTY) hit it.
+    if args.no_redact {
+        use std::io::IsTerminal as _;
+        if io::stderr().is_terminal() {
+            eprintln!(
+                "WARNING: --no-redact disables runtime secret filtering. Resolved \
+                 values will appear verbatim in the child's stdout/stderr."
+            );
+            eprint!("Type \"yes\" to continue: ");
+            io::stderr().flush().ok();
+            let mut input = String::new();
+            io::stdin()
+                .read_line(&mut input)
+                .context("reading --no-redact confirmation from stdin")?;
+            if input.trim() != "yes" {
+                bail!("--no-redact aborted by user (did not type \"yes\")");
+            }
+        }
+    }
+
+    let redact = if args.no_redact {
+        RedactMode::ForceExec
+    } else if args.redact {
+        RedactMode::ForcePipe
+    } else {
+        RedactMode::Auto
+    };
+    let options = RunOptions {
+        dry_run: args.dry_run,
+        verbose: args.verbose,
+        redact,
+        redact_token: args.redact_token.clone(),
+    };
+
+    // Capture the dispatch up front so the report reflects what we
+    // actually did, not what we requested. `Auto` may degrade to
+    // `Exec` inside the runner when stdin is a TTY; for the v0.14
+    // report we record the requested intent (the runner emits the
+    // operator-facing one-line advisory when the auto fallback fires).
+    let dispatch = if args.dry_run {
+        crate::reports::RunDispatch::DryRun
+    } else if matches!(redact, RedactMode::ForceExec) {
+        crate::reports::RunDispatch::Exec
+    } else {
+        crate::reports::RunDispatch::PipeRedact
+    };
+
+    run_with_options(&resolved, backends, &args.command, &options).await?;
+    Ok(crate::reports::RunReport {
+        alias_count,
+        dispatch,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 // ---- resolve -----------------------------------------------------------
@@ -395,7 +579,7 @@ async fn cmd_resolve(
     args: &ResolveArgs,
     config: &Config,
     backends: &BackendRegistry,
-) -> Result<()> {
+) -> Result<crate::reports::ResolveReport> {
     use secretenv_core::{Manifest, DEFAULT_CHECK_TIMEOUT};
 
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
@@ -452,7 +636,7 @@ async fn cmd_resolve(
         None => ResolveBackendCheck::UnregisteredScheme,
     };
 
-    let report = ResolveReport {
+    let report = ResolveOutput {
         alias: args.alias.clone(),
         env_var,
         resolved: target.raw.clone(),
@@ -467,7 +651,12 @@ async fn cmd_resolve(
     } else {
         print!("{}", report.render_human());
     }
-    Ok(())
+
+    Ok(crate::reports::ResolveReport {
+        cascade_layer_index: u32::try_from(report.layer_index).unwrap_or(u32::MAX),
+        backend_type: report.backend_scheme,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 /// Scan the manifest's `[secrets]` entries for the first key whose
@@ -500,7 +689,7 @@ enum ResolveBackendCheck {
     UnregisteredScheme,
 }
 
-struct ResolveReport {
+struct ResolveOutput {
     alias: String,
     env_var: Option<String>,
     resolved: String,
@@ -510,7 +699,7 @@ struct ResolveReport {
     check: ResolveBackendCheck,
 }
 
-impl ResolveReport {
+impl ResolveOutput {
     fn render_human(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -617,7 +806,11 @@ impl ResolveReport {
 
 // ---- get (with confirmation) -------------------------------------------
 
-async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) -> Result<()> {
+async fn cmd_get(
+    args: &GetArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<crate::reports::GetReport> {
     let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
     let mut cache = RegistryCache::new();
     let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
@@ -633,16 +826,158 @@ async fn cmd_get(args: &GetArgs, config: &Config, backends: &BackendRegistry) ->
         .0
         .clone();
 
-    if !args.yes && !confirm_print_secret(&args.alias)? {
+    let confirmed = args.yes || confirm_print_secret(&args.alias)?;
+    if !confirmed {
         bail!("aborted by user");
     }
 
     let backend = backends
         .get(&target.scheme)
         .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
+    let backend_type = backend.backend_type().to_owned();
     let value = backend.get(&target).await?;
-    println!("{value}");
-    Ok(())
+    println!("{}", value.expose_secret());
+    Ok(crate::reports::GetReport {
+        backend_type,
+        confirmed,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
+}
+
+// ---- redact (Mode B post-hoc) -----------------------------------------
+
+#[allow(clippy::too_many_lines)] // dispatch + three exits + typed report
+async fn cmd_redact(
+    args: &RedactArgs,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<crate::reports::RedactReport> {
+    use secretenv_core::redact::{
+        scrub_file_in_place, Scrubber, SubstitutionToken, TaintedSet, TaintedValue,
+    };
+
+    let selection = resolve_selection_from_env(args.registry.as_deref(), config)?;
+    let mut cache = RegistryCache::new();
+    let aliases = resolve_registry(config, &selection, backends, &mut cache).await?;
+
+    // Build the alias filter: either explicit `--alias <names>` or
+    // every alias in the resolved cascade.
+    let alias_names: Vec<String> = if args.alias.is_empty() {
+        aliases.iter().map(|(name, _target, _source)| name.clone()).collect()
+    } else {
+        args.alias.clone()
+    };
+
+    if alias_names.is_empty() {
+        bail!(
+            "secretenv redact: no aliases to redact — registry cascade is empty \
+             ({}). Add aliases via `secretenv registry set` first.",
+            format_sources(&aliases),
+        );
+    }
+
+    // Fetch each alias's value, build the tainted set.
+    let mut tainted = TaintedSet::new();
+    for name in &alias_names {
+        let Some((target, _src)) = aliases.get(name) else {
+            bail!("alias '{name}' not found in registry cascade [{}]", format_sources(&aliases));
+        };
+        let backend = backends
+            .get(&target.scheme)
+            .ok_or_else(|| anyhow!("no backend instance '{}' is configured", target.scheme))?;
+        let value = backend.get(target).await.with_context(|| {
+            format!("fetching value for alias '{name}' (target='{}')", target.raw)
+        })?;
+        tainted.insert(TaintedValue::from_alias(name.clone(), value.expose_secret()));
+    }
+
+    let token = args
+        .redact_token
+        .as_ref()
+        .map_or(SubstitutionToken::AliasAware, |s| SubstitutionToken::Fixed(s.clone()));
+    let Some(scrubber) = Scrubber::new(&tainted, token)? else {
+        eprintln!(
+            "secretenv redact: tainted set is empty after the {}-byte minimum filter; \
+             nothing to redact.",
+            secretenv_core::redact::MIN_TAINTED_LEN,
+        );
+        return Ok(crate::reports::RedactReport {
+            mode: crate::reports::RedactMode::Stdout,
+            match_count: 0,
+            byte_count: 0,
+            outcome: crate::reports::CommandOutcome::Ok,
+        });
+    };
+
+    let path = std::path::Path::new(&args.path);
+
+    // Per Phase 7 code-review H4: every dispatch arm now goes
+    // through the same special-path + foreign-owner gate. The
+    // `--dry-run` path previously skipped both — defense-in-depth
+    // should not have an opt-out for "just count, don't write."
+    // `scrub_file_in_place` re-applies the same guards internally,
+    // so the in-place arm sees them at both layers.
+    secretenv_core::redact::refuse_special_paths(path)?;
+    secretenv_core::redact::refuse_foreign_owner(path, args.allow_foreign_owner)?;
+
+    if args.dry_run {
+        let mut sink = std::io::sink();
+        let mut reader = secretenv_core::redact::open_no_follow(path).with_context(|| {
+            format!("redact: opening '{}' with O_NOFOLLOW for dry-run", path.display())
+        })?;
+        let rep = scrubber.scrub_reader(&mut reader, &mut sink)?;
+        eprintln!(
+            "secretenv redact: would redact {} match(es) totaling {} byte(s) in '{}'",
+            rep.match_count,
+            rep.byte_count,
+            path.display(),
+        );
+        return Ok(crate::reports::RedactReport {
+            mode: crate::reports::RedactMode::DryRun,
+            match_count: rep.match_count,
+            byte_count: rep.byte_count,
+            outcome: crate::reports::CommandOutcome::DryRun,
+        });
+    }
+
+    if args.in_place {
+        let rep =
+            scrub_file_in_place(path, &scrubber, args.backup.as_deref(), args.allow_foreign_owner)?;
+        eprintln!(
+            "secretenv redact: rewrote '{}' — {} match(es), {} byte(s) replaced{}",
+            path.display(),
+            rep.match_count,
+            rep.byte_count,
+            args.backup
+                .as_deref()
+                .map_or(String::new(), |s| format!("; backup at '{}{s}'", path.display())),
+        );
+        return Ok(crate::reports::RedactReport {
+            mode: crate::reports::RedactMode::InPlace,
+            match_count: rep.match_count,
+            byte_count: rep.byte_count,
+            outcome: crate::reports::CommandOutcome::Ok,
+        });
+    }
+
+    // Default: stream to stdout.
+    let mut reader = secretenv_core::redact::open_no_follow(path)
+        .with_context(|| format!("redact: opening '{}' with O_NOFOLLOW", path.display()))?;
+    let mut stdout = io::stdout().lock();
+    let rep = scrubber.scrub_reader(&mut reader, &mut stdout)?;
+    drop(stdout);
+    eprintln!(
+        "secretenv redact: {} match(es), {} byte(s) replaced in '{}'",
+        rep.match_count,
+        rep.byte_count,
+        path.display(),
+    );
+    Ok(crate::reports::RedactReport {
+        mode: crate::reports::RedactMode::Stdout,
+        match_count: rep.match_count,
+        byte_count: rep.byte_count,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 fn confirm_print_secret(alias: &str) -> Result<bool> {
@@ -659,27 +994,38 @@ async fn cmd_registry(
     rc: &RegistryCommand,
     config: &Config,
     backends: &BackendRegistry,
-) -> Result<()> {
-    match rc {
+) -> Result<crate::reports::RegistryReport> {
+    let (subcommand, aliases_touched) = match rc {
         RegistryCommand::List { registry } => {
-            registry_list(registry.as_deref(), config, backends).await
+            registry_list(registry.as_deref(), config, backends).await?;
+            ("list", 0)
         }
         RegistryCommand::Get { alias, registry } => {
-            registry_get(alias, registry.as_deref(), config, backends).await
+            registry_get(alias, registry.as_deref(), config, backends).await?;
+            ("get", 1)
         }
         RegistryCommand::Set { alias, uri, registry } => {
-            registry_set(alias, uri, registry.as_deref(), config, backends).await
+            registry_set(alias, uri, registry.as_deref(), config, backends).await?;
+            ("set", 1)
         }
         RegistryCommand::Unset { alias, registry } => {
-            registry_unset(alias, registry.as_deref(), config, backends).await
+            registry_unset(alias, registry.as_deref(), config, backends).await?;
+            ("unset", 1)
         }
         RegistryCommand::History { alias, registry, json } => {
-            registry_history(alias, registry.as_deref(), *json, config, backends).await
+            registry_history(alias, registry.as_deref(), *json, config, backends).await?;
+            ("history", 1)
         }
         RegistryCommand::Invite { registry, invitee, json } => {
-            registry_invite(registry.as_deref(), invitee.as_deref(), *json, config)
+            registry_invite(registry.as_deref(), invitee.as_deref(), *json, config)?;
+            ("invite", 0)
         }
-    }
+    };
+    Ok(crate::reports::RegistryReport {
+        subcommand,
+        aliases_touched,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 fn registry_invite(
@@ -762,7 +1108,7 @@ async fn registry_set(
     // produced non-reproducible diffs on every `registry set`.
     let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.insert(alias.to_owned(), target_uri.to_owned());
-    let serialized = serialize_registry(backend.backend_type(), &map)?;
+    let serialized = backend.serialize_registry_doc(&map)?;
     backend
         .set(&source_uri, &serialized)
         .await
@@ -879,7 +1225,7 @@ async fn registry_unset(
     if map.remove(alias).is_none() {
         bail!("alias '{alias}' not found in registry at '{}'", source_uri.raw);
     }
-    let serialized = serialize_registry(backend.backend_type(), &map)?;
+    let serialized = backend.serialize_registry_doc(&map)?;
     backend
         .set(&source_uri, &serialized)
         .await
@@ -918,31 +1264,6 @@ fn pick_registry_source<'a>(
     Ok((source_uri, backend))
 }
 
-/// Serialize `map` in whatever format `backend_type` uses for its
-/// registry documents. Unknown types error — v0.2 supports local,
-/// aws-ssm, 1password only.
-///
-/// A `BTreeMap` is required (not just preferred): it guarantees
-/// alphabetical key order, so `registry set`/`unset` writes are
-/// deterministic and diff-friendly.
-fn serialize_registry(backend_type: &str, map: &BTreeMap<String, String>) -> Result<String> {
-    match backend_type {
-        "local" | "1password" => toml::to_string(map).with_context(|| {
-            format!("serializing registry as TOML for backend type '{backend_type}'")
-        }),
-        // `vault` stores registry documents as a single KV secret whose
-        // value is a JSON alias→URI map — same wire shape as aws-ssm.
-        // `aws-secrets` uses the same shape (one AWS secret, JSON body).
-        "aws-ssm" | "vault" | "aws-secrets" | "gcp" | "azure" | "openbao" | "conjur"
-        | "bitwarden-sm" => serde_json::to_string(map).with_context(|| {
-            format!("serializing registry as JSON for backend type '{backend_type}'")
-        }),
-        other => Err(anyhow!(
-            "writing registry documents through backend type '{other}' is not supported"
-        )),
-    }
-}
-
 /// Join every cascade source URI into a comma-separated list for
 /// error messages. Used when an alias is not found in any layer.
 fn format_sources(aliases: &secretenv_core::AliasMap) -> String {
@@ -951,7 +1272,10 @@ fn format_sources(aliases: &secretenv_core::AliasMap) -> String {
 
 // ---- setup --------------------------------------------------------------
 
-async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) -> Result<()> {
+async fn cmd_setup(
+    args: &SetupArgs,
+    target_config: Option<&std::path::Path>,
+) -> Result<crate::reports::SetupReport> {
     let opts = crate::setup::SetupOpts {
         registry_uri: args.registry_uri.clone(),
         region: args.region.clone(),
@@ -968,12 +1292,19 @@ async fn cmd_setup(args: &SetupArgs, target_config: Option<&std::path::Path>) ->
         skip_doctor: args.skip_doctor,
         target: target_config.map(std::path::Path::to_path_buf),
     };
-    crate::setup::run_setup(&opts).await
+    crate::setup::run_setup(&opts).await?;
+    Ok(crate::reports::SetupReport {
+        force: args.force,
+        outcome: crate::reports::CommandOutcome::Ok,
+    })
 }
 
 // ---- profile ------------------------------------------------------------
 
-async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path>) -> Result<()> {
+async fn cmd_profile(
+    pc: &ProfileCommand,
+    target_config: Option<&std::path::Path>,
+) -> Result<crate::reports::ProfileReport> {
     // The profiles dir sits next to the active config.toml. If the user
     // passed `--config <path>`, use that path's parent; otherwise fall
     // back to the XDG-default location. Both paths go through the
@@ -986,13 +1317,15 @@ async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path
         profiles_dir: secretenv_core::profiles_dir_for(&config_path),
     };
 
-    match pc {
+    let subcommand = match pc {
         ProfileCommand::Install { name, url } => {
-            crate::profile::install(name, url.as_deref(), &opts).await
+            crate::profile::install(name, url.as_deref(), &opts).await?;
+            "install"
         }
         ProfileCommand::List { json } => {
             let installed = crate::profile::list(&opts)?;
-            render_profile_list(&installed, *json)
+            render_profile_list(&installed, *json)?;
+            "list"
         }
         ProfileCommand::Update { name } => {
             if let Some(n) = name {
@@ -1005,14 +1338,18 @@ async fn cmd_profile(pc: &ProfileCommand, target_config: Option<&std::path::Path
                         eprintln!("Profile '{n}' refreshed.");
                     }
                 }
-                Ok(())
             } else {
                 let reports = crate::profile::update_all(&opts).await?;
-                render_profile_update_reports(&reports)
+                render_profile_update_reports(&reports)?;
             }
+            "update"
         }
-        ProfileCommand::Uninstall { name } => crate::profile::uninstall(name, &opts),
-    }
+        ProfileCommand::Uninstall { name } => {
+            crate::profile::uninstall(name, &opts)?;
+            "uninstall"
+        }
+    };
+    Ok(crate::reports::ProfileReport { subcommand, outcome: crate::reports::CommandOutcome::Ok })
 }
 
 fn render_profile_list(installed: &[crate::profile::InstalledProfile], json: bool) -> Result<()> {
@@ -1061,7 +1398,7 @@ fn render_profile_update_reports(reports: &[crate::profile::UpdateReport]) -> Re
 
 // ---- completions --------------------------------------------------------
 
-fn cmd_completions(args: &CompletionsArgs) -> Result<()> {
+fn cmd_completions(args: &CompletionsArgs) -> Result<crate::reports::CompletionsReport> {
     use std::io::IsTerminal as _;
 
     let mut cmd = Cli::command();
@@ -1103,7 +1440,7 @@ fn cmd_completions(args: &CompletionsArgs) -> Result<()> {
             eprintln!("{}", args.shell.install_hint());
         }
     }
-    Ok(())
+    Ok(crate::reports::CompletionsReport { outcome: crate::reports::CommandOutcome::Ok })
 }
 
 impl Shell {
@@ -1222,50 +1559,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serialize_registry_produces_toml_for_local() {
-        let mut m = BTreeMap::new();
-        m.insert("k".to_owned(), "aws-ssm:///v".to_owned());
-        let s = serialize_registry("local", &m).unwrap();
-        assert!(s.contains("k = \"aws-ssm:///v\""), "TOML shape: {s}");
-    }
-
-    #[test]
-    fn serialize_registry_produces_json_for_aws_ssm() {
-        let mut m = BTreeMap::new();
-        m.insert("k".to_owned(), "aws-ssm:///v".to_owned());
-        let s = serialize_registry("aws-ssm", &m).unwrap();
-        assert!(s.starts_with('{'), "JSON shape: {s}");
-        assert!(s.contains("\"k\""));
-    }
-
-    #[test]
-    fn serialize_registry_rejects_unknown_type() {
-        let m = BTreeMap::new();
-        let err = serialize_registry("unknown-backend", &m).unwrap_err();
-        assert!(format!("{err:#}").contains("not supported"));
-    }
-
-    /// `BTreeMap` must produce alphabetical output for both TOML and
-    /// JSON, independent of insertion order. This is the v0.2 CV-4
-    /// determinism fix.
-    #[test]
-    fn serialize_registry_is_alphabetical_regardless_of_insertion_order() {
-        let mut m = BTreeMap::new();
-        m.insert("zeta".to_owned(), "local:///z".to_owned());
-        m.insert("alpha".to_owned(), "local:///a".to_owned());
-        m.insert("mu".to_owned(), "local:///m".to_owned());
-
-        let toml_out = serialize_registry("local", &m).unwrap();
-        let alpha = toml_out.find("alpha").unwrap();
-        let mu = toml_out.find("mu").unwrap();
-        let zeta = toml_out.find("zeta").unwrap();
-        assert!(alpha < mu && mu < zeta, "TOML not alphabetical: {toml_out}");
-
-        let json_out = serialize_registry("aws-ssm", &m).unwrap();
-        let j_alpha = json_out.find("alpha").unwrap();
-        let j_mu = json_out.find("mu").unwrap();
-        let j_zeta = json_out.find("zeta").unwrap();
-        assert!(j_alpha < j_mu && j_mu < j_zeta, "JSON not alphabetical: {json_out}");
-    }
+    // Pre-v0.14 `serialize_registry(backend_type, map)` helper tests
+    // were removed when the dispatch moved to the `Backend` trait
+    // (Phase 3 BREAKING #3). Per-backend serialization round-trips
+    // are now tested inside each backend's own crate; the
+    // alphabetical-ordering invariant is preserved by `BTreeMap`'s
+    // intrinsic ordering and is no longer a CLI-layer concern.
 }

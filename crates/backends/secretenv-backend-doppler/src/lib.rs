@@ -85,7 +85,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, Backend, BackendFactory, BackendStatus, BackendUri,
-    DEFAULT_GET_TIMEOUT,
+    Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
@@ -383,7 +383,7 @@ impl Backend for DopplerBackend {
         BackendStatus::Ok { cli_version, identity }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         uri.reject_any_fragment("doppler")?;
         let t = self.resolve_target(uri)?;
 
@@ -423,7 +423,7 @@ impl Backend for DopplerBackend {
             )
         })?;
         // `secrets get --plain` appends exactly one '\n'. Strip it.
-        Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+        Ok(Secret::new(stdout.strip_suffix("\n").unwrap_or(&stdout).to_owned()))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -938,7 +938,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("doppler-prod:///acme/prd/STRIPE_KEY").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_abc");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_abc");
     }
 
     #[tokio::test]
@@ -950,7 +950,7 @@ mod tests {
         let b = backend(&mock, None);
         // Short form — project + config come from backend defaults.
         let uri = BackendUri::parse("doppler-prod:///STRIPE_KEY").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_abc");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_abc");
     }
 
     #[tokio::test]
@@ -1090,7 +1090,7 @@ mod tests {
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse("doppler-prod:///acme/prd/MULTILINE").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "line1\nline2");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "line1\nline2");
     }
 
     // ---- set ----

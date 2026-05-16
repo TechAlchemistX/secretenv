@@ -174,6 +174,17 @@ jobs:
       - name: Wait for crates.io to index secretenv-core
         run: sleep 45
 
+      - name: Publish secretenv-telemetry (NEW in v0.14)
+        # The telemetry crate has zero deps on the backends; it sits at
+        # the same dep-graph layer as core. Per Phase 9 deployment
+        # audit Dep-B1: omitting this step at v0.14 ship would publish
+        # only 16 of the 17 crates, leaving the CLI's
+        # secretenv-telemetry path-dep unresolvable from crates.io.
+        run: cargo publish -p secretenv-telemetry --locked
+
+      - name: Wait for crates.io to index secretenv-telemetry
+        run: sleep 45
+
       - name: Publish backend crates (parallel dep-wise; sequential here for simplicity)
         shell: bash
         run: |

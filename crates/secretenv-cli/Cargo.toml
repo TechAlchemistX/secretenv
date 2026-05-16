@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 secretenv-core.workspace             = true
+secretenv-telemetry.workspace        = true
 secretenv-backend-local.workspace    = true
 secretenv-backend-aws-ssm.workspace  = true
 secretenv-backend-1password.workspace = true

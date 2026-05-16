@@ -104,7 +104,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use secretenv_core::{
     optional_duration_secs, optional_string, Backend, BackendFactory, BackendStatus, BackendUri,
-    DEFAULT_GET_TIMEOUT,
+    Secret, DEFAULT_GET_TIMEOUT,
 };
 use serde::Deserialize;
 use tempfile::NamedTempFile;
@@ -380,7 +380,7 @@ impl Backend for CfKvBackend {
         BackendStatus::Ok { cli_version, identity }
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         uri.reject_any_fragment("cf-kv")?;
         let target = self.resolve_target(uri)?;
 
@@ -422,7 +422,7 @@ impl Backend for CfKvBackend {
         })?;
         // `wrangler kv key get --text` writes the value followed by a
         // single newline. Strip exactly one.
-        Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
+        Ok(Secret::new(stdout.strip_suffix("\n").unwrap_or(&stdout).to_owned()))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -934,7 +934,7 @@ Getting User settings...
             .install(dir.path());
         let b = backend(&mock, None);
         let uri = BackendUri::parse(&format!("cf-kv-prod:///{NS}/STRIPE_KEY")).unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_42");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_42");
     }
 
     #[tokio::test]
@@ -945,7 +945,7 @@ Getting User settings...
             .install(dir.path());
         let b = backend(&mock, Some(NS));
         let uri = BackendUri::parse("cf-kv-prod:///STRIPE_KEY").unwrap();
-        assert_eq!(b.get(&uri).await.unwrap(), "sk_live_42");
+        assert_eq!(b.get(&uri).await.unwrap().expose_secret(), "sk_live_42");
     }
 
     #[tokio::test]

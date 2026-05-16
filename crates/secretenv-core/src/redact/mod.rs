@@ -432,11 +432,15 @@ fn write_backup_secure(source: &Path, dest: &Path) -> Result<()> {
         .permissions()
         .mode();
 
-    let dest_mode_u16: u16 = u16::try_from(src_mode & 0o777).unwrap_or(0o600);
+    // `rustix::fs::RawMode` is the platform-aliased mode_t type
+    // (`u16` on macOS, `u32` on Linux). Using the alias keeps
+    // `Mode::from_raw_mode` happy on both targets — the previous
+    // hard-coded `u16` only compiled on macOS.
+    let dest_mode: rustix::fs::RawMode = (src_mode & 0o777) as rustix::fs::RawMode;
     let owned_fd = rustix::fs::open(
         dest,
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
-        Mode::from_raw_mode(dest_mode_u16),
+        Mode::from_raw_mode(dest_mode),
     )
     .with_context(|| {
         format!(

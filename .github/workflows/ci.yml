@@ -67,7 +67,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      # ripgrep ships preinstalled on ubuntu-latest GH Actions runners.
+      # ripgrep was preinstalled on the older ubuntu-latest image but
+      # was removed sometime before 2026-05; install it explicitly so
+      # the script's `command -v rg` guard stops bailing.
+      - name: install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
       - name: SEC-INV-17 grep (tracing macro value leaks)
         run: bash scripts/check_tracing_leaks.sh
 

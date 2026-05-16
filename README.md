@@ -473,7 +473,7 @@ In the v0.13 cycle, this harness caught a latent pipe-deadlock in the Infisical 
 | v0.12.0 | 2026-05-05 | 15 | 508 | +Bitwarden Secrets Manager |
 | v0.13.0 | 2026-05-07 | 15 | 508 | Hygiene cycle — caught the v0.7-era pipe-deadlock |
 
-Test surface grew with feature surface across ~3 weeks of single-backend-per-minor-release cadence. That's the boring-by-design property platform teams buy.
+Test surface grew with feature surface across ~3 weeks of single-backend-per-minor-release cadence.
 
 ---
 

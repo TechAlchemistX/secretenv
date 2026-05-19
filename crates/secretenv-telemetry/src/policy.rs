@@ -33,7 +33,7 @@ pub enum AttributeClassification {
 /// v0.17's exporter validates every attribute name it serializes
 /// against this table at startup; an unrecognized attribute is a
 /// programming error (the typed builder should have prevented it).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RedactionPolicy {
     entries: &'static [(&'static str, AttributeClassification)],
 }

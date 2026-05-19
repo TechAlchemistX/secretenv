@@ -104,6 +104,17 @@ pub struct EnvEntry {
     /// defaults (which have no registry alias). Carried so mode-A
     /// redact emits `[redacted:<alias>]` consistent with mode B
     /// per Phase 9 Code-H4.
+    ///
+    /// SEC-INV-19: alias names are **DENY** for `OTel` because they
+    /// fingerprint resolved values. The field stays a plain `String`
+    /// (not `Secret<String>`) per v0.14.x `DiD` chip L1 — the only
+    /// consumer is the terminal substitution renderer, which needs
+    /// the bare string; wrapping in `Secret<T>` would force an
+    /// `expose_secret()` at every render site for cosmetic gain.
+    /// Future leak vectors (a `tracing::Subscriber` → `OTel` adapter,
+    /// any new `RedactionSink` impl that emits this field) MUST
+    /// project the alias away — see
+    /// [`secretenv_telemetry::event::RedactionEvent::for_otel`].
     pub alias_name: Option<String>,
     value: Secret<String>,
 }
@@ -272,12 +283,12 @@ async fn run_with_pipe_redaction(
     let args = &command[1..];
     let mut cmd = TokioCommand::new(program);
     cmd.args(args);
-    for reserved in RESERVED_ENV_VARS {
-        cmd.env_remove(reserved);
-    }
-    for entry in env {
-        cmd.env(&entry.key, entry.value.as_str_internal());
-    }
+    scrub_secretenv_env(|k| {
+        cmd.env_remove(k);
+    });
+    inject_env_entries(env, |k, v| {
+        cmd.env(k, v);
+    });
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -392,9 +403,18 @@ fn write_kind(kind: StreamKind, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Forward SIGINT / SIGTERM / SIGHUP from the parent to the child
-/// process so Ctrl-C in the parent terminal cleanly tears down
-/// `secretenv run`'s subprocess instead of leaving it orphaned.
+/// Forward SIGINT / SIGTERM / SIGHUP / SIGQUIT / SIGUSR1 / SIGUSR2
+/// from the parent to the child process so Ctrl-C / Ctrl-\ in the
+/// parent terminal cleanly tear down `secretenv run`'s subprocess
+/// instead of leaving it orphaned.
+///
+/// SIGQUIT (Ctrl-\) coverage — v0.14.x `DiD` chip L2. Default macOS /
+/// Linux shells set `ulimit -c 0`, so a SIGQUIT-induced core dump
+/// containing env-bytes is out-of-scope per `docs/security.md`; the
+/// forwarder forwards SIGQUIT so the child's own quit handler runs,
+/// not for core-dump protection. SIGUSR1/SIGUSR2 are forwarded so
+/// children that use them for user-defined runtime control (logrotate,
+/// nginx reload, etc.) receive them when the parent does.
 ///
 /// Uses rustix's `kill_process` for the actual signal delivery —
 /// avoids `unsafe extern "C" { fn kill }` and keeps the crate's
@@ -409,12 +429,18 @@ async fn forward_signals_to(child_pid: Option<u32>) {
     let Ok(mut sigint) = signal(SignalKind::interrupt()) else { return };
     let Ok(mut sigterm) = signal(SignalKind::terminate()) else { return };
     let Ok(mut sighup) = signal(SignalKind::hangup()) else { return };
+    let Ok(mut sigquit) = signal(SignalKind::quit()) else { return };
+    let Ok(mut sigusr1) = signal(SignalKind::user_defined1()) else { return };
+    let Ok(mut sigusr2) = signal(SignalKind::user_defined2()) else { return };
 
     loop {
         let sig = tokio::select! {
             _ = sigint.recv() => rustix::process::Signal::INT,
             _ = sigterm.recv() => rustix::process::Signal::TERM,
             _ = sighup.recv() => rustix::process::Signal::HUP,
+            _ = sigquit.recv() => rustix::process::Signal::QUIT,
+            _ = sigusr1.recv() => rustix::process::Signal::USR1,
+            _ = sigusr2.recv() => rustix::process::Signal::USR2,
         };
         let _ = rustix::process::kill_process(pid, sig);
     }
@@ -551,6 +577,16 @@ async fn fetch_one(
 /// `{:#}` rendering lists every failure on its own line. For N=1
 /// returns the original error unwrapped so single-failure messages
 /// don't get decorated with a misleading "2 aliases failed" header.
+///
+/// # Preconditions (v0.14.x code-hygiene)
+///
+/// `errors` must be non-empty. The sole caller in [`build_env`] only
+/// invokes `aggregate_errors` inside a `!errors.is_empty()` guard, so
+/// the empty-input branch is unreachable in practice. Passing an
+/// empty `Vec` panics on `swap_remove(0)`; this is a programming
+/// error, not a recoverable runtime condition — surface it as a
+/// panic rather than a silent `Ok(())`-style fallthrough that would
+/// hide the missing guard at a future call site.
 fn aggregate_errors(mut errors: Vec<anyhow::Error>) -> anyhow::Error {
     if errors.len() == 1 {
         // Single-failure path: preserve the original error chain
@@ -568,7 +604,51 @@ fn aggregate_errors(mut errors: Vec<anyhow::Error>) -> anyhow::Error {
 /// environment before `exec`/`spawn`. These carry CLI-layer
 /// configuration (registry selection, config path) and should not leak
 /// their provenance into whatever command the user ran.
+///
+/// **v0.14.x `DiD` chip L5.** This list is the explicit denylist for the
+/// CI-grep regression gate; the actual runtime scrub uses the
+/// `SECRETENV_*` *prefix wildcard* via [`scrub_secretenv_env`] so any
+/// future `SECRETENV_TOKEN` / `SECRETENV_OTLP_…` added after this list
+/// drifts is still scrubbed. The CI gate at
+/// `scripts/check_secretenv_env_consts.sh` keeps the explicit list and
+/// the prefix scrub honest.
 const RESERVED_ENV_VARS: &[&str] = &["SECRETENV_REGISTRY", "SECRETENV_CONFIG"];
+
+/// Remove every `SECRETENV_*` env var from `cmd`'s child environment
+/// before `spawn`/`exec`. Prefix scrub closes the regression window
+/// where a new `SECRETENV_TOKEN`-style const is added to the codebase
+/// without being added to [`RESERVED_ENV_VARS`].
+///
+/// The std `Command` API has no direct "remove by prefix"; we walk
+/// `std::env::vars_os` once and call `env_remove` for each matching
+/// key. The cost is negligible (env size is small) and the scrub
+/// always runs in the parent process's pre-exec window.
+/// Inject every resolved [`EnvEntry`] into the child environment via
+/// `env_set(&key, &value)`. Centralised so the three spawn paths
+/// (tokio pipe-redact, unix `exec()`, non-unix `spawn()`) all use
+/// the same iteration shape — v0.14.x code-hygiene chip.
+fn inject_env_entries<F: FnMut(&str, &str)>(env: &[EnvEntry], mut env_set: F) {
+    for entry in env {
+        env_set(&entry.key, entry.value.as_str_internal());
+    }
+}
+
+fn scrub_secretenv_env<F: FnMut(&std::ffi::OsStr)>(mut env_remove: F) {
+    for (key, _val) in std::env::vars_os() {
+        if let Some(s) = key.to_str() {
+            if s.starts_with("SECRETENV_") {
+                env_remove(&key);
+            }
+        }
+    }
+    // Explicit denylist as belt-and-braces: catches names that
+    // somehow exist in the child env without being in the parent's
+    // `vars_os()` snapshot (e.g. set via clap layer before this loop
+    // runs in a future code path). Idempotent with the prefix scrub.
+    for reserved in RESERVED_ENV_VARS {
+        env_remove(std::ffi::OsStr::new(reserved));
+    }
+}
 
 #[cfg(unix)]
 fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
@@ -578,12 +658,12 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     let args = &command[1..];
     let mut cmd = Command::new(program);
     cmd.args(args);
-    for reserved in RESERVED_ENV_VARS {
-        cmd.env_remove(reserved);
-    }
-    for entry in env {
-        cmd.env(&entry.key, entry.value.as_str_internal());
-    }
+    scrub_secretenv_env(|k| {
+        cmd.env_remove(k);
+    });
+    inject_env_entries(env, |k, v| {
+        cmd.env(k, v);
+    });
     // exec() replaces the current process on success and only returns
     // on failure — so the io::Error it produces is always a real one.
     let err = cmd.exec();
@@ -596,12 +676,12 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     let args = &command[1..];
     let mut cmd = Command::new(program);
     cmd.args(args);
-    for reserved in RESERVED_ENV_VARS {
-        cmd.env_remove(reserved);
-    }
-    for entry in env {
-        cmd.env(&entry.key, entry.value.as_str_internal());
-    }
+    scrub_secretenv_env(|k| {
+        cmd.env_remove(k);
+    });
+    inject_env_entries(env, |k, v| {
+        cmd.env(k, v);
+    });
     let status = cmd.status().with_context(|| format!("failed to spawn '{program}'"))?;
     std::process::exit(status.code().unwrap_or(1));
 }

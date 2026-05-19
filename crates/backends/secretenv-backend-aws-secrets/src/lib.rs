@@ -56,14 +56,18 @@
 //! `&str`s — never `sh -c`, never `format!` into a shell string. The
 //! `set` path pipes secret values via child stdin (CV-1 discipline).
 //!
-//! # v0.3 TODO
+//! # Open follow-ups
 //!
-//! - Factor shared `AwsCli` helper across `backend-aws-ssm` +
+//! - Factor a shared `AwsCli` helper across `backend-aws-ssm` +
 //!   `backend-aws-secrets` (identity checks, region/profile argv,
-//!   version parsing). Phase 6 plan explicitly deferred this to keep
-//!   the v0.2 diff small.
+//!   version parsing). The duplication is small enough that the
+//!   v0.14.x code-hygiene audit deferred this rather than retrofitting
+//!   a helper across two stable backends; revisit if a third
+//!   `aws-*` backend lands.
 //! - Support `SecretBinary` + `create-secret` + nested JSON field
-//!   extraction (`#<key.nested>`).
+//!   extraction (`#<key.nested>`). Tracked under the v0.15 migrate
+//!   cycle's per-backend write-capability audit when AWS Secrets
+//!   becomes a migrate destination.
 //!
 //! See [[backends/aws-secrets]] in the kb for the full implementation
 //! spec (harness table, IAM, open design questions).
@@ -204,7 +208,7 @@ impl Backend for AwsSecretsBackend {
 
     #[allow(clippy::similar_names)]
     async fn check(&self) -> BackendStatus {
-        // v0.3: Level 1 + Level 2 via `tokio::join!` — see aws-ssm
+        // Level 1 + Level 2 via `tokio::join!` — see aws-ssm
         // counterpart for rationale. `doctor` latency halved per
         // backend; both probes are independent.
         let version_fut = Command::new(&self.aws_bin).arg("--version").output();
@@ -520,7 +524,7 @@ impl BackendFactory for AwsSecretsFactory {
     }
 }
 
-// v0.3 Phase 0: `required_string` / `optional_string` moved to
+// `required_string` / `optional_string` live in
 // `secretenv_core::factory_helpers`.
 
 #[cfg(test)]

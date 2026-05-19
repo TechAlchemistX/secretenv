@@ -4,7 +4,7 @@ Thanks for considering a contribution. This document covers the mechanics. For t
 
 ## Development setup
 
-You need a recent Rust stable toolchain. The repo pins one via `rust-toolchain.toml`, so `rustup` will pick it up automatically on first build.
+You need a recent Rust stable toolchain. The repo pins one via `rust-toolchain.toml`, so `rustup` will pick it up automatically on first build. The pin is deliberate: it keeps local and CI on the same compiler so new clippy lints + trybuild fixture text drift do not surface as red CI on push. Bumping the pin is its own chore — see `kb/wiki/runbooks/rust-toolchain-bump.md`.
 
 Supporting tools used by the pre-commit suite:
 

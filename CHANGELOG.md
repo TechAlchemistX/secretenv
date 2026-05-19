@@ -6,7 +6,47 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Dates are in `YYYY-MM-DD` (UTC).
 
+In addition to the Keep-a-Changelog sections (`Added` / `Changed` / `Deprecated`
+/ `Removed` / `Fixed` / `Security`), SecretEnv cycles use a project-specific
+**`Known limitations`** subsection — introduced in v0.14.0 — to document
+behaviour that ships honestly but is incomplete by design (planned phase-out,
+deferred follow-up, or contract that would surprise an operator). Future
+cycles should reach for this subsection rather than burying limitations in
+prose. Cross-reference the kb wiki for the long-form ticket.
+
 ## [Unreleased]
+
+> v0.14.x hygiene cycle — merged-not-tagged per [[feedback_pr_scoping_hygiene_carrier]]. The v0.15.0 CHANGELOG will absorb these entries on release.
+
+### Security
+
+- **Defense-in-depth: `TaintedValue.bytes` now `Zeroizing<Vec<u8>>`** (`crates/secretenv-core/src/redact/mod.rs`). End-of-run drop scrubs plaintext bytes from the heap rather than leaving them dangling until the allocator reuses the slot. Aho-Corasick's own automaton still retains the patterns for its lifetime — Zeroizing here is strictly the operator-controlled half. (v0.14.x DiD chip M1.)
+- **Alias-name skip notice moved from `tracing::warn!` to `eprintln!`** (`crates/secretenv-core/src/redact/mod.rs`). SEC-INV-19 carve-out: alias names are DENY for OTel because they fingerprint resolved values; this notice MUST stay operator-local stderr so a future `tracing::Subscriber → OTel` adapter cannot route it to a shared trace surface. (DiD chip M2.)
+- **`scripts/check_tracing_leaks.sh` extended.** Adds coverage for `event!(Level::..)`, `Span::current().record("value", ...)`, and bare `warn!`/`info!`/`error!` macros after `use tracing::*;`; tightens the `value = ...` structured-field check by requiring `?`/`%` sigils, eliminating false positives on unrelated fields named `value`. (DiD chip M3.)
+- **`secretenv run --help` now documents Mode A limits** including the `/dev/tty` escape, `syslog`/`journald`, `mmap`, core dumps, and SDK re-fetch — parity with `docs/security.md`. (DiD chip M4.)
+- **`forward_signals_to` adds `SIGQUIT` + `SIGUSR1` + `SIGUSR2`** (`crates/secretenv-core/src/runner.rs`). The child's own quit handler runs on Ctrl-\, and children that use SIGUSR1/2 for runtime control (logrotate, nginx reload) receive them when the parent does. (DiD chip L2.)
+- **`RedactionEvent::for_otel()` projection** (`crates/secretenv-telemetry/src/event.rs`). Strips `alias_name` (DENY per SEC-INV-19) before emission to any non-operator-terminal destination; OTel sinks at v0.17 MUST use this projection. (DiD chip L4.)
+- **`SECRETENV_*` prefix wildcard env scrub** (`crates/secretenv-core/src/runner.rs::scrub_secretenv_env`). The explicit `RESERVED_ENV_VARS` denylist is retained as belt-and-braces; the prefix scrub closes the regression window where a future `SECRETENV_TOKEN`-style const is added to the codebase without being added to the explicit list. (DiD chip L5.)
+- **Backup-path setuid mask documented** (`crates/secretenv-core/src/redact/mod.rs::write_backup_secure`). The existing `& 0o777` mask is correct — it drops setuid / setgid / sticky bits from the source — but the invariant was undocumented; a future maintainer might widen the mask without knowing the security commitment. Added an inline comment naming the chip. (DiD chip L6.)
+- **`EnvEntry.alias_name` doc tightened with SEC-INV-19 reference** (`crates/secretenv-core/src/runner.rs`). Field stays `Option<String>` (not `Secret<String>`) per L1 chip's own recommendation; future leak vectors must project away the alias via `RedactionEvent::for_otel`.
+
+### Changed
+
+- **Code-hygiene polish** absorbing Phase 7/9/9b code-reviewer LOW chips:
+  - `refuse_special_paths` now scans the first `Normal` path component, catching relative `proc/foo` / `./proc/foo` inputs (was bounded to `components[1]` which only matched absolute paths). (Code-hygiene chip.)
+  - `Scrubber::pattern_len` documents the Aho-Corasick `pat_id ∈ [0, num_patterns)` invariant + the `pub(crate)` scope that upholds it.
+  - `aggregate_errors` documents the non-empty input precondition.
+  - `SpanGuard._private: ()` documented as the sealed-construction marker (kept, not removed).
+  - `RedactionPolicy` derives `Copy` (was `Clone` only); the type wraps a `&'static` slice and is trivially `Copy`.
+  - Stale `v0.3 TODO` block in `secretenv-backend-aws-secrets/src/lib.rs` rewritten as the current "open follow-ups" view.
+  - Off-by-one regression test added: `streaming_accepts_pattern_at_exact_tail_window` covers `pattern_len == MODE_A_TAIL_WINDOW` (the previous suite only covered `>`).
+  - `tracing` dep in `secretenv-telemetry/Cargo.toml` documented as the anchor for v0.17's planned `tracing::Subscriber` impl (avoiding a remove-then-readd churn).
+  - `runner.rs::inject_env_entries` helper extracts the three identical env-injection loops (tokio pipe-redact, unix `exec()`, non-unix `spawn()`).
+  - `CHANGELOG.md` header documents the project-specific `Known limitations` subsection convention introduced in v0.14.0.
+
+### CI
+
+- **`rust-toolchain.toml` pinned to `1.95.0`** (was floating `stable`). Symmetric with CI's `dtolnay/rust-toolchain@stable` (which honors the project pin), eliminating red CI on every rust point-release for new clippy lints + trybuild fixture text drift. Bump is its own chore per the new runbook at `kb/wiki/runbooks/rust-toolchain-bump.md`; `CONTRIBUTING.md` references the runbook. (Issue #03.)
 
 ## [0.14.0] - 2026-05-15
 

@@ -1,4 +1,9 @@
 [toolchain]
-channel    = "stable"
+# Pinned to a specific stable release per v0.14.x issue #03. Floating
+# `channel = "stable"` desyncs local (whatever rustup last installed)
+# from CI (always latest stable at run time), surfacing red CI on
+# every rust point-release for new clippy lints + trybuild fixture
+# drift. Bump deliberately per `kb/wiki/runbooks/rust-toolchain-bump.md`.
+channel    = "1.95.0"
 components = ["rustfmt", "clippy"]
 profile    = "default"

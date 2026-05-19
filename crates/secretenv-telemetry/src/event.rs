@@ -116,4 +116,61 @@ impl RedactionEvent {
             alias_name: None,
         }
     }
+
+    /// Projection of this event safe to emit on a non-operator-terminal
+    /// destination — i.e. anywhere `alias_name` could land outside the
+    /// operator's terminal (OTel span attributes, structured log
+    /// pipelines, shared trace surfaces, etc.).
+    ///
+    /// **v0.14.x DiD chip L4.** Strips [`Self::alias_name`] (DENY per
+    /// SEC-INV-19) by setting it to `None`. The remaining fields
+    /// (`count`, `byte_count`, `stream`, `source`) are ALLOW per the
+    /// v0.14+ §6 attribute matrix.
+    ///
+    /// `RedactionSink` impls that emit to non-terminal destinations
+    /// **MUST** use this projection. Terminal-rendering sinks that
+    /// produce the `[redacted:<alias>]` substitution token render
+    /// `alias_name` directly from the original event and may skip
+    /// this projection; their output never reaches the OTel adapter.
+    #[must_use]
+    pub const fn for_otel(&self) -> Self {
+        Self {
+            count: self.count,
+            byte_count: self.byte_count,
+            stream: self.stream,
+            source: self.source,
+            alias_name: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn for_otel_strips_alias_name() {
+        let evt = RedactionEvent::per_match(
+            14,
+            RedactionStream::Stdout,
+            RedactionSource::ModeA,
+            "stripe-key".to_owned(),
+        );
+        assert_eq!(evt.alias_name.as_deref(), Some("stripe-key"));
+
+        let projected = evt.for_otel();
+        assert_eq!(projected.alias_name, None, "for_otel() must drop alias_name");
+        assert_eq!(projected.count, evt.count);
+        assert_eq!(projected.byte_count, evt.byte_count);
+        assert_eq!(projected.stream, evt.stream);
+        assert_eq!(projected.source, evt.source);
+    }
+
+    #[test]
+    fn for_otel_is_idempotent_when_alias_already_none() {
+        let evt = RedactionEvent::aggregate_mode_b(3, 42);
+        assert_eq!(evt.alias_name, None);
+        let projected = evt.for_otel();
+        assert_eq!(projected, evt);
+    }
 }

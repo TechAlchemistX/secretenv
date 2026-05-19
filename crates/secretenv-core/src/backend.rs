@@ -168,6 +168,38 @@ pub trait Backend: Send + Sync {
     /// (backend-dependent — some return success on missing keys).
     async fn delete(&self, uri: &BackendUri) -> Result<()>;
 
+    /// v0.15 BREAKING (additive — default returns
+    /// [`BackendError::DeleteNotSupported`](crate::BackendError::DeleteNotSupported)).
+    ///
+    /// The destructive cleanup leg of the v0.15 `secretenv registry
+    /// migrate --delete-source` opt-in path. Distinct from
+    /// [`Backend::delete`]:
+    ///
+    /// - `delete` is the general-purpose secret-removal entry point.
+    /// - `delete_secret` is the migrate-specific cleanup leg, gated
+    ///   the same way as [`Backend::write_secret`] (default refuses;
+    ///   12 Native backends override with `self.delete(uri)`
+    ///   passthrough; 3 Gated backends (`1password`, `bitwarden-sm`,
+    ///   `keeper`) require the same `*_unsafe_set` config flag the
+    ///   write path uses).
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 2 audit table.
+    ///
+    /// # Errors
+    /// Returns an error on any delete failure or when the backend is
+    /// not a valid migrate-cleanup target (default impl, or a gated
+    /// backend without its opt-in flag set). Error context never
+    /// carries the URI body or the alias name.
+    async fn delete_secret(&self, _uri: &BackendUri) -> Result<()> {
+        Err(crate::BackendError::DeleteNotSupported {
+            backend_type: self.backend_type().to_owned(),
+            reason: "default Backend::delete_secret impl — this backend has not implemented \
+                     the v0.15 migrate --delete-source cleanup path",
+        }
+        .into())
+    }
+
     /// List the `(key, value)` pairs found at `uri`. For registry
     /// documents this returns the alias → backend-URI map.
     ///
@@ -380,6 +412,28 @@ mod tests {
                     "reason should name the default-impl origin: {reason}"
                 );
             }
+            other => panic!("expected WriteNotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn default_delete_secret_returns_delete_not_supported() {
+        let backend = UnimplementedBackend;
+        let uri = BackendUri::parse("unimpl://path").unwrap();
+
+        let err = backend.delete_secret(&uri).await.unwrap_err();
+        let typed = err.downcast::<BackendError>().expect(
+            "default delete_secret must return a typed BackendError, not a plain anyhow::Error",
+        );
+        match typed {
+            BackendError::DeleteNotSupported { backend_type, reason } => {
+                assert_eq!(backend_type, "unimpl");
+                assert!(
+                    reason.contains("default"),
+                    "reason should name the default-impl origin: {reason}"
+                );
+            }
+            other => panic!("expected DeleteNotSupported, got {other:?}"),
         }
     }
 }

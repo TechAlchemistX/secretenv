@@ -405,6 +405,13 @@ impl Backend for AwsSecretsBackend {
         self.set(uri, value.expose_secret()).await
     }
 
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         // `--force-delete-without-recovery` is unconditional: the
         // default 30-day recovery window makes `delete` look like it

@@ -16,6 +16,7 @@
 //!
 //! See:
 //! - [[build-plan-v0.15-migrate]] §Phase 1 — `WriteNotSupported`.
+//! - [[build-plan-v0.15-migrate]] §Phase 2 — `DeleteNotSupported`.
 //! - [[v0.14-plus-security-invariants]] SEC-INV-04 — closed ``OTel``
 //!   error-kind enum maps each variant to a stable kebab-case
 //!   attribute value.
@@ -63,6 +64,34 @@ pub enum BackendError {
         /// literal at the call site (e.g. `"op_unsafe_set is false"`).
         reason: &'static str,
     },
+
+    /// The backend declares it cannot delete at this URI. Default
+    /// trait-method implementations of [`crate::Backend::delete_secret`]
+    /// return this; backends that gate `delete_secret` behind the same
+    /// config flags as `write_secret` (`1password`'s `op_unsafe_set`,
+    /// `bitwarden-sm`'s `bitwarden_unsafe_set`, `keeper`'s
+    /// `keeper_unsafe_set`) also return this with a `reason` naming
+    /// the unset flag.
+    ///
+    /// Only ever raised via the v0.15 `--delete-source` opt-in path of
+    /// `secretenv registry migrate`; the existing `Backend::delete`
+    /// surface is unaffected.
+    ///
+    /// Maps to:
+    /// - `secretenv.error.kind = "delete_not_supported"` on the `OTel`
+    ///   attribute (SEC-INV-04 closed enum).
+    /// - `McpErrorKind::BackendNotConfigured` on the MCP boundary
+    ///   (SEC-INV-14 closed enum) — same shape as `WriteNotSupported`.
+    #[error("backend type '{backend_type}' cannot delete at this URI: {reason}")]
+    DeleteNotSupported {
+        /// The `backend_type()` value returned by the impl raising
+        /// this error. Owned `String` for the same reason as
+        /// [`Self::WriteNotSupported::backend_type`].
+        backend_type: String,
+        /// Operator-readable explanation of why the delete is
+        /// unavailable. Never carries the URI, alias name, or value.
+        reason: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -78,6 +107,29 @@ mod tests {
         let rendered = format!("{e}");
         assert!(rendered.contains("1password"), "{rendered}");
         assert!(rendered.contains("op_unsafe_set is false"), "{rendered}");
+    }
+
+    #[test]
+    fn delete_not_supported_renders_with_backend_type_and_reason() {
+        let e = BackendError::DeleteNotSupported {
+            backend_type: "keeper".to_owned(),
+            reason: "keeper_unsafe_set is false",
+        };
+        let rendered = format!("{e}");
+        assert!(rendered.contains("keeper"), "{rendered}");
+        assert!(rendered.contains("keeper_unsafe_set is false"), "{rendered}");
+        assert!(rendered.contains("cannot delete"), "{rendered}");
+    }
+
+    #[test]
+    fn delete_not_supported_converts_into_anyhow() {
+        let e = BackendError::DeleteNotSupported {
+            backend_type: "bitwarden-sm".to_owned(),
+            reason: "bitwarden_unsafe_set is false",
+        };
+        let any: anyhow::Error = e.into();
+        let chain = format!("{any:#}");
+        assert!(chain.contains("bitwarden-sm"), "{chain}");
     }
 
     #[test]

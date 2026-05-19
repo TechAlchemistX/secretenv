@@ -513,6 +513,13 @@ impl Backend for ConjurBackend {
         self.set(uri, value.expose_secret()).await
     }
 
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
     /// Conjur has no native delete. This implements **clear** semantics
     /// — the variable retains its policy definition but the value is
     /// emptied. Documented at the crate level + in `docs/backends/conjur.md`.

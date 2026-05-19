@@ -407,6 +407,13 @@ impl Backend for KeychainBackend {
         self.set(uri, value.expose_secret()).await
     }
 
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("keychain")?;
         let (service, account) = Self::parse_path(uri)?;

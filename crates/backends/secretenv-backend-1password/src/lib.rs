@@ -334,6 +334,19 @@ impl Backend for OnePasswordBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint. 1Password CLI has
+    /// no "delete one field"; the operator deletes the whole item.
+    /// Best-effort: shows the item path components when parsable.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let account_flag =
+            self.op_account.as_deref().map_or_else(String::new, |a| format!(" --account {a}"));
+        if let Ok((vault, item, _field)) = Self::parse_path(uri) {
+            format!(r#"op item delete "{item}" --vault "{vault}"{account_flag}"#)
+        } else {
+            format!(r#"op item delete "<item>" --vault "<vault>"{account_flag}"#)
+        }
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("1password")?;
         let (vault, item, field) = Self::parse_path(uri)?;

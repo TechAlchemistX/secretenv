@@ -412,6 +412,21 @@ impl Backend for AwsSecretsBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint. Uses the default
+    /// 30-day recovery window rather than `--force-delete-without-recovery`
+    /// so the operator's copy-paste leaves a recovery path open if
+    /// they made a mistake. `delete()` itself force-deletes (see that
+    /// impl's comment); `delete_hint` is conservative.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::secret_id(uri);
+        let profile =
+            self.aws_profile.as_deref().map_or_else(String::new, |p| format!(" --profile {p}"));
+        format!(
+            "aws secretsmanager delete-secret --secret-id {name} --recovery-window-in-days 30 --region {region}{profile}",
+            region = self.aws_region,
+        )
+    }
+
     /// v0.15 migrate `--dry-run` write-permission probe. **No value is
     /// materialized or transmitted** (SEC-INV-01).
     ///

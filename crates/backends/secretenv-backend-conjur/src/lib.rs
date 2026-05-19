@@ -520,6 +520,21 @@ impl Backend for ConjurBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint. Conjur 8.x has no
+    /// CLI `variable delete` — `delete()` semantics in this backend
+    /// are "clear the value" (rewrite to empty string). The hint
+    /// surfaces the same `variable set` form so the operator can
+    /// re-clear or change the value, and documents that full removal
+    /// requires policy-level changes.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let id = Self::variable_id(uri);
+        format!(
+            "# Conjur 8.x has no `variable delete` CLI; clear the value:\n\
+             conjur variable set -i {id} -v ''\n\
+             # To fully remove, update the policy that defines this variable."
+        )
+    }
+
     /// Conjur has no native delete. This implements **clear** semantics
     /// — the variable retains its policy definition but the value is
     /// emptied. Documented at the crate level + in `docs/backends/conjur.md`.

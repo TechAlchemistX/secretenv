@@ -517,6 +517,17 @@ impl Backend for AzureBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `az keyvault secret delete`. Soft-delete only; the operator
+    /// can `purge-deleted-secret` separately if their role allows.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::secret_name(uri);
+        format!(
+            "az keyvault secret delete --vault-name {vault} --name {name}",
+            vault = self.vault_name,
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("azure")?;
         let name = Self::secret_name(uri);

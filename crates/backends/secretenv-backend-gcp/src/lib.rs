@@ -414,6 +414,20 @@ impl Backend for GcpBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `gcloud secrets delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::secret_name(uri);
+        let impersonate = self
+            .gcp_impersonate_service_account
+            .as_deref()
+            .map_or_else(String::new, |sa| format!(" --impersonate-service-account {sa}"));
+        format!(
+            "gcloud secrets delete {name} --project {project} --quiet{impersonate}",
+            project = self.gcp_project,
+        )
+    }
+
     /// v0.15 migrate `--dry-run` write-permission probe. **No value is
     /// materialized or transmitted** (SEC-INV-01).
     ///

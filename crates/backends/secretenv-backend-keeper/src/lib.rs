@@ -606,6 +606,17 @@ impl Backend for KeeperBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `keeper record-rm`. Resolves the record identifier from
+    /// the URI; falls back to a placeholder if the URI doesn't
+    /// resolve cleanly.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| "keeper record-rm <record-uid-or-path>".to_owned(),
+            |target| format!("keeper record-rm {target}"),
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("keeper")?;
         let target = self.resolve_target(uri)?;

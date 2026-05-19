@@ -402,6 +402,18 @@ impl Backend for OpenBaoBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `bao kv delete`. Mirrors vault's hint shape (`BAO_ADDR` is
+    /// the `OpenBao` analog of `VAULT_ADDR`).
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let path = Self::bao_path(uri);
+        let ns_export = self
+            .bao_namespace
+            .as_deref()
+            .map_or_else(String::new, |n| format!("BAO_NAMESPACE={n} "));
+        format!("BAO_ADDR={addr} {ns_export}bao kv delete {path}", addr = self.bao_address)
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("openbao")?;
         let path = Self::bao_path(uri);

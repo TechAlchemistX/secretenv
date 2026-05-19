@@ -396,6 +396,19 @@ impl Backend for VaultBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `vault kv delete`. Honors the configured `VAULT_ADDR`
+    /// (and `VAULT_NAMESPACE` if set) by exporting them inline so
+    /// the command stands alone in any shell.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let path = Self::vault_path(uri);
+        let ns_export = self
+            .vault_namespace
+            .as_deref()
+            .map_or_else(String::new, |n| format!("VAULT_NAMESPACE={n} "));
+        format!("VAULT_ADDR={addr} {ns_export}vault kv delete {path}", addr = self.vault_address)
+    }
+
     /// v0.15 migrate `--dry-run` write-permission probe. Cheap-probe
     /// backend per the v0.15 audit table — uses `vault token
     /// capabilities <path>` to ask Vault directly whether the current

@@ -595,6 +595,13 @@ impl Backend for BitwardenSmBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `bws secret delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let id = Self::raw_secret_id(uri);
+        format!("bws secret delete {id}")
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("bitwarden-sm")?;
         if !self.bitwarden_unsafe_set {

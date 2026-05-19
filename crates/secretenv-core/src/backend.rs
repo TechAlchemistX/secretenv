@@ -231,6 +231,30 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
+    /// v0.15 BREAKING (additive — default returns a generic message).
+    ///
+    /// Return a backend-native cleanup command for `uri`, used in the
+    /// `secretenv registry migrate` success message to give the
+    /// operator a copy-paste delete command when they did NOT pass
+    /// `--delete-source`. Each backend overrides with its CLI surface
+    /// (e.g. `vault kv delete secret/<path>`).
+    ///
+    /// **Output is purely informational text** — emitted to the
+    /// operator's terminal, never to `OTel`. The hint string may
+    /// contain destination-URI components (a Tier-1 redaction concern
+    /// per SEC-INV-20 on the `OTel` boundary, but the `OTel` boundary
+    /// never sees this string; only `migrate.delete_source: bool`
+    /// crosses to telemetry).
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 4 audit table.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        format!(
+            "# Source value at {} is still present. Cleanup mechanism is backend-specific.",
+            uri.raw
+        )
+    }
+
     /// List the `(key, value)` pairs found at `uri`. For registry
     /// documents this returns the alias → backend-URI map.
     ///

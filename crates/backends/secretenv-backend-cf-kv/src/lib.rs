@@ -544,6 +544,21 @@ impl Backend for CfKvBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `wrangler kv key delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| "wrangler kv key delete --namespace-id <namespace-id> <key>".to_owned(),
+            |t| {
+                format!(
+                    "wrangler kv key delete --namespace-id {ns} {key}",
+                    ns = t.namespace_id,
+                    key = t.key,
+                )
+            },
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("cf-kv")?;
         let target = self.resolve_target(uri)?;

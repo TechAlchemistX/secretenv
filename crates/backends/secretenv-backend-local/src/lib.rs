@@ -188,6 +188,14 @@ impl Backend for LocalBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint. `local` stores
+    /// secrets as plaintext files on disk; hint points at the file
+    /// path so the operator can remove it directly.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let path = Self::file_path(uri);
+        format!("rm {}", path.display())
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         let path = Self::file_path(uri);
         tokio::fs::remove_file(&path).await.with_context(|| {

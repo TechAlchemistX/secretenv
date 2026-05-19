@@ -414,6 +414,21 @@ impl Backend for KeychainBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `security delete-{generic,internet}-password`. Falls back
+    /// to placeholder strings if `parse_path` would reject the URI
+    /// (e.g. the migrate plan resolved to a malformed source URI we
+    /// somehow still got here with) so the hint text never panics.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let (service, account) = Self::parse_path(uri)
+            .unwrap_or_else(|_| ("<service>".to_owned(), "<account>".to_owned()));
+        let kc_flag = self.keychain_path.as_deref().map_or_else(String::new, |p| format!(" {p}"));
+        format!(
+            "security {sub} -s {service} -a {account}{kc_flag}",
+            sub = self.kind.delete_subcommand(),
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("keychain")?;
         let (service, account) = Self::parse_path(uri)?;

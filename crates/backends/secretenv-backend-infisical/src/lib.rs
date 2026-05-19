@@ -653,6 +653,26 @@ impl Backend for InfisicalBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `infisical secrets delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| {
+                "infisical secrets delete <KEY> --projectId=<id> --env=<env> --path=<path>"
+                    .to_owned()
+            },
+            |t| {
+                format!(
+                    "infisical secrets delete {name} --projectId={project} --env={env} --path={path}",
+                    name = t.secret_name,
+                    project = t.project_id,
+                    env = t.environment,
+                    path = t.secret_path,
+                )
+            },
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("infisical")?;
         let t = self.resolve_target(uri)?;

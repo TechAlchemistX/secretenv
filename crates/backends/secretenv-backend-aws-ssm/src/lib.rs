@@ -371,6 +371,18 @@ impl Backend for AwsSsmBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `aws ssm delete-parameter`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::parameter_name(uri);
+        let profile =
+            self.aws_profile.as_deref().map_or_else(String::new, |p| format!(" --profile {p}"));
+        format!(
+            "aws ssm delete-parameter --name {name} --region {region}{profile}",
+            region = self.aws_region,
+        )
+    }
+
     /// v0.15 migrate `--dry-run` write-permission probe. **No value is
     /// materialized or transmitted** (SEC-INV-01).
     ///

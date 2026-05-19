@@ -1,12 +1,6 @@
 // Copyright (C) 2026 Mandeep Patel
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Phase 6 lands this module; Phase 5 (next commit) wires the CLI to
-// it. Until the wiring lands, every item here is technically
-// "unused" from the binary's main code path. Suppress at the module
-// boundary rather than per-item.
-#![allow(dead_code)]
-
 //! v0.15 `secretenv registry migrate` library entry.
 //!
 //! This module is the load-bearing core of the migrate cycle. The CLI
@@ -79,11 +73,10 @@ pub struct MigrateArgs {
     /// Plan-only: probe destination + source liveness, render the
     /// plan, exit without mutation.
     pub dry_run: bool,
-    /// Skip the top-level confirmation prompt. The `--delete-source`
-    /// extra confirmation still fires even under this flag
-    /// (SEC-INV-08).
-    pub yes: bool,
-    /// Opt-in cleanup: after successful migrate, delete source.
+    /// Opt-in cleanup: after successful migrate, delete source. The
+    /// CLI layer also accepts a `--yes` flag for the top-level
+    /// confirmation prompt; that flag is consumed by the CLI handler
+    /// before [`migrate`] is called, so it does not appear here.
     pub delete_source: bool,
 }
 
@@ -97,7 +90,6 @@ pub struct MigrationPlan {
     pub dest_uri: BackendUri,
     /// Registry source URI we'll re-write to flip the pointer.
     pub registry_source_uri: BackendUri,
-    pub delete_source: bool,
     /// Stable per-invocation identifier. v0.15 uses nanoseconds since
     /// the UNIX epoch in hex form; v0.17 may upgrade to `UUIDv7`.
     pub transaction_id: String,
@@ -123,6 +115,13 @@ pub enum MigrateReportOutcome {
     /// Pointer flip failed after a successful destination write.
     /// The value exists in BOTH backends; recovery is the operator's
     /// call (SEC-INV-09).
+    ///
+    /// `migrate()` currently surfaces this via `Err` (with a
+    /// recovery-context message). The variant is retained so a
+    /// future MCP boundary or a structured `Result<MigrateReport,
+    /// MigrateReport>` API can switch to Ok-with-partial-failure
+    /// without an enum-variant break.
+    #[allow(dead_code)]
     PartialFailurePointerFlip,
     /// Migration succeeded but the source-delete leg (opt-in) failed.
     /// Migration is complete; cleanup is the operator's call.
@@ -235,14 +234,24 @@ pub async fn build_migration_plan(
         source_uri,
         dest_uri,
         registry_source_uri,
-        delete_source: args.delete_source,
         transaction_id: new_transaction_id(),
     })
 }
 
 /// Drive the migration end-to-end. The CLI layer is responsible for
-/// confirmation prompts (both top-level and the `--delete-source`
-/// extra) BEFORE calling this function.
+/// the top-level confirmation prompt BEFORE calling this function.
+/// The `--delete-source` extra confirmation fires AFTER the
+/// pointer-flip commit succeeds — per SEC-INV-08 it must run even
+/// when `--yes` is set globally, and the operator must have seen
+/// the commit succeed before deciding. This is handled via the
+/// `confirm_delete_source` closure, called only when
+/// `args.delete_source` is true.
+///
+/// The closure runs synchronously between phase 3 and phase 4; it
+/// can read stdin, query a prompt, or return a precomputed bool
+/// (tests). Returning `false` skips the delete leg with no error,
+/// leaves the migration committed, and surfaces the
+/// `delete_hint` in the report.
 ///
 /// # Errors
 /// - Plan build failure (alias resolution, URI parsing).
@@ -256,11 +265,15 @@ pub async fn build_migration_plan(
 /// Source-delete failure is non-fatal — it produces a
 /// `SourceDeleteFailedPostCommit` outcome plus a populated
 /// `delete_hint`.
-pub async fn migrate(
+pub async fn migrate<F>(
     args: MigrateArgs,
     config: &Config,
     backends: &BackendRegistry,
-) -> Result<MigrateReport> {
+    confirm_delete_source: F,
+) -> Result<MigrateReport>
+where
+    F: FnOnce(&MigrationPlan) -> bool,
+{
     let (mut span, _guard) = SecretEnvSpan::start("secretenv.migrate");
     span.record_command("migrate");
 
@@ -334,10 +347,12 @@ pub async fn migrate(
     }
 
     // ----- Optional source-delete -----
+    // Per SEC-INV-08: fire confirmation EVEN when --yes is set
+    // globally, AND only AFTER the commit (steps 1-3) succeeded.
     let mut source_delete_ms = None;
     let mut outcome = MigrateReportOutcome::Success;
     let mut delete_hint = Some(source.delete_hint(&plan.source_uri));
-    if args.delete_source {
+    if args.delete_source && confirm_delete_source(&plan) {
         match migrate_source_delete(&plan, source).await {
             Ok(ms) => {
                 source_delete_ms = Some(ms);

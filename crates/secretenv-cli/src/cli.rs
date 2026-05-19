@@ -264,6 +264,48 @@ pub enum RegistryCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Migrate an alias's value from its current backend to a new one.
+    ///
+    /// Reads the current value via the registry pointer, writes it to
+    /// the destination, then atomically flips the registry pointer to
+    /// the destination URI. The source value is NOT deleted by
+    /// default — pass `--delete-source` to opt into cleanup (subject
+    /// to an additional post-commit confirmation that fires even
+    /// under `--yes`).
+    Migrate {
+        /// Alias to migrate.
+        alias: String,
+        /// Destination backend URI (e.g. `vault-prod:///secret/payments/stripe`).
+        dest_uri: String,
+        /// Plan-only mode. Runs source/destination probes, prints the
+        /// migration plan, exits without mutation. Required for safe
+        /// rollouts.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the top-level confirmation prompt. The
+        /// `--delete-source` extra confirmation still fires even
+        /// under this flag (SEC-INV-08).
+        #[arg(long, short)]
+        yes: bool,
+        /// Override the inferred source URI. Used for recovery flows
+        /// where the registry already points at the destination but
+        /// the value is still in the old backend.
+        #[arg(long)]
+        from: Option<String>,
+        /// Opt-in: after a successful migrate, delete the source
+        /// value via the source backend's `delete_secret`. Subject
+        /// to a separate confirmation gate even under `--yes`.
+        #[arg(long)]
+        delete_source: bool,
+        /// Emit machine-readable JSON to stdout instead of the
+        /// human-formatted progress + summary.
+        #[arg(long)]
+        json: bool,
+        /// Registry selection — name or direct URI. Same semantics
+        /// as the other `registry` subcommands.
+        #[arg(long)]
+        registry: Option<String>,
+    },
     /// Emit a copy-pasteable config.toml snippet + IAM/RBAC grant
     /// command for onboarding a new collaborator to the named registry.
     Invite {
@@ -1041,6 +1083,31 @@ async fn cmd_registry(
             registry_invite(registry.as_deref(), invitee.as_deref(), *json, config)?;
             ("invite", 0)
         }
+        RegistryCommand::Migrate {
+            alias,
+            dest_uri,
+            dry_run,
+            yes,
+            from,
+            delete_source,
+            json,
+            registry,
+        } => {
+            registry_migrate(
+                alias,
+                dest_uri,
+                *dry_run,
+                *yes,
+                from.as_deref(),
+                *delete_source,
+                *json,
+                registry.as_deref(),
+                config,
+                backends,
+            )
+            .await?;
+            ("migrate", 1)
+        }
     };
     Ok(crate::reports::RegistryReport {
         subcommand,
@@ -1136,6 +1203,187 @@ async fn registry_set(
         .with_context(|| format!("writing updated registry document to '{}'", source_uri.raw))?;
     eprintln!("set {alias} → {target_uri} in registry at '{}'", source_uri.raw);
     Ok(())
+}
+
+/// `secretenv registry migrate <alias> <dest-uri>` — drives
+/// [`crate::migrate::migrate`] with all the user-prompt + report-
+/// rendering machinery the library entry leaves to the CLI.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+async fn registry_migrate(
+    alias: &str,
+    dest_uri: &str,
+    dry_run: bool,
+    yes: bool,
+    from: Option<&str>,
+    delete_source: bool,
+    json: bool,
+    registry: Option<&str>,
+    config: &Config,
+    backends: &BackendRegistry,
+) -> Result<()> {
+    let args = crate::migrate::MigrateArgs {
+        alias: alias.to_owned(),
+        dest_uri: dest_uri.to_owned(),
+        source_uri: from.map(str::to_owned),
+        registry: registry.map(str::to_owned),
+        dry_run,
+        delete_source,
+    };
+
+    // Top-level confirmation prompt: skipped under --dry-run (no
+    // mutation) and under --yes (operator opted out globally).
+    if !dry_run && !yes {
+        let plan_preview =
+            crate::migrate::build_migration_plan(&args, config, backends).await?;
+        eprintln!("About to migrate {}:", plan_preview.alias);
+        eprintln!("  from: {}", plan_preview.source_uri.raw);
+        eprintln!("  to:   {}", plan_preview.dest_uri.raw);
+        eprintln!();
+        eprintln!(
+            "This will read the current value from the source and write it to the destination."
+        );
+        eprintln!("The registry pointer will be updated on success.");
+        if delete_source {
+            eprintln!("The source value WILL be deleted after a separate confirmation.");
+        } else {
+            eprintln!("The source value will NOT be deleted.");
+        }
+        if !prompt_yes_no("\nContinue? [y/N] ")? {
+            eprintln!("aborted; no changes made.");
+            return Ok(());
+        }
+    }
+
+    // The delete-source extra confirmation fires inside migrate()
+    // AFTER the pointer flip commits, per SEC-INV-08. It must run
+    // even under --yes; the closure handles that by always reading
+    // stdin when --delete-source was passed.
+    let confirm_delete = |plan: &crate::migrate::MigrationPlan| -> bool {
+        // No-op in dry-run (delete leg never runs).
+        if dry_run {
+            return false;
+        }
+        eprintln!();
+        eprintln!(
+            "  4/4  About to permanently delete {}.",
+            plan.source_uri.raw,
+        );
+        eprintln!("       This cannot be undone.");
+        // I/O error reading stdin treated as 'no' — the migration
+        // is committed; the operator can clean up manually with the
+        // printed `delete_hint`.
+        prompt_yes_no("       Continue? [y/N] ").unwrap_or_default()
+    };
+
+    let report = crate::migrate::migrate(args, config, backends, confirm_delete).await?;
+
+    if json {
+        println!("{}", render_migrate_json(&report)?);
+    } else {
+        print_migrate_human(&report);
+    }
+    Ok(())
+}
+
+/// Read one stdin line and return `true` iff it starts with `y` or `Y`.
+/// Defaults to `false` on EOF (no input) and on any I/O error other
+/// than EOF — the latter is rare enough that surfacing it would
+/// confuse more than it would help in the interactive flow.
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    use std::io::{BufRead, Write};
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    let n = stdin.lock().read_line(&mut line).context("reading stdin for confirmation")?;
+    if n == 0 {
+        // EOF before any input: treat as 'no'.
+        return Ok(false);
+    }
+    Ok(line.trim().starts_with(['y', 'Y']))
+}
+
+fn print_migrate_human(report: &crate::migrate::MigrateReport) {
+    use crate::migrate::MigrateReportOutcome;
+    match report.outcome {
+        MigrateReportOutcome::DryRun => {
+            eprintln!("secretenv migrate (dry-run):");
+            eprintln!("  alias:        {}", report.alias);
+            eprintln!("  source type:  {}", report.source_backend_type);
+            eprintln!("  dest type:    {}", report.dest_backend_type);
+            eprintln!("\nProbes:");
+            for (instance, result) in &report.probe_results {
+                eprintln!("  {instance:20} {result}");
+            }
+            eprintln!(
+                "\nDry-run complete. No changes made. Remove --dry-run to execute.",
+            );
+        }
+        MigrateReportOutcome::Success => {
+            eprintln!("Migration complete.");
+            eprintln!("  alias:           {}", report.alias);
+            eprintln!(
+                "  probe / read / write / flip ms: {} / {} / {} / {}",
+                report.phase_durations.probe_ms,
+                report.phase_durations.read_ms,
+                report.phase_durations.write_ms,
+                report.phase_durations.pointer_flip_ms,
+            );
+            if let Some(ms) = report.phase_durations.source_delete_ms {
+                eprintln!("  source-delete ms: {ms}");
+                eprintln!("  source value deleted.");
+            } else if let Some(hint) = &report.delete_hint {
+                eprintln!("  source value still present. To remove it:");
+                eprintln!("    {hint}");
+            }
+        }
+        MigrateReportOutcome::SourceDeleteFailedPostCommit => {
+            eprintln!("Migration committed but source-delete failed.");
+            eprintln!("  alias:           {}", report.alias);
+            if let Some(hint) = &report.delete_hint {
+                eprintln!("  Cleanup the source manually:");
+                eprintln!("    {hint}");
+            }
+        }
+        MigrateReportOutcome::PartialFailurePointerFlip => {
+            // This path is only reachable when migrate() returned Ok
+            // with the PartialFailure outcome (it doesn't today;
+            // pointer-flip failure is propagated as Err). Kept for
+            // forward compatibility if migrate() ever returns
+            // structured partial-failure reports instead of Err.
+            eprintln!("Migration partially failed.");
+        }
+    }
+}
+
+fn render_migrate_json(report: &crate::migrate::MigrateReport) -> Result<String> {
+    use crate::migrate::MigrateReportOutcome;
+    let outcome = match report.outcome {
+        MigrateReportOutcome::Success => "success",
+        MigrateReportOutcome::DryRun => "dry-run",
+        MigrateReportOutcome::SourceDeleteFailedPostCommit => "source-delete-failed-post-commit",
+        MigrateReportOutcome::PartialFailurePointerFlip => "partial-failure-pointer-flip",
+    };
+    let mut durations = serde_json::json!({
+        "probe_ms": report.phase_durations.probe_ms,
+        "read_ms": report.phase_durations.read_ms,
+        "write_ms": report.phase_durations.write_ms,
+        "pointer_flip_ms": report.phase_durations.pointer_flip_ms,
+    });
+    if let Some(ms) = report.phase_durations.source_delete_ms {
+        durations["source_delete_ms"] = serde_json::json!(ms);
+    }
+    let value = serde_json::json!({
+        "alias": report.alias,
+        "source_backend_type": report.source_backend_type,
+        "dest_backend_type": report.dest_backend_type,
+        "outcome": outcome,
+        "phase_durations_ms": durations,
+        "delete_source": report.delete_source,
+        "delete_hint": report.delete_hint,
+        "transaction_id": report.transaction_id,
+    });
+    Ok(serde_json::to_string_pretty(&value)?)
 }
 
 async fn registry_history(

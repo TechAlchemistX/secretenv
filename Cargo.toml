@@ -41,7 +41,7 @@ readme       = "README.md"
 # (`secretenv-core`, `secretenv-backend-*`). The CLI is the exception: it
 # lives at `crates/secretenv-cli/` but publishes as `secretenv` so
 # `cargo install secretenv` and the binary name line up.
-secretenv-core               = { path = "crates/secretenv-core",                           version = "0.14.0" }
+secretenv-core               = { path = "crates/secretenv-core",                           version = "0.14.0", features = ["value-access"] }
 secretenv-telemetry          = { path = "crates/secretenv-telemetry",                      version = "0.14.0" }
 secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.14.0" }
 secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.14.0" }

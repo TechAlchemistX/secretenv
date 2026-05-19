@@ -337,25 +337,8 @@ impl Backend for OnePasswordBackend {
         Ok(parsed.into_iter().collect())
     }
 
-    fn serialize_registry_doc(
-        &self,
-        map: &std::collections::BTreeMap<String, String>,
-    ) -> Result<String> {
-        toml::to_string(map).with_context(|| {
-            format!("1password backend '{}': serializing registry doc as TOML", self.instance_name)
-        })
-    }
-
-    fn deserialize_registry_doc(
-        &self,
-        body: &str,
-    ) -> Result<std::collections::BTreeMap<String, String>> {
-        toml::from_str(body).with_context(|| {
-            format!(
-                "1password backend '{}': deserializing registry doc as TOML",
-                self.instance_name,
-            )
-        })
+    fn registry_format(&self) -> secretenv_core::RegistryFormat {
+        secretenv_core::RegistryFormat::Toml
     }
 }
 

@@ -122,6 +122,30 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.redact.alias_name", AttributeClassification::Deny),
     ("secretenv.redact.stream", AttributeClassification::Allow),
     ("secretenv.redact.source", AttributeClassification::Allow),
+    // --- migrate (v0.15) ---
+    ("secretenv.migrate.phase", AttributeClassification::Allow),
+    ("secretenv.migrate.outcome", AttributeClassification::Allow),
+    // Backend TYPE only (e.g. `aws-ssm`, `vault`); INSTANCE name stays
+    // DENY because instance names can carry environment hints
+    // (`prod`, `staging`) that fingerprint operator infra topology.
+    ("secretenv.migrate.source_backend_type", AttributeClassification::Allow),
+    ("secretenv.migrate.dest_backend_type", AttributeClassification::Allow),
+    ("secretenv.migrate.source_backend_instance", AttributeClassification::Deny),
+    ("secretenv.migrate.dest_backend_instance", AttributeClassification::Deny),
+    // Full URIs always DENY — they include backend path which leaks
+    // operator-internal naming (e.g. `/prod/stripe-key`).
+    ("secretenv.migrate.source_uri", AttributeClassification::Deny),
+    ("secretenv.migrate.dest_uri", AttributeClassification::Deny),
+    // The flag value (whether `--delete-source` was specified), NOT
+    // the deletion outcome (which surfaces via migrate.outcome).
+    ("secretenv.migrate.delete_source", AttributeClassification::Allow),
+    ("secretenv.migrate.transaction_id", AttributeClassification::Allow),
+    // The migrated value itself NEVER appears on any attribute name —
+    // these explicit DENY rows exist to fail-closed if a future call
+    // site invents the name. `secretenv.value` above also catches
+    // generic value-named leaks.
+    ("secretenv.migrate.value", AttributeClassification::Deny),
+    ("secretenv.migrate.alias_name", AttributeClassification::Deny),
 ];
 
 #[cfg(test)]

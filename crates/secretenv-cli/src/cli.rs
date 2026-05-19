@@ -1129,7 +1129,7 @@ async fn registry_set(
     // produced non-reproducible diffs on every `registry set`.
     let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.insert(alias.to_owned(), target_uri.to_owned());
-    let serialized = backend.serialize_registry_doc(&map)?;
+    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
     backend
         .set(&source_uri, &serialized)
         .await
@@ -1246,7 +1246,7 @@ async fn registry_unset(
     if map.remove(alias).is_none() {
         bail!("alias '{alias}' not found in registry at '{}'", source_uri.raw);
     }
-    let serialized = backend.serialize_registry_doc(&map)?;
+    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
     backend
         .set(&source_uri, &serialized)
         .await

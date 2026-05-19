@@ -68,7 +68,7 @@ impl Secret<String> {
     /// through any safe API. See [`crate::mcp_safe`].
     ///
     /// The CLI never enables `mcp-safe`; the MCP server (v0.16) does.
-    #[cfg(not(feature = "mcp-safe"))]
+    #[cfg(feature = "value-access")]
     #[must_use]
     pub fn expose_secret(&self) -> &str {
         self.0.as_str()

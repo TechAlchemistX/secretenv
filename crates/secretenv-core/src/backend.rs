@@ -173,39 +173,87 @@ pub trait Backend: Send + Sync {
         false
     }
 
-    /// Serialize an alias → backend-URI registry document into the
-    /// wire format this backend uses on disk / over the wire.
+    /// Declares the wire format this backend uses for its registry
+    /// document on disk / over the wire.
     ///
-    /// Default: JSON. The `local` and `1password` backends override
-    /// to TOML for human-readability (`local`) and field-storage
-    /// compatibility (`1password`'s field bodies are
-    /// human-edited).
+    /// Default: [`RegistryFormat::Json`]. The `local` and `1password`
+    /// backends override to [`RegistryFormat::Toml`] for
+    /// human-readability (`local`) and field-storage compatibility
+    /// (`1password`'s field bodies are human-edited).
     ///
-    /// A [`BTreeMap`] is required: it guarantees alphabetical key
-    /// order so writes are deterministic and diff-friendly.
-    ///
-    /// # Errors
-    /// Returns an error if the map cannot be encoded in the target
-    /// wire format.
-    fn serialize_registry_doc(&self, map: &BTreeMap<String, String>) -> Result<String> {
-        serde_json::to_string(map).with_context(|| {
-            format!("serializing registry doc as JSON for backend type '{}'", self.backend_type())
-        })
+    /// The actual encode/decode lives in free functions
+    /// [`serialize_registry_doc`] / [`deserialize_registry_doc`]; the
+    /// backend just declares which format it speaks. This split
+    /// (v0.15 BREAKING arch-H1) keeps wire-format responsibility off
+    /// the `Backend` trait — the inverse pattern was an over-fit at
+    /// v0.14 since the format selection is purely about the wire
+    /// representation, not anything backend-specific.
+    fn registry_format(&self) -> RegistryFormat {
+        RegistryFormat::Json
     }
+}
 
-    /// Inverse of [`Self::serialize_registry_doc`]. Default: JSON.
-    /// `local` and `1password` override to TOML.
-    ///
-    /// # Errors
-    /// Returns an error if `body` is not a valid wire-format
-    /// registry document for this backend.
-    fn deserialize_registry_doc(&self, body: &str) -> Result<BTreeMap<String, String>> {
-        serde_json::from_str(body).with_context(|| {
-            format!(
-                "deserializing registry doc as JSON for backend type '{}'",
-                self.backend_type(),
-            )
-        })
+/// Wire format for an alias → backend-URI registry document.
+///
+/// Each [`Backend`] declares which format it serializes/deserializes
+/// via [`Backend::registry_format`]. The encode/decode itself is
+/// format-driven, not backend-driven; see [`serialize_registry_doc`]
+/// and [`deserialize_registry_doc`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RegistryFormat {
+    /// JSON encoding (`serde_json`). Default for cloud/CLI-driven
+    /// backends.
+    Json,
+    /// TOML encoding (`toml`). Used by file-on-disk and
+    /// human-field-edited backends (`local`, `1password`).
+    Toml,
+}
+
+/// Serialize an alias → backend-URI registry document into the
+/// declared wire format.
+///
+/// A [`BTreeMap`] is required: it guarantees alphabetical key order
+/// so writes are deterministic and diff-friendly.
+///
+/// **v0.15 BREAKING (arch-H1):** moved from the `Backend` trait to
+/// this free function over the format enum. Backends now declare the
+/// format via [`Backend::registry_format`] and let the wire-format
+/// concern stay off the trait.
+///
+/// # Errors
+/// Returns an error if the map cannot be encoded in the target
+/// wire format.
+pub fn serialize_registry_doc(
+    format: RegistryFormat,
+    map: &BTreeMap<String, String>,
+) -> Result<String> {
+    match format {
+        RegistryFormat::Json => serde_json::to_string(map)
+            .with_context(|| "serializing registry doc as JSON".to_owned()),
+        RegistryFormat::Toml => {
+            toml::to_string(map).with_context(|| "serializing registry doc as TOML".to_owned())
+        }
+    }
+}
+
+/// Inverse of [`serialize_registry_doc`].
+///
+/// **v0.15 BREAKING (arch-H1):** moved from the `Backend` trait to
+/// this free function over the format enum.
+///
+/// # Errors
+/// Returns an error if `body` is not a valid wire-format
+/// registry document for the declared format.
+pub fn deserialize_registry_doc(
+    format: RegistryFormat,
+    body: &str,
+) -> Result<BTreeMap<String, String>> {
+    match format {
+        RegistryFormat::Json => serde_json::from_str(body)
+            .with_context(|| "deserializing registry doc as JSON".to_owned()),
+        RegistryFormat::Toml => {
+            toml::from_str(body).with_context(|| "deserializing registry doc as TOML".to_owned())
+        }
     }
 }
 

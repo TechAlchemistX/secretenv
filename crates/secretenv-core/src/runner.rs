@@ -128,7 +128,7 @@ impl EnvEntry {
     /// `mcp-safe` (the v0.16 MCP server) must not be able to read
     /// resolved values through any safe public API. Per Phase 7
     /// security audit finding B1.
-    #[cfg(not(feature = "mcp-safe"))]
+    #[cfg(feature = "value-access")]
     #[must_use]
     pub fn value(&self) -> &str {
         self.value.as_str_internal()

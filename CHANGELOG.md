@@ -16,7 +16,25 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
-> v0.14.x hygiene cycle — merged-not-tagged per [[feedback_pr_scoping_hygiene_carrier]]. The v0.15.0 CHANGELOG will absorb these entries on release.
+> v0.14.x hygiene cycle (merged-not-tagged) + v0.15.0 in progress. The v0.15.0 CHANGELOG absorbs the hygiene cycle's entries on tag.
+
+### BREAKING
+
+v0.15.0 Phase 0 lands a bundled BREAKING block — three architectural follow-ups from the v0.14 Phase 9b architect-reviewer audit ([[v0.14-issues/04-v0.15-architectural-followups]] arch-H1/H2/H3). Per [[feedback_prelaunch_breaking_changes]], one bundled BREAKING in a `0.x.y` cycle is acceptable pre-public-announcement; v0.15 honors this by bundling all three into one CHANGELOG block (mirroring v0.14's Q-O1 a/b/c bundle).
+
+- **(arch-H1) `Backend::serialize_registry_doc` + `Backend::deserialize_registry_doc` move off the trait** to free functions over a new `RegistryFormat::{Json, Toml}` enum. Backends now declare their wire format via the new `Backend::registry_format(&self) -> RegistryFormat` trait method (default `Json`); `local` and `1password` override to `Toml`. Wire-format encode/decode is the responsibility of the format enum, not the backend — v0.14's "default-with-override" trait method was an over-fit since the format selection is purely about the wire representation. External backend plugins must (a) remove their `serialize_registry_doc`/`deserialize_registry_doc` overrides and (b) override `registry_format()` if they don't use the JSON default.
+- **(arch-H2) `mcp-safe` Cargo feature polarity flipped to additive `value-access`.** v0.14's subtractive `mcp-safe` was a Cargo anti-pattern (feature unification across the dep graph). v0.15 inverts: default features are now `[]` (the safe surface — what `mcp-safe` enabled at v0.14), and the new `value-access` feature gates `expose_secret`, the `Backend` re-export, the `runner::*` re-exports, and `EnvEntry::value()`. The workspace-level `[workspace.dependencies]` for `secretenv-core` enables `features = ["value-access"]` so every workspace consumer keeps today's behaviour without per-crate Cargo.toml changes. External consumers must:
+  - `default-features = false` on their `secretenv-core` dep to get the safe (no-value-access) surface — formerly: `features = ["mcp-safe"]`.
+  - `features = ["value-access"]` to keep value-producing APIs — formerly: omitting `mcp-safe`.
+- **(arch-H3) `pub mod runner` is now cfg-gated under the `value-access` feature.** v0.14 left the module unconditionally `pub`, so downstream crates could `use secretenv_core::runner::{...}` to bypass the re-export gate. v0.15 closes the bypass at the module declaration site; reaching `runner::*` from a no-`value-access` consumer is now a compile error, not a doc-only convention.
+
+### Added
+
+- **Migrate telemetry surface** in `secretenv-telemetry::SecretEnvSpan` — six new `record_migrate_*` typed-attribute methods (`record_migrate_phase`, `record_migrate_outcome`, `record_migrate_source_backend_type`, `record_migrate_dest_backend_type`, `record_migrate_delete_source`, `record_migrate_transaction_id`) plus two new closed enums (`MigratePhase`, `MigrateOutcome`). The `RedactionPolicy` canonical matrix gains 11 new rows for migrate attributes — 7 ALLOW, 4 DENY. The migrated value, alias name, source/dest URIs, and source/dest backend instance names are all explicit DENY rows; only the backend TYPE strings, the phase/outcome enums, the `--delete-source` flag value, and the transaction id are ALLOW.
+
+### Changed
+
+- CI: the trybuild compile-fail harness renamed from `mcp_safe_trybuild` to `value_access_trybuild`; ui fixtures dir from `mcp_safe_ui/` to `value_access_ui/`. The job now invokes `cargo test -p secretenv-core --no-default-features --test value_access_trybuild` (was `--features mcp-safe --test mcp_safe_trybuild`). Same load-bearing assertion: value-producing APIs do not compile on the SAFE surface.
 
 ### Security
 

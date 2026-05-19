@@ -160,6 +160,17 @@ impl VaultBackend {
         uri.path.strip_prefix('/').unwrap_or(&uri.path).to_owned()
     }
 
+    /// Convert a KV-mount-relative path (the form `vault kv` accepts)
+    /// to the full policy path used by `vault token capabilities`.
+    /// KV v2 policies live at `<mount>/data/<key>` so we inject the
+    /// `data/` segment after the first slash. KV v1 mounts have no
+    /// `data/` segment but the resulting capabilities call simply
+    /// matches no policy and the probe degrades to `Ok` per contract.
+    fn capabilities_probe_path(path: &str) -> String {
+        path.split_once('/')
+            .map_or_else(|| path.to_owned(), |(mount, rest)| format!("{mount}/data/{rest}"))
+    }
+
     fn cli_missing() -> BackendStatus {
         BackendStatus::CliMissing {
             cli_name: CLI_NAME.to_owned(),
@@ -383,6 +394,55 @@ impl Backend for VaultBackend {
     /// unless the operator opts in via `--delete-source`.
     async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
         self.delete(uri).await
+    }
+
+    /// v0.15 migrate `--dry-run` write-permission probe. Cheap-probe
+    /// backend per the v0.15 audit table — uses `vault token
+    /// capabilities <path>` to ask Vault directly whether the current
+    /// token can write at the URI. **No value is materialized or
+    /// transmitted** (SEC-INV-01).
+    ///
+    /// KV v2 mounts inject `data/` between the mount and the secret
+    /// path in policy ACLs but the CLI hides this for `vault kv put`.
+    /// For `token capabilities` we inject it ourselves (best-effort —
+    /// if the mount is KV v1 the capabilities call still works, just
+    /// against a path that has no policy and we degrade to `Ok`).
+    ///
+    /// Returns `Err` only when capabilities are explicitly `deny` or
+    /// when neither `create`/`update`/`root`/`sudo` appears in the
+    /// returned set. All other outcomes (auth error, missing mount,
+    /// CLI absent, non-zero exit) degrade to `Ok(())` per the
+    /// `Backend::probe_write` contract — the upcoming `write_secret`
+    /// will surface the failure with full context.
+    async fn probe_write(&self, uri: &BackendUri) -> Result<()> {
+        uri.reject_any_fragment("vault")?;
+        let path = Self::vault_path(uri);
+        let probe_path = Self::capabilities_probe_path(&path);
+        let mut cmd = self.vault_command("token", &["capabilities", &probe_path]);
+        // CLI not installed / spawn failed: indeterminate, degrade.
+        let Ok(output) = cmd.output().await else {
+            return Ok(());
+        };
+        if !output.status.success() {
+            // Capabilities call failed (auth, missing mount, network):
+            // indeterminate, degrade per contract.
+            return Ok(());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let caps: Vec<&str> = stdout.trim().split(',').map(str::trim).collect();
+        if caps.iter().any(|c| matches!(*c, "create" | "update" | "root" | "sudo")) {
+            return Ok(());
+        }
+        if caps.contains(&"deny") {
+            bail!(
+                "vault backend '{}': token lacks write capability on '{}' (vault token capabilities → {})",
+                self.instance_name,
+                uri.raw,
+                stdout.trim()
+            );
+        }
+        // No `create`/`update` and no explicit `deny` — indeterminate.
+        Ok(())
     }
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {

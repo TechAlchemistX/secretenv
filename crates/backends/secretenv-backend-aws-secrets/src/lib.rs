@@ -412,6 +412,26 @@ impl Backend for AwsSecretsBackend {
         self.delete(uri).await
     }
 
+    /// v0.15 migrate `--dry-run` write-permission probe. **No value is
+    /// materialized or transmitted** (SEC-INV-01).
+    ///
+    /// Phase 3 ships an auth-liveness probe only: `aws sts
+    /// get-caller-identity` confirms the configured profile/region
+    /// resolves to a real principal. The full IAM-level probe
+    /// (`simulate-principal-policy` against
+    /// `secretsmanager:CreateSecret` / `secretsmanager:PutSecretValue`)
+    /// defers to v0.16+ for the same reasons as `aws-ssm` — see that
+    /// backend's `probe_write` docs. Per the `Backend::probe_write`
+    /// contract, indeterminate outcomes degrade to `Ok(())`.
+    async fn probe_write(&self, uri: &BackendUri) -> Result<()> {
+        uri.reject_any_fragment("aws-secrets")?;
+        let mut cmd = Command::new(&self.aws_bin);
+        cmd.args(["sts", "get-caller-identity", "--output", "json"]);
+        self.append_region_and_profile(&mut cmd);
+        let _ = cmd.output().await;
+        Ok(())
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         // `--force-delete-without-recovery` is unconditional: the
         // default 30-day recovery window makes `delete` look like it

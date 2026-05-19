@@ -200,6 +200,37 @@ pub trait Backend: Send + Sync {
         .into())
     }
 
+    /// v0.15 BREAKING (additive — default returns `Ok(())`).
+    ///
+    /// Probe whether the caller has permission to write at `uri`
+    /// without materializing or sending the secret value. Drives the
+    /// `secretenv registry migrate --dry-run` permission readout.
+    ///
+    /// Default impl is a no-op (`Ok(())`) — assume writable; the real
+    /// `write_secret` call will surface the auth failure. Backends
+    /// with a cheap permission-probe CLI surface override (vault token
+    /// capabilities, IAM simulate-principal-policy, `testIamPermissions`).
+    /// Backends without one stay on the default and the dry-run
+    /// renderer documents `"probe not supported for this backend;
+    /// dry-run shows plan only"` to the operator.
+    ///
+    /// **SEC-INV-01:** implementations MUST NOT materialize the secret
+    /// value, MUST NOT write a sentinel value to the destination URI,
+    /// and MUST NOT call `set` / `write_secret`. Probe-only paths.
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 3 audit table.
+    ///
+    /// # Errors
+    /// Returns an error only when the probe definitively proved the
+    /// caller cannot write (e.g. capability list returned without
+    /// `create`/`update`). On indeterminate probe failures (e.g. IAM
+    /// `simulate-principal-policy` itself denied to the caller), the
+    /// impl degrades to `Ok(())` rather than blocking the dry-run.
+    async fn probe_write(&self, _uri: &BackendUri) -> Result<()> {
+        Ok(())
+    }
+
     /// List the `(key, value)` pairs found at `uri`. For registry
     /// documents this returns the alias → backend-URI map.
     ///
@@ -414,6 +445,17 @@ mod tests {
             }
             other => panic!("expected WriteNotSupported, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn default_probe_write_returns_ok() {
+        let backend = UnimplementedBackend;
+        let uri = BackendUri::parse("unimpl://path").unwrap();
+
+        backend
+            .probe_write(&uri)
+            .await
+            .expect("default probe_write is a no-op that always returns Ok(())");
     }
 
     #[tokio::test]

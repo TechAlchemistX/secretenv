@@ -17,6 +17,7 @@ mod backends_init;
 mod cli;
 mod doctor;
 mod invite;
+mod migrate;
 mod profile;
 mod reports;
 mod setup;

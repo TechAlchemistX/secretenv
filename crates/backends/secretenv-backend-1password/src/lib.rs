@@ -303,6 +303,23 @@ impl Backend for OnePasswordBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Gated` per the v0.15 audit
+    /// table — refuses unless `op_unsafe_set = true` in
+    /// `[backends.<instance>]`. Returns a typed
+    /// [`BackendError::WriteNotSupported`](secretenv_core::BackendError::WriteNotSupported)
+    /// so the migrate handler can dispatch on the variant rather
+    /// than parse the underlying `set()` error's context string.
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        if !self.op_unsafe_set {
+            return Err(secretenv_core::BackendError::WriteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "op_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.set(uri, value.expose_secret()).await
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("1password")?;
         let (vault, item, field) = Self::parse_path(uri)?;

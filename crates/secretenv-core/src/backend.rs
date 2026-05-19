@@ -126,6 +126,41 @@ pub trait Backend: Send + Sync {
     /// the instance name and `uri.raw` — never the value.
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()>;
 
+    /// Write `value` at `uri` as a [`Secret`] reference. v0.15
+    /// migrate destination path — takes the value by `&Secret<String>`
+    /// reference rather than `&str` so the borrow-not-clone invariant
+    /// holds end-to-end through the migrate transaction
+    /// (SEC-INV-10).
+    ///
+    /// Default returns
+    /// [`BackendError::WriteNotSupported`](crate::BackendError::WriteNotSupported).
+    /// All 15 v0.14 backends override this method as the migrate
+    /// destination path:
+    ///
+    /// - 12 `Native` migrate destinations wrap their existing `set`
+    ///   path with no per-call gate.
+    /// - 3 `Gated` destinations (`1password`, `bitwarden-sm`, `keeper`)
+    ///   return `WriteNotSupported` with a `reason` naming the unset
+    ///   gate flag (`op_unsafe_set`, `bws_unsafe_set`,
+    ///   `keeper_unsafe_set`).
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 1 audit table.
+    ///
+    /// # Errors
+    /// Returns an error on any write failure or when the backend is
+    /// not a valid migrate destination (default impl, or a gated
+    /// backend without its opt-in flag set). Error context never
+    /// carries the value.
+    async fn write_secret(&self, _uri: &BackendUri, _value: &Secret<String>) -> Result<()> {
+        Err(crate::BackendError::WriteNotSupported {
+            backend_type: self.backend_type().to_owned(),
+            reason: "default Backend::write_secret impl — this backend has not implemented \
+                     the v0.15 migrate destination path",
+        }
+        .into())
+    }
+
     /// Delete the secret at `uri`.
     ///
     /// # Errors
@@ -285,4 +320,66 @@ pub trait BackendFactory: Send + Sync {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>>;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::{BackendError, Secret};
+
+    /// Strict-mock backend that overrides only the required trait
+    /// methods. Used to exercise the default `Backend::write_secret`
+    /// impl — the v0.15 contract is that any backend NOT overriding
+    /// `write_secret` returns [`BackendError::WriteNotSupported`].
+    struct UnimplementedBackend;
+
+    #[async_trait]
+    impl Backend for UnimplementedBackend {
+        fn backend_type(&self) -> &'static str {
+            "unimpl"
+        }
+        fn instance_name(&self) -> &'static str {
+            "unimpl-test"
+        }
+        async fn check(&self) -> BackendStatus {
+            BackendStatus::Ok {
+                identity: "unimpl-test".to_owned(),
+                cli_version: "0.0.0".to_owned(),
+            }
+        }
+        async fn get(&self, _uri: &BackendUri) -> Result<Secret<String>> {
+            Ok(Secret::new(String::new()))
+        }
+        async fn set(&self, _uri: &BackendUri, _value: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, _uri: &BackendUri) -> Result<()> {
+            Ok(())
+        }
+        async fn list(&self, _uri: &BackendUri) -> Result<Vec<(String, String)>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn default_write_secret_returns_write_not_supported() {
+        let backend = UnimplementedBackend;
+        let uri = BackendUri::parse("unimpl://path").unwrap();
+        let value = Secret::new("v".to_owned());
+
+        let err = backend.write_secret(&uri, &value).await.unwrap_err();
+        let typed = err.downcast::<BackendError>().expect(
+            "default write_secret must return a typed BackendError, not a plain anyhow::Error",
+        );
+        match typed {
+            BackendError::WriteNotSupported { backend_type, reason } => {
+                assert_eq!(backend_type, "unimpl");
+                assert!(
+                    reason.contains("default"),
+                    "reason should name the default-impl origin: {reason}"
+                );
+            }
+        }
+    }
 }

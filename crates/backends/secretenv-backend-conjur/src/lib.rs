@@ -504,6 +504,15 @@ impl Backend for ConjurBackend {
         self.write_value(uri, value, "set").await
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
     /// Conjur has no native delete. This implements **clear** semantics
     /// — the variable retains its policy definition but the value is
     /// emptied. Documented at the crate level + in `docs/backends/conjur.md`.

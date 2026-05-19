@@ -21,6 +21,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backend;
+pub mod backend_error;
 pub mod config;
 pub mod factory_helpers;
 pub mod manifest;
@@ -54,6 +55,7 @@ pub use backend::Backend;
 pub use backend::{
     deserialize_registry_doc, serialize_registry_doc, BackendFactory, HistoryEntry, RegistryFormat,
 };
+pub use backend_error::BackendError;
 pub use config::{
     default_config_path_xdg, profiles_dir_for, BackendConfig, Config, RegistryConfig,
 };

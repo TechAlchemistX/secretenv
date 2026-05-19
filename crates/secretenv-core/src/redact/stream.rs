@@ -212,6 +212,20 @@ mod tests {
         assert!(format!("{err:#}").contains("tail-window cap"));
     }
 
+    /// v0.14.x code-hygiene: boundary at `pattern_len == MODE_A_TAIL_WINDOW`
+    /// is the LARGEST accepted pattern. Previously only the strictly-greater
+    /// rejection case was tested; this case exercised the `>` (not `>=`)
+    /// in the bounds check at stream.rs:71.
+    #[test]
+    fn streaming_accepts_pattern_at_exact_tail_window() {
+        let mut set = TaintedSet::new();
+        let exact_value = "x".repeat(MODE_A_TAIL_WINDOW);
+        set.insert(TaintedValue::from_alias("exact", exact_value));
+        let res = StreamingScrubber::new(&set, SubstitutionToken::AliasAware);
+        assert!(res.is_ok(), "MODE_A_TAIL_WINDOW-sized pattern must be accepted");
+        assert!(res.unwrap().is_some(), "non-empty set must yield Some(StreamingScrubber)");
+    }
+
     #[test]
     fn streaming_aggregates_match_count_across_chunks() {
         let set = set_of(&[("k", "sk_live_abc123")]);

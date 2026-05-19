@@ -19,6 +19,13 @@ readme.workspace       = true
 # SDK + OTLP exporter behind a feature flag without restructuring
 # any call site. CI `cargo tree -p secretenv-telemetry` should never
 # show opentelemetry as a transitive dep at this version.
+#
+# `tracing` is currently unused inside this crate's own modules
+# (verified by v0.14.x code-hygiene audit). It is retained as the
+# explicit anchor for v0.17's planned `tracing::Subscriber` impl
+# that bridges `tracing` events into the OTLP exporter — keeping
+# the dep in `[dependencies]` rather than re-adding it at v0.17
+# avoids a churn-PR on `Cargo.lock` + downstream features.
 tracing.workspace = true
 
 [dev-dependencies]

@@ -41,6 +41,27 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a command with secrets injected as env vars.
+    ///
+    /// Pipe-based stdout/stderr redaction (Mode A) is on by default.
+    /// Limits: a child process can still write directly to `/dev/tty`
+    /// (escapes the pipe), or via `syslog(3)` / `journald` / `mmap`,
+    /// or by re-fetching values via the SDK. See `docs/security.md`
+    /// for the full Limits matrix.
+    #[command(long_about = "\
+Run a command with secrets injected as env vars.
+
+Pipe-based stdout/stderr redaction (Mode A) is on by default. Redaction \
+catches secrets that the child writes to its own stdout/stderr; it does \
+NOT catch:
+
+  - writes to /dev/tty (escapes the pipe)
+  - syslog(3) / journald / kernel-level logging
+  - mmap'd output
+  - core dumps + post-mortem analysis
+  - children that re-fetch values via an SDK directly
+
+See `docs/security.md` for the full Limits matrix.
+")]
     Run(RunArgs),
     /// Registry document operations.
     #[command(subcommand)]

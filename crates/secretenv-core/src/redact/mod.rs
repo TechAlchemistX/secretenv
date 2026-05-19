@@ -57,14 +57,14 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use tracing::warn;
+use zeroize::Zeroizing;
 
 pub use stream::StreamingScrubber;
 
 /// Minimum length (in bytes) for a tainted value to be considered
-/// for redaction. Values shorter than this are skipped (with a
-/// `tracing::warn!`) — they produce too many false positives to
-/// be worth substituting in the output stream.
+/// for redaction. Values shorter than this are skipped (with an
+/// operator-local stderr notice) — they produce too many false
+/// positives to be worth substituting in the output stream.
 pub const MIN_TAINTED_LEN: usize = 8;
 
 /// Maximum tail-window for mode A streaming. A tainted value larger
@@ -74,11 +74,18 @@ pub const MIN_TAINTED_LEN: usize = 8;
 pub const MODE_A_TAIL_WINDOW: usize = 64 * 1024;
 
 /// One value the operator wants suppressed from output streams.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `bytes` is wrapped in [`Zeroizing`] (SEC-INV / v0.14.x DiD chip M1):
+/// when the `TaintedSet` is dropped at end-of-run, the plaintext bytes
+/// are scrubbed from the heap rather than left as a dangling allocation
+/// until the allocator reuses it. Aho-Corasick's internal automaton
+/// still retains the patterns for its lifetime — Zeroizing here is
+/// strictly the operator-controlled half of the memory.
+#[derive(Debug, Clone)]
 pub struct TaintedValue {
     /// The bytes to find and replace. UTF-8 sequences in practice,
     /// but the matcher is byte-oriented so binary blobs work too.
-    pub bytes: Vec<u8>,
+    pub bytes: Zeroizing<Vec<u8>>,
     /// The alias name to use when constructing the substitution
     /// token in [`SubstitutionToken::AliasAware`] mode. `None`
     /// falls back to the bare `[REDACTED]` form.
@@ -96,7 +103,10 @@ impl TaintedValue {
         let bytes = value.as_ref();
         let trimmed_len =
             bytes.iter().rposition(|&b| b != b'\n' && b != b'\r').map_or(0, |i| i + 1);
-        Self { bytes: bytes[..trimmed_len].to_vec(), alias_name: Some(alias_name.into()) }
+        Self {
+            bytes: Zeroizing::new(bytes[..trimmed_len].to_vec()),
+            alias_name: Some(alias_name.into()),
+        }
     }
 }
 
@@ -118,14 +128,21 @@ impl TaintedSet {
     }
 
     /// Insert a value. Values shorter than [`MIN_TAINTED_LEN`] are
-    /// dropped with a `tracing::warn!` carrying the alias name but
-    /// NEVER the value or its length.
+    /// dropped with an operator-local `eprintln!` carrying the alias
+    /// name but NEVER the value or its length.
+    ///
+    /// SEC-INV-19 carve-out (v0.14.x DiD chip M2): the alias name is
+    /// DENY for OTel because it fingerprints resolved values. This
+    /// notice MUST stay on `eprintln!` (operator-local stderr) and
+    /// NEVER be promoted to `tracing::warn!` or any other macro that
+    /// a future `tracing::Subscriber` → OTel adapter could route to
+    /// a shared trace surface.
     pub fn insert(&mut self, value: TaintedValue) {
         if value.bytes.len() < MIN_TAINTED_LEN {
-            warn!(
-                alias = ?value.alias_name,
-                min_len = MIN_TAINTED_LEN,
-                "secretenv: tainted value below minimum length; skipping (alias-name only — no value, no length)",
+            // NOT `tracing::warn!` — see SEC-INV-19 carve-out above.
+            eprintln!(
+                "secretenv: tainted value below minimum length ({} bytes); skipping (alias={:?})",
+                MIN_TAINTED_LEN, value.alias_name,
             );
             return;
         }
@@ -237,6 +254,19 @@ impl Scrubber {
     }
 
     /// Length of pattern `id`.
+    ///
+    /// # Invariant (v0.14.x code-hygiene SAFETY doc)
+    ///
+    /// `id` MUST come from an Aho-Corasick match callback fired by
+    /// `self.ac` on this same `Scrubber`. The Aho-Corasick library
+    /// guarantees `pat_id ∈ [0, num_patterns)`, and
+    /// `pattern_lengths.len() == num_patterns` is established at
+    /// construction in [`Scrubber::new`]. Therefore the indexing
+    /// `pattern_lengths[id]` never panics in practice. A caller
+    /// outside this module that fabricates a `pat_id` from a foreign
+    /// source could trigger a panic; the `pub(crate)` visibility
+    /// keeps the function's reachable call set inside this crate
+    /// where the invariant is upheld.
     pub(crate) fn pattern_len(&self, id: usize) -> usize {
         self.pattern_lengths[id]
     }
@@ -331,11 +361,19 @@ impl Scrubber {
 /// # Errors
 /// Returns an error naming the offending top-level prefix.
 pub fn refuse_special_paths(path: &Path) -> Result<()> {
-    let components: Vec<_> = path.components().collect();
-    if components.len() < 2 {
+    use std::path::Component;
+    // v0.14.x code-hygiene chip: scan the first non-Root/non-Prefix
+    // component instead of indexing `components[1]`. The indexed form
+    // only matched on absolute paths (`/proc/foo` → components are
+    // [RootDir, Normal("proc"), ...]); a relative path like
+    // `proc/foo` from a CWD inside `/`, or `./proc/foo`, would miss.
+    let first_normal = path.components().find_map(|c| match c {
+        Component::Normal(s) => Some(s),
+        _ => None,
+    });
+    let Some(first) = first_normal else {
         return Ok(());
-    }
-    let first = components[1].as_os_str();
+    };
     if first == "proc" || first == "sys" || first == "dev" {
         bail!(
             "secretenv redact: refusing to scrub path '{}' — kernel pseudo-filesystems \
@@ -436,6 +474,15 @@ fn write_backup_secure(source: &Path, dest: &Path) -> Result<()> {
     // (`u16` on macOS, `u32` on Linux). Using the alias keeps
     // `Mode::from_raw_mode` happy on both targets — the previous
     // hard-coded `u16` only compiled on macOS.
+    //
+    // v0.14.x DiD chip L6: the `& 0o777` mask drops file-type bits
+    // **and** any setuid / setgid / sticky bits (0o4000 / 0o2000 /
+    // 0o1000) from the source. Phase 9b applied `& 0o7777` to the
+    // sibling persistence path (preserves setuid intentionally for
+    // the in-place rewrite of an already-trusted file); the backup
+    // path is the safer alternative — it never persists setuid,
+    // matching the tempfile rewrite convention. Do NOT widen this
+    // mask to `0o7777` without a corresponding threat-model entry.
     let dest_mode: rustix::fs::RawMode = (src_mode & 0o777) as rustix::fs::RawMode;
     let owned_fd = rustix::fs::open(
         dest,
@@ -574,7 +621,7 @@ mod tests {
     #[test]
     fn tainted_value_strips_trailing_newlines() {
         let v = TaintedValue::from_alias("stripe-key", "sk_live_abc\n\n");
-        assert_eq!(v.bytes, b"sk_live_abc");
+        assert_eq!(&v.bytes[..], b"sk_live_abc");
         assert_eq!(v.alias_name.as_deref(), Some("stripe-key"));
     }
 

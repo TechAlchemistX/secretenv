@@ -14,12 +14,18 @@ use crate::{RedactionSource, RedactionStream, SecretEnvErrorKind};
 
 /// RAII guard returned by [`SecretEnvSpan::start`]. Dropping it
 /// closes the span and (in v0.17) emits the trace.
+///
+/// The `_private` field is the **sealed-construction marker** — it
+/// keeps `SpanGuard` un-constructible from outside this crate so the
+/// only path to obtain one is through [`SecretEnvSpan::start`]. The
+/// field stays even after v0.17 wires real state because removing it
+/// would silently re-open `SpanGuard {}` literals at downstream call
+/// sites, bypassing the `start()` entry point that initialises OTel
+/// span tracking. v0.14.x code-hygiene chip: documented, not removed.
 #[derive(Debug)]
 #[must_use = "dropping the SpanGuard immediately ends the span"]
 pub struct SpanGuard {
-    // v0.14 stores nothing — the type exists so call sites already
-    // have the right binding shape when v0.17 wires real OTel
-    // tracking through this slot.
+    // Sealed-construction marker — see struct docs above.
     _private: (),
 }
 

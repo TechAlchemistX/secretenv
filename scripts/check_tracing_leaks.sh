@@ -72,11 +72,82 @@ fi
 # 4. Catch the structured-fields form: `tracing::warn!(value = ?...)`
 #    or `tracing::info!(value = %entry.value())`. The structured form
 #    bypasses the placeholder check above.
+#
+#    v0.14.x DiD chip M3: tightened to require a `?` or `%` sigil.
+#    The previous form `\bvalue\s*=` matched any field literally named
+#    `value` (e.g. an unrelated config default); the sigil requirement
+#    restricts to the actual tracing-structured-field form, which is
+#    where the SEC-INV-17 leak lives. LHS stays scoped to `value`
+#    only — backend-specific structured fields like `secret = %t.secret`
+#    (doppler key name) are non-value-bearing and intentionally allowed.
 if rg --multiline -U --type=rust \
-   'tracing::(error|warn|info|debug|trace)!\([^)]*\bvalue\s*=' \
+   'tracing::(error|warn|info|debug|trace)!\([^)]*\bvalue\s*=\s*[?%]' \
    crates/; then
-    echo "FAIL: tracing macro uses structured field 'value = ...'."
+    echo "FAIL: tracing macro uses structured field 'value = ?/%...'."
     fail=1
+fi
+
+# 5. v0.14.x DiD chip M3: catch `event!(Level::INFO, ...)` form. The
+#    `event!` macro is the macro-generic path that the level-named
+#    macros expand to; a future call site that uses it directly
+#    would bypass checks 1-4.
+if rg --multiline -U --type=rust \
+   '(\btracing::)?event!\([^)]*Level::[A-Z]+,[^)]*\{(value|secret|stdin|stdout|stderr|raw_stdout|raw_stderr|expose_secret)' \
+   crates/; then
+    echo "FAIL: tracing event!(Level::..) macro interpolates a value-bearing placeholder."
+    fail=1
+fi
+if rg --multiline -U --type=rust \
+   '(\btracing::)?event!\([^)]*Level::[A-Z]+,[^)]*\bvalue\s*=\s*[?%]' \
+   crates/; then
+    echo "FAIL: tracing event!(Level::..) uses structured field 'value = ?/%...'."
+    fail=1
+fi
+if rg --multiline -U --type=rust \
+   '(\btracing::)?event!\([^)]*Level::[A-Z]+,[^)]*expose_secret' \
+   crates/; then
+    echo "FAIL: tracing event!(Level::..) references expose_secret() directly."
+    fail=1
+fi
+
+# 6. v0.14.x DiD chip M3: catch `Span::current().record("value", ...)`
+#    and `span.record("value", ...)` — the direct attribute-setter
+#    path that bypasses macro-arg parsing entirely.
+if rg --multiline -U --type=rust \
+   '\.record\(\s*"(value|secret|stdin|stdout|stderr|raw_stdout|raw_stderr|expose_secret|uri\.raw)"' \
+   crates/; then
+    echo "FAIL: span.record(\"value\", ...) sets a value-bearing structured attribute."
+    fail=1
+fi
+
+# 7. v0.14.x DiD chip M3: catch bare `warn!`/`info!`/`error!`/`debug!`/
+#    `trace!` macros (after a `use tracing::warn;` in scope) that
+#    interpolate a value-bearing placeholder. Scoped to .rs files
+#    that import `tracing::` to avoid false positives on unrelated
+#    macros of the same name.
+bare_macro_hits=$(rg --multiline -U --type=rust --files-with-matches \
+    '^use tracing::' crates/ 2>/dev/null || true)
+if [ -n "$bare_macro_hits" ]; then
+    while IFS= read -r f; do
+        if rg --multiline -U \
+           '(^|[^A-Za-z0-9_:])(error|warn|info|debug|trace)!\([^)]*\{(value|secret|stdin|stdout|stderr|raw_stdout|raw_stderr|expose_secret)[^}]*\}' \
+           "$f"; then
+            echo "FAIL: bare tracing macro in $f interpolates a value-bearing placeholder."
+            fail=1
+        fi
+        if rg --multiline -U \
+           '(^|[^A-Za-z0-9_:])(error|warn|info|debug|trace)!\([^)]*\bvalue\s*=\s*[?%]' \
+           "$f"; then
+            echo "FAIL: bare tracing macro in $f uses structured field 'value = ?/%...'."
+            fail=1
+        fi
+        if rg --multiline -U \
+           '(^|[^A-Za-z0-9_:])(error|warn|info|debug|trace)!\([^)]*expose_secret' \
+           "$f"; then
+            echo "FAIL: bare tracing macro in $f references expose_secret() directly."
+            fail=1
+        fi
+    done <<< "$bare_macro_hits"
 fi
 
 if [ "$fail" -eq 0 ]; then

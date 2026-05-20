@@ -121,6 +121,18 @@ pub trait Backend: Send + Sync {
     /// Write `value` at `uri`. Used by `secretenv registry set` and
     /// backend migration flows.
     ///
+    /// **v0.15 known limitation (SEC-INV-21):** `set` performs an
+    /// unconditional write. The `secretenv registry set` / migrate
+    /// pointer-flip paths read the registry document, mutate the
+    /// alias map, then call `set` to write it back — this read-
+    /// modify-write window is NOT atomic at the storage layer.
+    /// Concurrent registry mutations on the same instance can clobber
+    /// each other. Operators must serialize their own registry
+    /// mutations until v0.17 introduces a CAS surface (working name
+    /// `Backend::cas_set(uri, expected_etag, new)`) — backends with
+    /// ETag/version semantics will implement it; backends without
+    /// will continue to degrade to current behavior.
+    ///
     /// # Errors
     /// Returns an error on any write failure. Error context includes
     /// the instance name and `uri.raw` — never the value.
@@ -141,7 +153,7 @@ pub trait Backend: Send + Sync {
     ///   path with no per-call gate.
     /// - 3 `Gated` destinations (`1password`, `bitwarden-sm`, `keeper`)
     ///   return `WriteNotSupported` with a `reason` naming the unset
-    ///   gate flag (`op_unsafe_set`, `bws_unsafe_set`,
+    ///   gate flag (`op_unsafe_set`, `bitwarden_unsafe_set`,
     ///   `keeper_unsafe_set`).
     ///
     /// Per-backend strategy is captured in
@@ -231,6 +243,18 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
+    /// Companion to [`Backend::probe_write`] — reports whether this
+    /// backend has a real (non-default) write-permission probe. The
+    /// `secretenv registry migrate --dry-run` renderer uses this to
+    /// distinguish "probe ran and passed" from "no probe available
+    /// for this backend; dry-run shows plan only".
+    ///
+    /// Default `false`. Backends that override [`Backend::probe_write`]
+    /// with a meaningful probe also override this to return `true`.
+    fn has_probe_write(&self) -> bool {
+        false
+    }
+
     /// v0.15 BREAKING (additive — default returns a generic message).
     ///
     /// Return a backend-native cleanup command for `uri`, used in the
@@ -244,7 +268,17 @@ pub trait Backend: Send + Sync {
     /// contain destination-URI components (a Tier-1 redaction concern
     /// per SEC-INV-20 on the `OTel` boundary, but the `OTel` boundary
     /// never sees this string; only `migrate.delete_source: bool`
-    /// crosses to telemetry).
+    /// crosses to telemetry). Per SEC-INV-22 (v0.15), `delete_hint`
+    /// output is terminal-only and never crosses the JSON `--json`,
+    /// MCP, or `OTel` boundaries.
+    ///
+    /// **Implementations MUST NOT perform I/O.** The hint is a
+    /// template built from `&self` state plus the `uri`; backends
+    /// that would otherwise need an IAM lookup or remote round-trip
+    /// to render an exact command should fall back to a parameterized
+    /// placeholder form (`"vault kv delete <path>"`). Sync return is
+    /// load-bearing — the `--json` renderer and the migrate success
+    /// message call this synchronously and inline.
     ///
     /// Per-backend strategy is captured in
     /// [[build-plan-v0.15-migrate]] §Phase 4 audit table.

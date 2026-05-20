@@ -428,26 +428,16 @@ impl Backend for GcpBackend {
         )
     }
 
-    /// v0.15 migrate `--dry-run` write-permission probe. **No value is
-    /// materialized or transmitted** (SEC-INV-01).
-    ///
-    /// Phase 3 ships an auth-liveness probe only: `gcloud auth
-    /// print-access-token` confirms the active credentials resolve to
-    /// a usable bearer token. The full IAM-level probe (`gcloud
-    /// secrets get-iam-policy` + `testIamPermissions` for
-    /// `secretmanager.versions.add`) defers to v0.16+: the destination
-    /// secret may not exist yet (which is the whole point of migrate),
-    /// so the per-secret policy probe has to be paired with a
-    /// project-level fallback, and that surface area is large enough
-    /// to deserve its own design pass. Per the `Backend::probe_write`
-    /// contract, indeterminate outcomes degrade to `Ok(())`.
-    async fn probe_write(&self, uri: &BackendUri) -> Result<()> {
-        uri.reject_any_fragment("gcp")?;
-        let mut cmd = Command::new(&self.gcloud_bin);
-        cmd.args(["auth", "print-access-token"]);
-        let _ = cmd.output().await;
-        Ok(())
-    }
+    // v0.15 migrate `--dry-run` write-permission probe: NOT
+    // overridden. Phase 7 audit (code-rev S3) flagged the prior
+    // `gcloud auth print-access-token`-and-discard probe as zero-
+    // signal latency. The full IAM-level probe (`gcloud secrets
+    // get-iam-policy` + `testIamPermissions` for
+    // `secretmanager.versions.add`) defers to v0.16+ — the
+    // destination secret may not exist yet (the whole point of
+    // migrate), so the per-secret policy probe needs a project-
+    // level fallback that deserves its own design pass. Trait
+    // default returns `Ok(())` and `has_probe_write() = false`.
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("gcp")?;

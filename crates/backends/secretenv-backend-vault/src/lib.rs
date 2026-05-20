@@ -427,6 +427,10 @@ impl Backend for VaultBackend {
     /// CLI absent, non-zero exit) degrade to `Ok(())` per the
     /// `Backend::probe_write` contract — the upcoming `write_secret`
     /// will surface the failure with full context.
+    fn has_probe_write(&self) -> bool {
+        true
+    }
+
     async fn probe_write(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("vault")?;
         let path = Self::vault_path(uri);

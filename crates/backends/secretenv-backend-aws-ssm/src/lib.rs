@@ -383,30 +383,18 @@ impl Backend for AwsSsmBackend {
         )
     }
 
-    /// v0.15 migrate `--dry-run` write-permission probe. **No value is
-    /// materialized or transmitted** (SEC-INV-01).
-    ///
-    /// Phase 3 ships an auth-liveness probe only: `aws sts
-    /// get-caller-identity` confirms the configured profile/region
-    /// resolves to a real principal. The full IAM-level probe (`aws iam
-    /// simulate-principal-policy --action-names ssm:PutParameter
-    /// --resource-arns <arn>`) defers to v0.16+: deriving the
-    /// resource ARN from the URI path requires the AWS account ID
-    /// plus partition + region, and `simulate-principal-policy` itself
-    /// requires `iam:SimulatePrincipalPolicy` permission which most
-    /// least-privilege roles don't carry. Per the
-    /// `Backend::probe_write` contract, indeterminate outcomes
-    /// degrade to `Ok(())` — the upcoming `write_secret` surfaces
-    /// any real permission failure with full context.
-    async fn probe_write(&self, uri: &BackendUri) -> Result<()> {
-        uri.reject_any_fragment("aws-ssm")?;
-        let mut cmd = Command::new(&self.aws_bin);
-        cmd.args(["sts", "get-caller-identity", "--output", "json"]);
-        self.append_region_and_profile(&mut cmd);
-        // Any error path degrades — see method-level docs.
-        let _ = cmd.output().await;
-        Ok(())
-    }
+    // v0.15 migrate `--dry-run` write-permission probe: NOT
+    // overridden. Phase 7 audit (code-rev S3) flagged the prior
+    // `aws sts get-caller-identity`-and-discard probe as
+    // pure-latency-zero-signal. The full IAM-level probe (`aws iam
+    // simulate-principal-policy --action-names ssm:PutParameter
+    // --resource-arns <arn>`) defers to v0.16+: deriving the
+    // resource ARN requires the AWS account ID plus partition +
+    // region, and `simulate-principal-policy` itself requires
+    // `iam:SimulatePrincipalPolicy` permission which most least-
+    // privilege roles don't carry. Fall back to the trait default
+    // (`Ok(())`) with `has_probe_write() = false` so the dry-run
+    // renderer labels this backend as "probe not available".
 
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("aws-ssm")?;

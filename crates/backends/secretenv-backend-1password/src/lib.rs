@@ -334,16 +334,26 @@ impl Backend for OnePasswordBackend {
         self.delete(uri).await
     }
 
-    /// v0.15 migrate success-message cleanup hint. 1Password CLI has
-    /// no "delete one field"; the operator deletes the whole item.
-    /// Best-effort: shows the item path components when parsable.
+    /// v0.15 migrate success-message cleanup hint. Aligned with this
+    /// backend's `delete()` semantics: 1Password CLI has no field-
+    /// removal — `delete()` clears the field by setting it to the
+    /// empty string. The hint mirrors that exact operation rather
+    /// than `op item delete <item>` (whole-item) so a copy-paste does
+    /// not remove adjacent fields the operator did not intend to
+    /// touch. Phase 7 audit fix — code-rev S2.
     fn delete_hint(&self, uri: &BackendUri) -> String {
         let account_flag =
             self.op_account.as_deref().map_or_else(String::new, |a| format!(" --account {a}"));
-        if let Ok((vault, item, _field)) = Self::parse_path(uri) {
-            format!(r#"op item delete "{item}" --vault "{vault}"{account_flag}"#)
+        if let Ok((vault, item, field)) = Self::parse_path(uri) {
+            format!(
+                "# 1Password has no field-removal; this clears the field to empty:\n\
+                 op item edit \"{item}\" \"{field}=\" --vault \"{vault}\"{account_flag}"
+            )
         } else {
-            format!(r#"op item delete "<item>" --vault "<vault>"{account_flag}"#)
+            format!(
+                "# 1Password has no field-removal; clear the field by setting it empty:\n\
+                 op item edit \"<item>\" \"<field>=\" --vault \"<vault>\"{account_flag}"
+            )
         }
     }
 

@@ -38,7 +38,7 @@ pub enum BackendError {
     /// trait-method implementations of [`crate::Backend::write_secret`]
     /// return this; backends that gate `write_secret` behind a config
     /// flag (`1password`'s `op_unsafe_set`, `bitwarden-sm`'s
-    /// `bws_unsafe_set`, `keeper`'s `keeper_unsafe_set`) also return
+    /// `bitwarden_unsafe_set`, `keeper`'s `keeper_unsafe_set`) also return
     /// this with a `reason` naming the unset flag.
     ///
     /// Maps to:

@@ -1230,14 +1230,23 @@ async fn registry_migrate(
         delete_source,
     };
 
+    // Phase 7 audit fix (code-rev B1): build the plan ONCE here in
+    // the CLI handler. Use the same plan instance for both the
+    // confirmation-prompt render and the actual migration via
+    // `migrate_with_plan` — the `transaction_id` the operator sees
+    // in the prompt is the same one that lands in the report. The
+    // prior shape called `build_migration_plan` once for the
+    // preview and once inside `migrate`, producing different
+    // `transaction_id`s and opening a TOCTOU window on the registry
+    // doc between confirmation and execution.
+    let plan = crate::migrate::build_migration_plan(&args, config, backends).await?;
+
     // Top-level confirmation prompt: skipped under --dry-run (no
     // mutation) and under --yes (operator opted out globally).
     if !dry_run && !yes {
-        let plan_preview =
-            crate::migrate::build_migration_plan(&args, config, backends).await?;
-        eprintln!("About to migrate {}:", plan_preview.alias);
-        eprintln!("  from: {}", plan_preview.source_uri.raw);
-        eprintln!("  to:   {}", plan_preview.dest_uri.raw);
+        eprintln!("About to migrate {}:", plan.alias);
+        eprintln!("  from: {}", plan.source_uri.raw);
+        eprintln!("  to:   {}", plan.dest_uri.raw);
         eprintln!();
         eprintln!(
             "This will read the current value from the source and write it to the destination."
@@ -1254,20 +1263,17 @@ async fn registry_migrate(
         }
     }
 
-    // The delete-source extra confirmation fires inside migrate()
-    // AFTER the pointer flip commits, per SEC-INV-08. It must run
-    // even under --yes; the closure handles that by always reading
-    // stdin when --delete-source was passed.
-    let confirm_delete = |plan: &crate::migrate::MigrationPlan| -> bool {
+    // The delete-source extra confirmation fires inside
+    // `migrate_with_plan` AFTER the pointer flip commits, per
+    // SEC-INV-08. It must run even under --yes; the closure handles
+    // that by always reading stdin when --delete-source was passed.
+    let post_commit_consent = |plan: &crate::migrate::MigrationPlan| -> bool {
         // No-op in dry-run (delete leg never runs).
         if dry_run {
             return false;
         }
         eprintln!();
-        eprintln!(
-            "  4/4  About to permanently delete {}.",
-            plan.source_uri.raw,
-        );
+        eprintln!("  4/4  About to permanently delete {}.", plan.source_uri.raw);
         eprintln!("       This cannot be undone.");
         // I/O error reading stdin treated as 'no' — the migration
         // is committed; the operator can clean up manually with the
@@ -1275,7 +1281,43 @@ async fn registry_migrate(
         prompt_yes_no("       Continue? [y/N] ").unwrap_or_default()
     };
 
-    let report = crate::migrate::migrate(args, config, backends, confirm_delete).await?;
+    let result =
+        crate::migrate::migrate_with_plan(plan, &args, backends, post_commit_consent).await;
+    let report = match result {
+        Ok(r) => r,
+        Err(e) => {
+            // Phase 7 audit fix (security M2): downcast the
+            // pointer-flip partial-failure to render the manual
+            // recovery block to stderr (terminal-only per
+            // SEC-INV-22) without embedding URI bodies in the
+            // bubbled error message.
+            if let Some(flip) = e.downcast_ref::<crate::migrate::PointerFlipFailed>() {
+                eprintln!("Error: migration partially failed.");
+                eprintln!();
+                eprintln!("  Step 1/3  Read from source:           OK");
+                eprintln!("  Step 2/3  Write to destination:        OK");
+                eprintln!("  Step 3/3  Registry pointer update:     FAILED");
+                eprintln!();
+                eprintln!(
+                    "IMPORTANT: The value has been written to {dest}.",
+                    dest = flip.dest_uri_raw
+                );
+                eprintln!("           The registry still points at the original source.");
+                eprintln!("           The value now exists in TWO backends.");
+                eprintln!();
+                eprintln!("To complete the migration:");
+                eprintln!(
+                    "  secretenv registry set {alias} {dest}",
+                    alias = flip.alias,
+                    dest = flip.dest_uri_raw
+                );
+                eprintln!();
+                eprintln!("To roll back (delete from destination):");
+                eprintln!("  {}", flip.dest_delete_hint);
+            }
+            return Err(e);
+        }
+    };
 
     if json {
         println!("{}", render_migrate_json(&report)?);
@@ -1315,9 +1357,7 @@ fn print_migrate_human(report: &crate::migrate::MigrateReport) {
             for (instance, result) in &report.probe_results {
                 eprintln!("  {instance:20} {result}");
             }
-            eprintln!(
-                "\nDry-run complete. No changes made. Remove --dry-run to execute.",
-            );
+            eprintln!("\nDry-run complete. No changes made. Remove --dry-run to execute.");
         }
         MigrateReportOutcome::Success => {
             eprintln!("Migration complete.");
@@ -1373,6 +1413,26 @@ fn render_migrate_json(report: &crate::migrate::MigrateReport) -> Result<String>
     if let Some(ms) = report.phase_durations.source_delete_ms {
         durations["source_delete_ms"] = serde_json::json!(ms);
     }
+    // Phase 7 audit (code-rev B3): include `probe_results` in JSON so
+    // `--dry-run --json` is consumable by CI. Each entry is an
+    // object rather than a positional array — `{"instance": ...,
+    // "status": ...}` — so future schema additions don't break
+    // existing consumers.
+    let probe_results: Vec<serde_json::Value> = report
+        .probe_results
+        .iter()
+        .map(|(instance, status)| {
+            serde_json::json!({
+                "instance": instance,
+                "status": status,
+            })
+        })
+        .collect();
+    // Phase 7 audit (security M1): do NOT emit `delete_hint` in JSON.
+    // The hint string contains URI path components (Tier-1 redaction
+    // per SEC-INV-20 / SEC-INV-22) and operators piping `--json` to a
+    // log aggregator would leak backend topology. The hint is
+    // terminal-only via `print_migrate_human`.
     let value = serde_json::json!({
         "alias": report.alias,
         "source_backend_type": report.source_backend_type,
@@ -1380,7 +1440,7 @@ fn render_migrate_json(report: &crate::migrate::MigrateReport) -> Result<String>
         "outcome": outcome,
         "phase_durations_ms": durations,
         "delete_source": report.delete_source,
-        "delete_hint": report.delete_hint,
+        "probe_results": probe_results,
         "transaction_id": report.transaction_id,
     });
     Ok(serde_json::to_string_pretty(&value)?)

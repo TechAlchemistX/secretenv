@@ -66,6 +66,10 @@ v0.15.0 Phase 0 lands a bundled BREAKING block — three architectural follow-up
 
 - **`rust-toolchain.toml` pinned to `1.95.0`** (was floating `stable`). Symmetric with CI's `dtolnay/rust-toolchain@stable` (which honors the project pin), eliminating red CI on every rust point-release for new clippy lints + trybuild fixture text drift. Bump is its own chore per the new runbook at `kb/wiki/runbooks/rust-toolchain-bump.md`; `CONTRIBUTING.md` references the runbook. (Issue #03.)
 
+### Known limitations
+
+- **(SEC-INV-21) Registry-document read-modify-write is not atomic in v0.15.** Both `secretenv registry set` and the new `secretenv registry migrate` pointer-flip phase implement document mutation as `Backend::list(...)` → mutate the in-memory `BTreeMap` → `Backend::set(...)`. None of the 15 backends carry CAS / If-Match / version-stamp plumbing today, so concurrent registry mutations on the same instance can clobber each other (classic lost-update race). The window is short (one round-trip) and the surface area is operator-driven (registry mutations are rare events), so this is shipping as a documented limitation. Mitigation: operators must serialize their own registry mutations against a single instance. v0.17 will introduce `Backend::cas_set(uri, expected_etag, new)` — backends with native ETag/version semantics (AWS S3, GCS, etcd-backed Vault) will implement it; backends without (local file, 1Password, keychain) will continue to degrade to current behavior under explicit acknowledgment. Phase 7 audit (architect-reviewer H2, code-reviewer B2) flagged this; both agreed v0.15 ships honestly with the limitation documented rather than blocking on the larger v0.17 surface.
+
 ## [0.14.0] - 2026-05-15
 
 **Headline:** `secretenv redact` lands in two modes, plus the foundation machinery three downstream cycles (v0.15 migrate, v0.16 MCP, v0.17 OTel) depend on. Backend total stays at **15**.

@@ -36,6 +36,27 @@
 //! the entire flow. Subsequent phases consume `&MigrationPlan` by
 //! reference; no phase re-resolves the alias or re-parses URIs.
 //!
+//! The canonical entry is [`migrate_with_plan`] — it takes a
+//! pre-built plan and is what both the CLI and the future v0.16 MCP
+//! `migrate_alias` tool will call directly. [`migrate`] is the
+//! convenience wrapper that builds the plan then dispatches, used
+//! only when the caller hasn't already done the plan-preview render
+//! (e.g. unit tests). The CLI builds the plan once for the
+//! confirmation-prompt render and reuses the same plan instance for
+//! the actual migration — the `transaction_id` the operator sees in
+//! the prompt is the same one that lands in the report and any
+//! captured telemetry. Phase 7 audit (code-rev B1) flagged the prior
+//! two-call shape as a TOCTOU + `transaction_id`-drift hazard.
+//!
+//! The pointer-flip phase ([`migrate_registry_flip`]) deliberately
+//! re-reads the registry document from the registry backend. This is
+//! NOT a violation of resolve-once — the invariant binds the *alias
+//! resolution and URI parsing*, not the registry-document snapshot.
+//! Reading the latest doc immediately before mutation minimizes the
+//! read-modify-write window (which is still racy in v0.15 — see
+//! SEC-INV-21 in [[v0.14-plus-security-invariants]] for the v0.17
+//! `cas_set` evolution plan).
+//!
 //! # Telemetry seam
 //!
 //! Each discrete async phase opens a `tracing::info_span!()` so the
@@ -116,12 +137,18 @@ pub enum MigrateReportOutcome {
     /// The value exists in BOTH backends; recovery is the operator's
     /// call (SEC-INV-09).
     ///
-    /// `migrate()` currently surfaces this via `Err` (with a
-    /// recovery-context message). The variant is retained so a
-    /// future MCP boundary or a structured `Result<MigrateReport,
-    /// MigrateReport>` API can switch to Ok-with-partial-failure
-    /// without an enum-variant break.
-    #[allow(dead_code)]
+    /// `migrate_with_plan` currently surfaces this via `Err` (the
+    /// downcast lookup is [`PointerFlipFailed`]) so the CLI can
+    /// render the manual-recovery block to stderr without embedding
+    /// URI bodies in the bubbled error message (SEC-INV-22). The
+    /// variant is retained as the wire-format anchor so a future MCP
+    /// boundary or a `Result<MigrateReport, MigrateReport>` API can
+    /// switch to Ok-with-partial-failure without an enum-variant
+    /// break. Phase 7 audit (architect M2): the
+    /// `report_outcome_json_round_trip` test exercises the variant
+    /// via direct construction so the JSON wire-format stays locked.
+    #[allow(dead_code)] // wire-format anchor; constructed in tests + future v0.16 MCP
+    #[doc(hidden)]
     PartialFailurePointerFlip,
     /// Migration succeeded but the source-delete leg (opt-in) failed.
     /// Migration is complete; cleanup is the operator's call.
@@ -133,12 +160,12 @@ pub enum MigrateReportOutcome {
 impl MigrateReportOutcome {
     const fn as_telemetry(self) -> MigrateOutcome {
         match self {
-            // `Success` and `SourceDeleteFailedPostCommit` both map to
-            // telemetry `Ok` — the latter is a post-commit warning, not
-            // a transaction failure (SEC-INV-09: migration completed).
-            // Identical-arm clippy lint suppressed because the mapping
-            // is intentional and should stay independently maintained.
-            Self::Success | Self::SourceDeleteFailedPostCommit => MigrateOutcome::Ok,
+            Self::Success => MigrateOutcome::Ok,
+            // Phase 7 audit (code-rev S8): distinct telemetry outcome
+            // — migration committed but post-commit source delete
+            // failed; operators querying OTel can see this without
+            // scraping logs.
+            Self::SourceDeleteFailedPostCommit => MigrateOutcome::OkWithCleanupFailure,
             Self::PartialFailurePointerFlip => MigrateOutcome::PartialFailure,
             Self::DryRun => MigrateOutcome::DryRun,
         }
@@ -238,47 +265,119 @@ pub async fn build_migration_plan(
     })
 }
 
-/// Drive the migration end-to-end. The CLI layer is responsible for
-/// the top-level confirmation prompt BEFORE calling this function.
-/// The `--delete-source` extra confirmation fires AFTER the
-/// pointer-flip commit succeeds — per SEC-INV-08 it must run even
-/// when `--yes` is set globally, and the operator must have seen
-/// the commit succeed before deciding. This is handled via the
-/// `confirm_delete_source` closure, called only when
-/// `args.delete_source` is true.
+/// Errors raised by `migrate_with_plan` that the partial-failure
+/// stderr renderer needs as structured context. The CLI dispatcher
+/// downcasts the returned `anyhow::Error` against this type to
+/// decide whether to print the manual-recovery block to stderr
+/// (vs. bubble the chain unmodified).
 ///
-/// The closure runs synchronously between phase 3 and phase 4; it
-/// can read stdin, query a prompt, or return a precomputed bool
-/// (tests). Returning `false` skips the delete leg with no error,
-/// leaves the migration committed, and surfaces the
-/// `delete_hint` in the report.
+/// SEC-INV-20 / Phase 7 audit (security M2) — the recovery block
+/// carries the destination URI body, which must stay on the
+/// operator's terminal and not leak into a captured stderr→log
+/// stream as the `anyhow::Error` Display.
+#[derive(Debug)]
+pub struct PointerFlipFailed {
+    pub alias: String,
+    pub dest_uri_raw: String,
+    pub dest_delete_hint: String,
+}
+
+impl std::fmt::Display for PointerFlipFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Compact form for log capture — recovery details go through
+        // the dedicated terminal-only renderer in the CLI dispatcher.
+        write!(
+            f,
+            "pointer flip failed for alias '{}' after destination write succeeded; \
+             value exists in both backends — operator action required (see stderr).",
+            self.alias
+        )
+    }
+}
+
+impl std::error::Error for PointerFlipFailed {}
+
+/// Convenience entry: build the [`MigrationPlan`] then dispatch to
+/// [`migrate_with_plan`]. Used when the caller has no need to render
+/// a confirmation preview against the resolved plan.
+///
+/// The CLI dispatcher does NOT use this entry — it builds the plan
+/// itself for the top-level confirmation render and reuses the same
+/// plan via [`migrate_with_plan`] (Phase 7 audit fix — code-rev B1
+/// — eliminates the TOCTOU + `transaction_id`-drift between preview
+/// and execution). v0.16 MCP `migrate_alias` and integration tests
+/// are the expected consumers of this entry; `dead_code` allow
+/// retained until v0.16 wires it up.
 ///
 /// # Errors
-/// - Plan build failure (alias resolution, URI parsing).
-/// - Destination probe failure (returned [`Err`] only on definitive
-///   capability deny — see [`Backend::probe_write`] contract).
-/// - Source read failure.
-/// - Destination write failure (pre-commit; nothing to recover).
-/// - Pointer-flip failure (post-commit; value lives in BOTH backends;
-///   surfaced as `MigrateReportOutcome::PartialFailurePointerFlip`).
-///
-/// Source-delete failure is non-fatal — it produces a
-/// `SourceDeleteFailedPostCommit` outcome plus a populated
-/// `delete_hint`.
+/// See [`migrate_with_plan`].
+#[allow(dead_code)]
 pub async fn migrate<F>(
     args: MigrateArgs,
     config: &Config,
     backends: &BackendRegistry,
-    confirm_delete_source: F,
+    post_commit_source_delete_consent: F,
+) -> Result<MigrateReport>
+where
+    F: FnOnce(&MigrationPlan) -> bool,
+{
+    let plan = build_migration_plan(&args, config, backends).await?;
+    migrate_with_plan(plan, &args, backends, post_commit_source_delete_consent).await
+}
+
+/// Drive the migration end-to-end against a pre-built plan. The CLI
+/// layer is responsible for the top-level confirmation prompt BEFORE
+/// calling this function. The `--delete-source` extra confirmation
+/// fires AFTER the pointer-flip commit succeeds — per SEC-INV-08 it
+/// must run even when `--yes` is set globally, and the operator must
+/// have seen the commit succeed before deciding.
+///
+/// This is the canonical entry point. v0.16 MCP `migrate_alias` will
+/// call this directly with a precomputed plan + a closure that
+/// returns `false` (no destructive default) or `true` (explicit
+/// MCP-side opt-in already confirmed at the MCP boundary).
+///
+/// The closure `post_commit_source_delete_consent` runs synchronously
+/// between phase 3 and phase 4; it can read stdin, query a prompt,
+/// or return a precomputed bool. The state machine is:
+///
+/// - `args.delete_source == false`: closure NEVER called; delete leg
+///   skipped; report's `delete_hint` is populated.
+/// - `args.delete_source == true` AND closure returns `true`:
+///   delete-source leg runs; report's `delete_hint` is `None` on
+///   success, populated on failure (with `SourceDeleteFailedPostCommit`
+///   outcome).
+/// - `args.delete_source == true` AND closure returns `false`:
+///   delete leg skipped; report's `delete_hint` is populated;
+///   outcome stays `Success` (operator declined but migration
+///   committed).
+///
+/// # Errors
+/// - Destination probe failure (returned [`Err`] only on definitive
+///   capability deny — see [`Backend::probe_write`] contract).
+/// - Source read failure (pre-commit; nothing to recover).
+/// - Destination write failure (pre-commit; nothing to recover).
+/// - Pointer-flip failure (post-commit; value lives in BOTH backends;
+///   the returned [`anyhow::Error`] downcasts to [`PointerFlipFailed`]
+///   so the CLI can render the manual-recovery block to stderr
+///   without embedding URI bodies in the bubbled error message —
+///   Phase 7 audit fix, SEC-INV-20).
+///
+/// Source-delete failure is non-fatal — it produces a
+/// `SourceDeleteFailedPostCommit` outcome plus a populated
+/// `delete_hint` in the report (not an `Err`).
+pub async fn migrate_with_plan<F>(
+    plan: MigrationPlan,
+    args: &MigrateArgs,
+    backends: &BackendRegistry,
+    post_commit_source_delete_consent: F,
 ) -> Result<MigrateReport>
 where
     F: FnOnce(&MigrationPlan) -> bool,
 {
     let (mut span, _guard) = SecretEnvSpan::start("secretenv.migrate");
-    span.record_command("migrate");
-
-    let plan = build_migration_plan(&args, config, backends).await?;
-    span.record_alias_name(&plan.alias)
+    span.record_command("migrate")
+        .record_alias_name(&plan.alias)
         .record_migrate_transaction_id(&plan.transaction_id);
 
     let source = backend_for(backends, &plan.source_uri)?;
@@ -323,44 +422,52 @@ where
         }
     };
 
-    // ----- Pointer flip (commit point) -----
-    let (flip_ms, flip_err) = match migrate_registry_flip(&plan, backends, &args).await {
-        Ok(ms) => (ms, None),
-        Err(e) => (0, Some(e)),
-    };
-    // Value drops now — `Zeroizing<String>` clears the buffer (SEC-INV-10).
+    // Phase 7 audit (code-rev S7): drop the secret value immediately
+    // after the destination write returns Ok. The registry-flip
+    // round-trip can take 100s of ms (cloud backends); holding the
+    // Secret<String> across that window for no reason widens the
+    // SEC-INV-10 in-memory lifetime.
     drop(value);
 
-    if let Some(err) = flip_err {
+    // ----- Pointer flip (commit point) -----
+    let flip_start = Instant::now();
+    let flip_result = migrate_registry_flip(&plan, backends).await;
+    // Phase 7 audit (code-rev S5): capture elapsed even on Err so the
+    // report carries the duration for triage.
+    let flip_ms = u64::try_from(flip_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    if let Err(flip_err) = flip_result {
         span.record_migrate_phase(MigratePhase::PointerFlip)
             .record_migrate_outcome(MigrateOutcome::PartialFailure);
-        // Partial-failure path: report and propagate so the CLI layer
-        // can emit the manual recovery stderr.
-        return Err(err.context(format!(
-            "migrate {alias}: pointer flip failed after destination write succeeded — \
-             value now exists in BOTH backends. Run `secretenv registry set {alias} \
-             {dest}` to complete; or `{dest_hint}` to roll back the destination write.",
-            alias = plan.alias,
-            dest = plan.dest_uri.raw,
-            dest_hint = dest.delete_hint(&plan.dest_uri),
-        )));
+        // Phase 7 audit (security M2): bubble a structured
+        // PointerFlipFailed error WITHOUT embedding dest_uri.raw or
+        // delete_hint into its Display. The CLI dispatcher
+        // downcasts and renders the manual-recovery block to stderr
+        // (terminal-only per SEC-INV-22).
+        return Err(flip_err.context(PointerFlipFailed {
+            alias: plan.alias.clone(),
+            dest_uri_raw: plan.dest_uri.raw.clone(),
+            dest_delete_hint: dest.delete_hint(&plan.dest_uri),
+        }));
     }
 
     // ----- Optional source-delete -----
-    // Per SEC-INV-08: fire confirmation EVEN when --yes is set
+    // Per SEC-INV-08: fire consent closure EVEN when --yes is set
     // globally, AND only AFTER the commit (steps 1-3) succeeded.
     let mut source_delete_ms = None;
     let mut outcome = MigrateReportOutcome::Success;
     let mut delete_hint = Some(source.delete_hint(&plan.source_uri));
-    if args.delete_source && confirm_delete_source(&plan) {
+    if args.delete_source && post_commit_source_delete_consent(&plan) {
         match migrate_source_delete(&plan, source).await {
             Ok(ms) => {
                 source_delete_ms = Some(ms);
                 delete_hint = None;
             }
             Err(_e) => {
+                // Phase 7 audit (code-rev S8): distinct telemetry
+                // outcome so OTel queries can see "migrated but
+                // source cleanup failed" without scraping logs.
                 outcome = MigrateReportOutcome::SourceDeleteFailedPostCommit;
-                // Migration is committed; surface as a warning, not a hard error.
             }
         }
     }
@@ -407,13 +514,35 @@ async fn probe_phase(
 
     // Source: a cheap-but-honest liveness signal is `check()`. We
     // don't probe-read the source value (that would materialize the
-    // secret; SEC-INV-01).
+    // secret; SEC-INV-01). Phase 7 audit (code-rev B4): normalize to
+    // the documented `"ok" | "error: <msg>"` shape rather than the
+    // raw `{source_status:?}` Debug dump which leaked identity,
+    // profile, region, and cli_version into the dry-run terminal +
+    // JSON output.
     let source_status = source.check().await;
-    results.push((source.instance_name().to_owned(), format!("{source_status:?}")));
+    let source_label = match source_status {
+        secretenv_core::BackendStatus::Ok { .. } => "ok".to_owned(),
+        secretenv_core::BackendStatus::NotAuthenticated { .. } => {
+            "error: not authenticated".to_owned()
+        }
+        secretenv_core::BackendStatus::CliMissing { .. } => "error: cli missing".to_owned(),
+        secretenv_core::BackendStatus::Error { .. } => "error: backend reported error".to_owned(),
+    };
+    results.push((source.instance_name().to_owned(), source_label));
 
-    // Destination: the actual write-permission probe.
+    // Destination: the actual write-permission probe. Phase 7 audit
+    // (architect M1): also report whether the backend has a real
+    // probe vs. relies on the default `Ok(())` no-op, so the dry-run
+    // can label "probed-and-ok" vs "no probe available".
     match dest.probe_write(&plan.dest_uri).await {
-        Ok(()) => results.push((dest.instance_name().to_owned(), "ok".to_owned())),
+        Ok(()) => {
+            let dest_label = if dest.has_probe_write() {
+                "ok (probed)".to_owned()
+            } else {
+                "ok (no probe available for this backend)".to_owned()
+            };
+            results.push((dest.instance_name().to_owned(), dest_label));
+        }
         Err(e) => {
             results.push((dest.instance_name().to_owned(), format!("error: {e}")));
             // Definitive deny — fail the migrate here, BEFORE any read.
@@ -433,12 +562,14 @@ async fn probe_phase(
 /// Phase 1 — read the source value. Discrete async function wrapped
 /// in its own `tracing::info_span!()` so the v0.17 `OTel` exporter can
 /// attach without restructuring.
-#[tracing::instrument(skip(plan, source), fields(alias = %plan.alias))]
-async fn migrate_read(
-    plan: &MigrationPlan,
-    source: &dyn Backend,
-) -> Result<(Secret<String>, u64)> {
-    let span = tracing::info_span!("secretenv.migrate.read");
+///
+/// Phase 7 audit (code-rev S4): single explicit `info_span!` rather
+/// than combining `#[tracing::instrument]` (which opens a span on
+/// call) with a manual `info_span!` in the body (which would open a
+/// duplicate nested child). The `OTel` contract uses the
+/// `secretenv.migrate.*` names exactly.
+async fn migrate_read(plan: &MigrationPlan, source: &dyn Backend) -> Result<(Secret<String>, u64)> {
+    let span = tracing::info_span!("secretenv.migrate.read", alias = %plan.alias);
     let _enter = span.enter();
     let start = Instant::now();
     let value = source
@@ -451,9 +582,12 @@ async fn migrate_read(
 
 /// Phase 2 — write to destination. Borrows the value as
 /// `&Secret<String>` (SEC-INV-10).
-#[tracing::instrument(skip(plan, dest, value), fields(alias = %plan.alias))]
-async fn migrate_write(plan: &MigrationPlan, dest: &dyn Backend, value: &Secret<String>) -> Result<u64> {
-    let span = tracing::info_span!("secretenv.migrate.write");
+async fn migrate_write(
+    plan: &MigrationPlan,
+    dest: &dyn Backend,
+    value: &Secret<String>,
+) -> Result<u64> {
+    let span = tracing::info_span!("secretenv.migrate.write", alias = %plan.alias);
     let _enter = span.enter();
     let start = Instant::now();
     dest.write_secret(&plan.dest_uri, value)
@@ -466,45 +600,31 @@ async fn migrate_write(plan: &MigrationPlan, dest: &dyn Backend, value: &Secret<
 /// Phase 3 — pointer flip (commit point). Re-reads the registry doc,
 /// inserts the new pointer, serializes, and writes it back. Mirrors
 /// `registry_set` in `cli.rs` for the registry-write side.
-#[tracing::instrument(skip(plan, backends, args), fields(alias = %plan.alias))]
-async fn migrate_registry_flip(
-    plan: &MigrationPlan,
-    backends: &BackendRegistry,
-    args: &MigrateArgs,
-) -> Result<u64> {
-    let span = tracing::info_span!("secretenv.migrate.pointer_flip");
+///
+/// Phase 7 audit (architect M4 / code-rev S6): the vestigial `args`
+/// parameter was dropped — the elapsed measurement now lives in the
+/// caller so it's captured even on `Err` (code-rev S5).
+async fn migrate_registry_flip(plan: &MigrationPlan, backends: &BackendRegistry) -> Result<()> {
+    let span = tracing::info_span!("secretenv.migrate.pointer_flip", alias = %plan.alias);
     let _enter = span.enter();
-    let start = Instant::now();
 
     let backend = backend_for(backends, &plan.registry_source_uri)?;
-    let current = backend
-        .list(&plan.registry_source_uri)
-        .await
-        .with_context(|| {
-            format!("reading registry document at '{}'", plan.registry_source_uri.raw)
-        })?;
+    let current = backend.list(&plan.registry_source_uri).await.with_context(|| {
+        format!("reading registry document at '{}'", plan.registry_source_uri.raw)
+    })?;
     let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.insert(plan.alias.clone(), plan.dest_uri.raw.clone());
     let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&plan.registry_source_uri, &serialized)
-        .await
-        .with_context(|| {
-            format!("writing updated registry document to '{}'", plan.registry_source_uri.raw)
-        })?;
+    backend.set(&plan.registry_source_uri, &serialized).await.with_context(|| {
+        format!("writing updated registry document to '{}'", plan.registry_source_uri.raw)
+    })?;
 
-    // `args.registry` reference used only to keep instrument fields
-    // stable across the signature; suppress the unused-binding lint.
-    let _ = args;
-
-    let dur = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    Ok(dur)
+    Ok(())
 }
 
 /// Phase 4 (opt-in) — delete source after a successful commit.
-#[tracing::instrument(skip(plan, source), fields(alias = %plan.alias))]
 async fn migrate_source_delete(plan: &MigrationPlan, source: &dyn Backend) -> Result<u64> {
-    let span = tracing::info_span!("secretenv.migrate.source_delete");
+    let span = tracing::info_span!("secretenv.migrate.source_delete", alias = %plan.alias);
     let _enter = span.enter();
     let start = Instant::now();
     source
@@ -585,10 +705,30 @@ mod tests {
             MigrateReportOutcome::PartialFailurePointerFlip.as_telemetry(),
             MigrateOutcome::PartialFailure
         );
+        // Phase 7 audit (code-rev S8): distinct telemetry outcome,
+        // not collapsed to `Ok`.
         assert_eq!(
             MigrateReportOutcome::SourceDeleteFailedPostCommit.as_telemetry(),
-            MigrateOutcome::Ok
+            MigrateOutcome::OkWithCleanupFailure
         );
         assert_eq!(MigrateReportOutcome::DryRun.as_telemetry(), MigrateOutcome::DryRun);
+    }
+
+    #[test]
+    fn pointer_flip_failed_display_omits_uri_body() {
+        // Phase 7 audit (security M2): the bubbled error's Display
+        // must NOT carry the dest URI body or delete_hint — only the
+        // alias. The CLI dispatcher downcasts and renders the
+        // manual-recovery block to stderr (terminal-only per
+        // SEC-INV-22).
+        let e = PointerFlipFailed {
+            alias: "stripe-key".to_owned(),
+            dest_uri_raw: "vault-prod://secret/payments/stripe_key".to_owned(),
+            dest_delete_hint: "VAULT_ADDR=… vault kv delete …".to_owned(),
+        };
+        let rendered = format!("{e}");
+        assert!(rendered.contains("stripe-key"), "{rendered}");
+        assert!(!rendered.contains("vault-prod://"), "leaked URI: {rendered}");
+        assert!(!rendered.contains("vault kv delete"), "leaked hint: {rendered}");
     }
 }

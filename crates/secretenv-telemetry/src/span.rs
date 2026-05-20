@@ -356,6 +356,12 @@ pub enum MigrateOutcome {
     /// Three-step (or four-step under `--delete-source`) transaction
     /// committed successfully.
     Ok,
+    /// Three-step transaction committed successfully but the opt-in
+    /// fourth step (source-delete under `--delete-source`) failed.
+    /// Migration itself is complete; cleanup is the operator's call.
+    /// Distinct from `Ok` so OTel queries can surface "migrate
+    /// succeeded but source cleanup failed" without scraping logs.
+    OkWithCleanupFailure,
     /// Write succeeded but pointer-flip failed; operator must run
     /// recovery. NEVER auto-rollback by deletion per SEC-INV-09.
     PartialFailure,
@@ -378,6 +384,7 @@ impl MigrateOutcome {
     pub const fn as_attribute_value(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::OkWithCleanupFailure => "ok-with-cleanup-failure",
             Self::PartialFailure => "partial-failure",
             Self::SourceReadFailed => "source-read-failed",
             Self::DestWriteFailed => "dest-write-failed",

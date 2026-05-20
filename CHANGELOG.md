@@ -44,6 +44,17 @@ v0.15.0 Phase 0 lands a bundled BREAKING block — three architectural follow-up
 ### Changed
 
 - CI: the trybuild compile-fail harness renamed from `mcp_safe_trybuild` to `value_access_trybuild`; ui fixtures dir from `mcp_safe_ui/` to `value_access_ui/`. The job now invokes `cargo test -p secretenv-core --no-default-features --test value_access_trybuild` (was `--features mcp-safe --test mcp_safe_trybuild`). Same load-bearing assertion: value-producing APIs do not compile on the SAFE surface.
+- **Code-hygiene polish** absorbing Phase 7/9/9b code-reviewer LOW chips:
+  - `refuse_special_paths` now scans the first `Normal` path component, catching relative `proc/foo` / `./proc/foo` inputs (was bounded to `components[1]` which only matched absolute paths). (Code-hygiene chip.)
+  - `Scrubber::pattern_len` documents the Aho-Corasick `pat_id ∈ [0, num_patterns)` invariant + the `pub(crate)` scope that upholds it.
+  - `aggregate_errors` documents the non-empty input precondition.
+  - `SpanGuard._private: ()` documented as the sealed-construction marker (kept, not removed).
+  - `RedactionPolicy` derives `Copy` (was `Clone` only); the type wraps a `&'static` slice and is trivially `Copy`.
+  - Stale `v0.3 TODO` block in `secretenv-backend-aws-secrets/src/lib.rs` rewritten as the current "open follow-ups" view.
+  - Off-by-one regression test added: `streaming_accepts_pattern_at_exact_tail_window` covers `pattern_len == MODE_A_TAIL_WINDOW` (the previous suite only covered `>`).
+  - `tracing` dep in `secretenv-telemetry/Cargo.toml` documented as the anchor for v0.17's planned `tracing::Subscriber` impl (avoiding a remove-then-readd churn).
+  - `runner.rs::inject_env_entries` helper extracts the three identical env-injection loops (tokio pipe-redact, unix `exec()`, non-unix `spawn()`).
+  - `CHANGELOG.md` header documents the project-specific `Known limitations` subsection convention introduced in v0.14.0.
 
 ### Security
 
@@ -57,27 +68,13 @@ v0.15.0 Phase 0 lands a bundled BREAKING block — three architectural follow-up
 - **Backup-path setuid mask documented** (`crates/secretenv-core/src/redact/mod.rs::write_backup_secure`). The existing `& 0o777` mask is correct — it drops setuid / setgid / sticky bits from the source — but the invariant was undocumented; a future maintainer might widen the mask without knowing the security commitment. Added an inline comment naming the chip. (DiD chip L6.)
 - **`EnvEntry.alias_name` doc tightened with SEC-INV-19 reference** (`crates/secretenv-core/src/runner.rs`). Field stays `Option<String>` (not `Secret<String>`) per L1 chip's own recommendation; future leak vectors must project away the alias via `RedactionEvent::for_otel`.
 
-### Changed
-
-- **Code-hygiene polish** absorbing Phase 7/9/9b code-reviewer LOW chips:
-  - `refuse_special_paths` now scans the first `Normal` path component, catching relative `proc/foo` / `./proc/foo` inputs (was bounded to `components[1]` which only matched absolute paths). (Code-hygiene chip.)
-  - `Scrubber::pattern_len` documents the Aho-Corasick `pat_id ∈ [0, num_patterns)` invariant + the `pub(crate)` scope that upholds it.
-  - `aggregate_errors` documents the non-empty input precondition.
-  - `SpanGuard._private: ()` documented as the sealed-construction marker (kept, not removed).
-  - `RedactionPolicy` derives `Copy` (was `Clone` only); the type wraps a `&'static` slice and is trivially `Copy`.
-  - Stale `v0.3 TODO` block in `secretenv-backend-aws-secrets/src/lib.rs` rewritten as the current "open follow-ups" view.
-  - Off-by-one regression test added: `streaming_accepts_pattern_at_exact_tail_window` covers `pattern_len == MODE_A_TAIL_WINDOW` (the previous suite only covered `>`).
-  - `tracing` dep in `secretenv-telemetry/Cargo.toml` documented as the anchor for v0.17's planned `tracing::Subscriber` impl (avoiding a remove-then-readd churn).
-  - `runner.rs::inject_env_entries` helper extracts the three identical env-injection loops (tokio pipe-redact, unix `exec()`, non-unix `spawn()`).
-  - `CHANGELOG.md` header documents the project-specific `Known limitations` subsection convention introduced in v0.14.0.
-
 ### CI
 
 - **`rust-toolchain.toml` pinned to `1.95.0`** (was floating `stable`). Symmetric with CI's `dtolnay/rust-toolchain@stable` (which honors the project pin), eliminating red CI on every rust point-release for new clippy lints + trybuild fixture text drift. Bump is its own chore per the new runbook at `kb/wiki/runbooks/rust-toolchain-bump.md`; `CONTRIBUTING.md` references the runbook. (Issue #03.)
 
 ### Known limitations
 
-- **(SEC-INV-21) Registry-document read-modify-write is not atomic in v0.15.** Both `secretenv registry set` and the new `secretenv registry migrate` pointer-flip phase implement document mutation as `Backend::list(...)` → mutate the in-memory `BTreeMap` → `Backend::set(...)`. None of the 15 backends carry CAS / If-Match / version-stamp plumbing today, so concurrent registry mutations on the same instance can clobber each other (classic lost-update race). The window is short (one round-trip) and the surface area is operator-driven (registry mutations are rare events), so this is shipping as a documented limitation. Mitigation: operators must serialize their own registry mutations against a single instance. v0.17 will introduce `Backend::cas_set(uri, expected_etag, new)` — backends with native ETag/version semantics (AWS S3, GCS, etcd-backed Vault) will implement it; backends without (local file, 1Password, keychain) will continue to degrade to current behavior under explicit acknowledgment. Phase 7 audit (architect-reviewer H2, code-reviewer B2) flagged this; both agreed v0.15 ships honestly with the limitation documented rather than blocking on the larger v0.17 surface.
+- **(SEC-INV-23) Registry-document read-modify-write is not atomic in v0.15.** Both `secretenv registry set` and the new `secretenv registry migrate` pointer-flip phase implement document mutation as `Backend::list(...)` → mutate the in-memory `BTreeMap` → `Backend::set(...)`. None of the 15 backends carry CAS / If-Match / version-stamp plumbing today, so concurrent registry mutations on the same instance can clobber each other (classic lost-update race). The window is short (one round-trip) and the surface area is operator-driven (registry mutations are rare events), so this is shipping as a documented limitation. Mitigation: operators must serialize their own registry mutations against a single instance. v0.17 will introduce `Backend::cas_set(uri, expected_etag, new)` — backends with native ETag/version semantics (AWS S3, GCS, etcd-backed Vault) will implement it; backends without (local file, 1Password, keychain) will continue to degrade to current behavior under explicit acknowledgment. Phase 7 audit (architect-reviewer H2, code-reviewer B2) flagged this; both agreed v0.15 ships honestly with the limitation documented rather than blocking on the larger v0.17 surface.
 
 ## [0.14.0] - 2026-05-15
 

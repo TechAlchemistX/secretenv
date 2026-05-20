@@ -1205,9 +1205,10 @@ async fn registry_set(
     Ok(())
 }
 
-/// `secretenv registry migrate <alias> <dest-uri>` — drives
-/// [`crate::migrate::migrate`] with all the user-prompt + report-
-/// rendering machinery the library entry leaves to the CLI.
+/// `secretenv registry migrate <alias> <dest-uri>` — builds the
+/// `MigrationPlan` once and drives [`crate::migrate::migrate_with_plan`]
+/// with all the user-prompt + report-rendering machinery the library
+/// entry leaves to the CLI.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 async fn registry_migrate(
     alias: &str,

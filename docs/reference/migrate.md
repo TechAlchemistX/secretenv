@@ -32,7 +32,7 @@ secretenv registry migrate <ALIAS> <DEST_URI>
 | `--yes` / `-y` | off | Skip the top-level confirmation prompt. **Does not** skip the `--delete-source` confirmation (see below). |
 | `--from <SOURCE_URI>` | (inferred) | Override the source URI. By default the source is the alias's current registry pointer; `--from` is for recovery flows where the pointer was already flipped but the value still lives in the old backend. |
 | `--delete-source` | off | After a successful migration, delete the value from the source backend. Opt-in and separately confirmed — see [`--delete-source`](#delete-source-opt-in-cleanup). |
-| `--json` | off | Emit a machine-readable `MigrateReport` to stdout instead of the human progress output. For CI consumption. |
+| `--json` | off | Emit a machine-readable `MigrateReport` as JSON to **stdout**. For CI consumption. Without `--json`, the human progress + summary output goes to **stderr** (so `2>/dev/null` suppresses it). |
 | `--registry <name|uri>` | active registry | Select which registry to operate on. Same semantics as `secretenv run --registry`. |
 
 ---
@@ -105,7 +105,7 @@ By default `migrate` prompts once before doing anything:
 ```
 About to migrate stripe-key:
   from: 1password-work://Payments/Stripe/api_key
-  to:   vault-prod://secret/payments/stripe
+  to:   vault-prod:///secret/payments/stripe
 
 This will read the current value from the source and write it to the destination.
 The registry pointer will be updated on success.
@@ -170,7 +170,7 @@ Error: migration partially failed.
   Step 2/3  Write to destination:        OK
   Step 3/3  Registry pointer update:     FAILED
 
-IMPORTANT: The value has been written to vault-prod://secret/payments/stripe.
+IMPORTANT: The value has been written to vault-prod:///secret/payments/stripe.
            The registry still points at the original source.
            The value now exists in TWO backends.
 
@@ -190,7 +190,7 @@ your terminal only — it is never emitted to logs or telemetry.
 
 A migration's destination must be a backend that can be written to.
 
-- **Native destinations** (13 backends) — `local`, `aws-ssm`, `aws-secrets`,
+- **Native destinations** (12 backends) — `local`, `aws-ssm`, `aws-secrets`,
   `vault`, `gcp`, `azure`, `keychain`, `doppler`, `infisical`, `cf-kv`,
   `openbao`, `conjur` — accept migrations with no extra configuration.
 - **Gated destinations** (`1password`, `bitwarden-sm`, and `keeper` for

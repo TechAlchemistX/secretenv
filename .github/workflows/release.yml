@@ -47,6 +47,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # The repo pins the build toolchain via rust-toolchain.toml
+      # (channel = "1.95.0", added in the v0.14.x hygiene cycle).
+      # `dtolnay/rust-toolchain@stable` installs the `targets:` input
+      # onto the `stable` toolchain — NOT the pinned one — so a
+      # non-native cross target (e.g. x86_64-apple-darwin built on an
+      # Apple-Silicon runner) is missing from the toolchain `cargo
+      # build` actually uses. Add the target explicitly to the pinned
+      # toolchain. `rustup target add` reads rust-toolchain.toml (present
+      # after checkout) and applies to 1.95.0. No-op for native targets;
+      # skipped for the cross-tool entry (`cross` manages its own).
+      - name: Add target to the pinned toolchain
+        if: ${{ !matrix.use-cross }}
+        run: rustup target add ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}

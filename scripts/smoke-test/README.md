@@ -1,8 +1,8 @@
 # SecretEnv smoke-test harness
 
 Live-backend integration smoke for `secretenv`. Provisions cloud-side fixtures
-across all 9 cloud/team backends plus a self-contained test keychain on
-macOS hosts, runs a 373-assertion validation matrix against a release
+across all 14 cloud/team backends plus a self-contained test keychain on
+macOS hosts, runs a ~640-assertion validation matrix against a release
 binary, then tears down what it created.
 
 This is the gate run before every tagged release.
@@ -157,6 +157,14 @@ release tag.
 | 24 | yes    | v0.8 — Keeper backend (skips if persistent-login not set)               |
 | 25 | yes    | v0.9 — Cloudflare Workers KV (skips if `wrangler` not authenticated)    |
 | 26 | yes    | v0.10 — OpenBao backend (skips if `bao` server unreachable / sealed)    |
+| 27 | yes    | v0.11 — CyberArk Conjur backend (skips if `docker` / Conjur unreachable) |
+| 28 | yes    | v0.12 — Bitwarden Secrets Manager backend (skips if `bws` / no token)   |
+| 29 | yes    | v0.14 Mode A — runtime stdout/stderr redaction                          |
+| 30 | yes    | v0.14 Mode B — post-hoc file scrubber                                    |
+| 31 | yes    | v0.14 Mode B — safety guards (special-path, foreign-owner, O_NOFOLLOW)  |
+| 32 | no     | v0.15 — `secretenv registry migrate` local-only semantics + JSON wire-format |
+| 33 | yes    | v0.15 — `secretenv registry migrate` live per-backend matrix (15 backends; SKIP-aware per-backend) |
+| 34 | no     | v0.15 — `secretenv registry migrate` `--delete-source` flow + SEC-INV-08 second-prompt lock |
 
 Run `./run-tests.sh --list-sections` for the live inventory.
 

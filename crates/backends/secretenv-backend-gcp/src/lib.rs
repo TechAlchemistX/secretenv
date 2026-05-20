@@ -398,6 +398,47 @@ impl Backend for GcpBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `gcloud secrets delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::secret_name(uri);
+        let impersonate = self
+            .gcp_impersonate_service_account
+            .as_deref()
+            .map_or_else(String::new, |sa| format!(" --impersonate-service-account {sa}"));
+        format!(
+            "gcloud secrets delete {name} --project {project} --quiet{impersonate}",
+            project = self.gcp_project,
+        )
+    }
+
+    // v0.15 migrate `--dry-run` write-permission probe: NOT
+    // overridden. Phase 7 audit (code-rev S3) flagged the prior
+    // `gcloud auth print-access-token`-and-discard probe as zero-
+    // signal latency. The full IAM-level probe (`gcloud secrets
+    // get-iam-policy` + `testIamPermissions` for
+    // `secretmanager.versions.add`) defers to v0.16+ — the
+    // destination secret may not exist yet (the whole point of
+    // migrate), so the per-secret policy probe needs a project-
+    // level fallback that deserves its own design pass. Trait
+    // default returns `Ok(())` and `has_probe_write() = false`.
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("gcp")?;
         let name = Self::secret_name(uri);

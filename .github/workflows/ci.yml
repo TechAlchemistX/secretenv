@@ -46,21 +46,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # NOTE: `--all-features` is deliberately NOT used.
-      # `secretenv-core::mcp-safe` is a *subtractive* feature (it
-      # removes `expose_secret` from the public API); Cargo feature
-      # unification under `--all-features` would cascade `mcp-safe`
-      # across the workspace and break every backend that injects
-      # values. The `mcp-safe` trybuild harness has its own job below.
+      # `secretenv-core::value-access` (v0.15 polarity flip from v0.14's
+      # subtractive `mcp-safe`) is enabled by the workspace `[workspace.
+      # dependencies]` so every workspace consumer gets the value-
+      # producing surface by default; passing `--all-features` would
+      # add no new behaviour but would unnecessarily enable any
+      # future per-crate optional features. The `value-access`
+      # trybuild harness has its own job below — it runs on the SAFE
+      # surface (default-features = false) to prove the value APIs
+      # are unreachable there.
       - run: cargo test --workspace
 
-  mcp-safe-trybuild:
-    name: mcp-safe trybuild (compile-fail harness)
+  value-access-trybuild:
+    name: value-access trybuild (compile-fail on SAFE surface)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p secretenv-core --features mcp-safe --test mcp_safe_trybuild
+      # v0.15 BREAKING (arch-H2): feature polarity flipped. The
+      # trybuild harness now runs WITHOUT `value-access` (the SAFE
+      # default surface) and proves the value-producing APIs do not
+      # compile. `--no-default-features` is required because the
+      # workspace-level dep includes `features = ["value-access"]`.
+      - run: cargo test -p secretenv-core --no-default-features --test value_access_trybuild
 
   tracing-leak-guard:
     name: SEC-INV-17 tracing-leak guard

@@ -121,10 +121,57 @@ pub trait Backend: Send + Sync {
     /// Write `value` at `uri`. Used by `secretenv registry set` and
     /// backend migration flows.
     ///
+    /// **v0.15 known limitation (SEC-INV-21):** `set` performs an
+    /// unconditional write. The `secretenv registry set` / migrate
+    /// pointer-flip paths read the registry document, mutate the
+    /// alias map, then call `set` to write it back — this read-
+    /// modify-write window is NOT atomic at the storage layer.
+    /// Concurrent registry mutations on the same instance can clobber
+    /// each other. Operators must serialize their own registry
+    /// mutations until v0.17 introduces a CAS surface (working name
+    /// `Backend::cas_set(uri, expected_etag, new)`) — backends with
+    /// ETag/version semantics will implement it; backends without
+    /// will continue to degrade to current behavior.
+    ///
     /// # Errors
     /// Returns an error on any write failure. Error context includes
     /// the instance name and `uri.raw` — never the value.
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()>;
+
+    /// Write `value` at `uri` as a [`Secret`] reference. v0.15
+    /// migrate destination path — takes the value by `&Secret<String>`
+    /// reference rather than `&str` so the borrow-not-clone invariant
+    /// holds end-to-end through the migrate transaction
+    /// (SEC-INV-10).
+    ///
+    /// Default returns
+    /// [`BackendError::WriteNotSupported`](crate::BackendError::WriteNotSupported).
+    /// All 15 v0.14 backends override this method as the migrate
+    /// destination path:
+    ///
+    /// - 12 `Native` migrate destinations wrap their existing `set`
+    ///   path with no per-call gate.
+    /// - 3 `Gated` destinations (`1password`, `bitwarden-sm`, `keeper`)
+    ///   return `WriteNotSupported` with a `reason` naming the unset
+    ///   gate flag (`op_unsafe_set`, `bitwarden_unsafe_set`,
+    ///   `keeper_unsafe_set`).
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 1 audit table.
+    ///
+    /// # Errors
+    /// Returns an error on any write failure or when the backend is
+    /// not a valid migrate destination (default impl, or a gated
+    /// backend without its opt-in flag set). Error context never
+    /// carries the value.
+    async fn write_secret(&self, _uri: &BackendUri, _value: &Secret<String>) -> Result<()> {
+        Err(crate::BackendError::WriteNotSupported {
+            backend_type: self.backend_type().to_owned(),
+            reason: "default Backend::write_secret impl — this backend has not implemented \
+                     the v0.15 migrate destination path",
+        }
+        .into())
+    }
 
     /// Delete the secret at `uri`.
     ///
@@ -132,6 +179,115 @@ pub trait Backend: Send + Sync {
     /// Returns an error if deletion fails or the secret does not exist
     /// (backend-dependent — some return success on missing keys).
     async fn delete(&self, uri: &BackendUri) -> Result<()>;
+
+    /// v0.15 BREAKING (additive — default returns
+    /// [`BackendError::DeleteNotSupported`](crate::BackendError::DeleteNotSupported)).
+    ///
+    /// The destructive cleanup leg of the v0.15 `secretenv registry
+    /// migrate --delete-source` opt-in path. Distinct from
+    /// [`Backend::delete`]:
+    ///
+    /// - `delete` is the general-purpose secret-removal entry point.
+    /// - `delete_secret` is the migrate-specific cleanup leg, gated
+    ///   the same way as [`Backend::write_secret`] (default refuses;
+    ///   12 Native backends override with `self.delete(uri)`
+    ///   passthrough; 3 Gated backends (`1password`, `bitwarden-sm`,
+    ///   `keeper`) require the same `*_unsafe_set` config flag the
+    ///   write path uses).
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 2 audit table.
+    ///
+    /// # Errors
+    /// Returns an error on any delete failure or when the backend is
+    /// not a valid migrate-cleanup target (default impl, or a gated
+    /// backend without its opt-in flag set). Error context never
+    /// carries the URI body or the alias name.
+    async fn delete_secret(&self, _uri: &BackendUri) -> Result<()> {
+        Err(crate::BackendError::DeleteNotSupported {
+            backend_type: self.backend_type().to_owned(),
+            reason: "default Backend::delete_secret impl — this backend has not implemented \
+                     the v0.15 migrate --delete-source cleanup path",
+        }
+        .into())
+    }
+
+    /// v0.15 BREAKING (additive — default returns `Ok(())`).
+    ///
+    /// Probe whether the caller has permission to write at `uri`
+    /// without materializing or sending the secret value. Drives the
+    /// `secretenv registry migrate --dry-run` permission readout.
+    ///
+    /// Default impl is a no-op (`Ok(())`) — assume writable; the real
+    /// `write_secret` call will surface the auth failure. Backends
+    /// with a cheap permission-probe CLI surface override (vault token
+    /// capabilities, IAM simulate-principal-policy, `testIamPermissions`).
+    /// Backends without one stay on the default and the dry-run
+    /// renderer documents `"probe not supported for this backend;
+    /// dry-run shows plan only"` to the operator.
+    ///
+    /// **SEC-INV-01:** implementations MUST NOT materialize the secret
+    /// value, MUST NOT write a sentinel value to the destination URI,
+    /// and MUST NOT call `set` / `write_secret`. Probe-only paths.
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 3 audit table.
+    ///
+    /// # Errors
+    /// Returns an error only when the probe definitively proved the
+    /// caller cannot write (e.g. capability list returned without
+    /// `create`/`update`). On indeterminate probe failures (e.g. IAM
+    /// `simulate-principal-policy` itself denied to the caller), the
+    /// impl degrades to `Ok(())` rather than blocking the dry-run.
+    async fn probe_write(&self, _uri: &BackendUri) -> Result<()> {
+        Ok(())
+    }
+
+    /// Companion to [`Backend::probe_write`] — reports whether this
+    /// backend has a real (non-default) write-permission probe. The
+    /// `secretenv registry migrate --dry-run` renderer uses this to
+    /// distinguish "probe ran and passed" from "no probe available
+    /// for this backend; dry-run shows plan only".
+    ///
+    /// Default `false`. Backends that override [`Backend::probe_write`]
+    /// with a meaningful probe also override this to return `true`.
+    fn has_probe_write(&self) -> bool {
+        false
+    }
+
+    /// v0.15 BREAKING (additive — default returns a generic message).
+    ///
+    /// Return a backend-native cleanup command for `uri`, used in the
+    /// `secretenv registry migrate` success message to give the
+    /// operator a copy-paste delete command when they did NOT pass
+    /// `--delete-source`. Each backend overrides with its CLI surface
+    /// (e.g. `vault kv delete secret/<path>`).
+    ///
+    /// **Output is purely informational text** — emitted to the
+    /// operator's terminal, never to `OTel`. The hint string may
+    /// contain destination-URI components (a Tier-1 redaction concern
+    /// per SEC-INV-20 on the `OTel` boundary, but the `OTel` boundary
+    /// never sees this string; only `migrate.delete_source: bool`
+    /// crosses to telemetry). Per SEC-INV-22 (v0.15), `delete_hint`
+    /// output is terminal-only and never crosses the JSON `--json`,
+    /// MCP, or `OTel` boundaries.
+    ///
+    /// **Implementations MUST NOT perform I/O.** The hint is a
+    /// template built from `&self` state plus the `uri`; backends
+    /// that would otherwise need an IAM lookup or remote round-trip
+    /// to render an exact command should fall back to a parameterized
+    /// placeholder form (`"vault kv delete <path>"`). Sync return is
+    /// load-bearing — the `--json` renderer and the migrate success
+    /// message call this synchronously and inline.
+    ///
+    /// Per-backend strategy is captured in
+    /// [[build-plan-v0.15-migrate]] §Phase 4 audit table.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        format!(
+            "# Source value at {} is still present. Cleanup mechanism is backend-specific.",
+            uri.raw
+        )
+    }
 
     /// List the `(key, value)` pairs found at `uri`. For registry
     /// documents this returns the alias → backend-URI map.
@@ -173,39 +329,87 @@ pub trait Backend: Send + Sync {
         false
     }
 
-    /// Serialize an alias → backend-URI registry document into the
-    /// wire format this backend uses on disk / over the wire.
+    /// Declares the wire format this backend uses for its registry
+    /// document on disk / over the wire.
     ///
-    /// Default: JSON. The `local` and `1password` backends override
-    /// to TOML for human-readability (`local`) and field-storage
-    /// compatibility (`1password`'s field bodies are
-    /// human-edited).
+    /// Default: [`RegistryFormat::Json`]. The `local` and `1password`
+    /// backends override to [`RegistryFormat::Toml`] for
+    /// human-readability (`local`) and field-storage compatibility
+    /// (`1password`'s field bodies are human-edited).
     ///
-    /// A [`BTreeMap`] is required: it guarantees alphabetical key
-    /// order so writes are deterministic and diff-friendly.
-    ///
-    /// # Errors
-    /// Returns an error if the map cannot be encoded in the target
-    /// wire format.
-    fn serialize_registry_doc(&self, map: &BTreeMap<String, String>) -> Result<String> {
-        serde_json::to_string(map).with_context(|| {
-            format!("serializing registry doc as JSON for backend type '{}'", self.backend_type())
-        })
+    /// The actual encode/decode lives in free functions
+    /// [`serialize_registry_doc`] / [`deserialize_registry_doc`]; the
+    /// backend just declares which format it speaks. This split
+    /// (v0.15 BREAKING arch-H1) keeps wire-format responsibility off
+    /// the `Backend` trait — the inverse pattern was an over-fit at
+    /// v0.14 since the format selection is purely about the wire
+    /// representation, not anything backend-specific.
+    fn registry_format(&self) -> RegistryFormat {
+        RegistryFormat::Json
     }
+}
 
-    /// Inverse of [`Self::serialize_registry_doc`]. Default: JSON.
-    /// `local` and `1password` override to TOML.
-    ///
-    /// # Errors
-    /// Returns an error if `body` is not a valid wire-format
-    /// registry document for this backend.
-    fn deserialize_registry_doc(&self, body: &str) -> Result<BTreeMap<String, String>> {
-        serde_json::from_str(body).with_context(|| {
-            format!(
-                "deserializing registry doc as JSON for backend type '{}'",
-                self.backend_type(),
-            )
-        })
+/// Wire format for an alias → backend-URI registry document.
+///
+/// Each [`Backend`] declares which format it serializes/deserializes
+/// via [`Backend::registry_format`]. The encode/decode itself is
+/// format-driven, not backend-driven; see [`serialize_registry_doc`]
+/// and [`deserialize_registry_doc`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RegistryFormat {
+    /// JSON encoding (`serde_json`). Default for cloud/CLI-driven
+    /// backends.
+    Json,
+    /// TOML encoding (`toml`). Used by file-on-disk and
+    /// human-field-edited backends (`local`, `1password`).
+    Toml,
+}
+
+/// Serialize an alias → backend-URI registry document into the
+/// declared wire format.
+///
+/// A [`BTreeMap`] is required: it guarantees alphabetical key order
+/// so writes are deterministic and diff-friendly.
+///
+/// **v0.15 BREAKING (arch-H1):** moved from the `Backend` trait to
+/// this free function over the format enum. Backends now declare the
+/// format via [`Backend::registry_format`] and let the wire-format
+/// concern stay off the trait.
+///
+/// # Errors
+/// Returns an error if the map cannot be encoded in the target
+/// wire format.
+pub fn serialize_registry_doc(
+    format: RegistryFormat,
+    map: &BTreeMap<String, String>,
+) -> Result<String> {
+    match format {
+        RegistryFormat::Json => serde_json::to_string(map)
+            .with_context(|| "serializing registry doc as JSON".to_owned()),
+        RegistryFormat::Toml => {
+            toml::to_string(map).with_context(|| "serializing registry doc as TOML".to_owned())
+        }
+    }
+}
+
+/// Inverse of [`serialize_registry_doc`].
+///
+/// **v0.15 BREAKING (arch-H1):** moved from the `Backend` trait to
+/// this free function over the format enum.
+///
+/// # Errors
+/// Returns an error if `body` is not a valid wire-format
+/// registry document for the declared format.
+pub fn deserialize_registry_doc(
+    format: RegistryFormat,
+    body: &str,
+) -> Result<BTreeMap<String, String>> {
+    match format {
+        RegistryFormat::Json => serde_json::from_str(body)
+            .with_context(|| "deserializing registry doc as JSON".to_owned()),
+        RegistryFormat::Toml => {
+            toml::from_str(body).with_context(|| "deserializing registry doc as TOML".to_owned())
+        }
     }
 }
 
@@ -237,4 +441,99 @@ pub trait BackendFactory: Send + Sync {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>>;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::{BackendError, Secret};
+
+    /// Strict-mock backend that overrides only the required trait
+    /// methods. Used to exercise the default `Backend::write_secret`
+    /// impl — the v0.15 contract is that any backend NOT overriding
+    /// `write_secret` returns [`BackendError::WriteNotSupported`].
+    struct UnimplementedBackend;
+
+    #[async_trait]
+    impl Backend for UnimplementedBackend {
+        fn backend_type(&self) -> &'static str {
+            "unimpl"
+        }
+        fn instance_name(&self) -> &'static str {
+            "unimpl-test"
+        }
+        async fn check(&self) -> BackendStatus {
+            BackendStatus::Ok {
+                identity: "unimpl-test".to_owned(),
+                cli_version: "0.0.0".to_owned(),
+            }
+        }
+        async fn get(&self, _uri: &BackendUri) -> Result<Secret<String>> {
+            Ok(Secret::new(String::new()))
+        }
+        async fn set(&self, _uri: &BackendUri, _value: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, _uri: &BackendUri) -> Result<()> {
+            Ok(())
+        }
+        async fn list(&self, _uri: &BackendUri) -> Result<Vec<(String, String)>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn default_write_secret_returns_write_not_supported() {
+        let backend = UnimplementedBackend;
+        let uri = BackendUri::parse("unimpl://path").unwrap();
+        let value = Secret::new("v".to_owned());
+
+        let err = backend.write_secret(&uri, &value).await.unwrap_err();
+        let typed = err.downcast::<BackendError>().expect(
+            "default write_secret must return a typed BackendError, not a plain anyhow::Error",
+        );
+        match typed {
+            BackendError::WriteNotSupported { backend_type, reason } => {
+                assert_eq!(backend_type, "unimpl");
+                assert!(
+                    reason.contains("default"),
+                    "reason should name the default-impl origin: {reason}"
+                );
+            }
+            other => panic!("expected WriteNotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn default_probe_write_returns_ok() {
+        let backend = UnimplementedBackend;
+        let uri = BackendUri::parse("unimpl://path").unwrap();
+
+        backend
+            .probe_write(&uri)
+            .await
+            .expect("default probe_write is a no-op that always returns Ok(())");
+    }
+
+    #[tokio::test]
+    async fn default_delete_secret_returns_delete_not_supported() {
+        let backend = UnimplementedBackend;
+        let uri = BackendUri::parse("unimpl://path").unwrap();
+
+        let err = backend.delete_secret(&uri).await.unwrap_err();
+        let typed = err.downcast::<BackendError>().expect(
+            "default delete_secret must return a typed BackendError, not a plain anyhow::Error",
+        );
+        match typed {
+            BackendError::DeleteNotSupported { backend_type, reason } => {
+                assert_eq!(backend_type, "unimpl");
+                assert!(
+                    reason.contains("default"),
+                    "reason should name the default-impl origin: {reason}"
+                );
+            }
+            other => panic!("expected DeleteNotSupported, got {other:?}"),
+        }
+    }
 }

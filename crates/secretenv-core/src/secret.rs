@@ -68,7 +68,7 @@ impl Secret<String> {
     /// through any safe API. See [`crate::mcp_safe`].
     ///
     /// The CLI never enables `mcp-safe`; the MCP server (v0.16) does.
-    #[cfg(not(feature = "mcp-safe"))]
+    #[cfg(feature = "value-access")]
     #[must_use]
     pub fn expose_secret(&self) -> &str {
         self.0.as_str()
@@ -76,9 +76,15 @@ impl Secret<String> {
 
     /// Crate-internal accessor used by the runner's `exec`/`spawn`
     /// path to inject the value into the child-process environment.
-    /// Always available regardless of the `mcp-safe` feature — the
-    /// public structural guarantee is about external API surface;
+    /// Always available regardless of the `value-access` feature —
+    /// the public structural guarantee is about external API surface;
     /// internal injection is the one legitimate use.
+    ///
+    /// Cfg-gated under `value-access` because the sole caller —
+    /// `crate::runner` — is itself gated under that feature
+    /// (v0.15 arch-H3). Without the gate, this `pub(crate)` method
+    /// would be dead-code on the SAFE build surface.
+    #[cfg(feature = "value-access")]
     #[must_use]
     pub(crate) fn as_str_internal(&self) -> &str {
         self.0.as_str()
@@ -112,12 +118,14 @@ mod tests {
         assert!(!dbg.contains("abc123"));
     }
 
+    #[cfg(feature = "value-access")]
     #[test]
     fn expose_secret_round_trip() {
         let s = Secret::new(String::from("payload"));
         assert_eq!(s.expose_secret(), "payload");
     }
 
+    #[cfg(feature = "value-access")]
     #[test]
     fn new_accepts_owned_string() {
         let raw = String::from("hello");

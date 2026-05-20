@@ -255,21 +255,30 @@ Each registry maps `db-url`, `stripe-key`, `api-key` to env-specific backends. Y
 
 ### Workflow 3 — Backend migration without touching repos
 
-Stripe key needs to move from 1Password to Vault. Today the flow is two steps:
+Stripe key needs to move from 1Password to Vault. One command:
 
 ```bash
-# Before: stripe-key lives in 1Password
-secretenv registry get stripe-key
-# stripe-key → 1password-work://payments/stripe/api_key
+# Dry-run first — probe both ends, print the plan, mutate nothing.
+secretenv registry migrate stripe-key "vault-prod://secret/payments/stripe_key" --dry-run
 
-# After moving the value from 1Password to Vault (using your existing tools):
-secretenv registry set stripe-key "vault-prod://secret/payments/stripe_key"
+# Execute: read from 1Password, write to Vault, flip the registry pointer atomically.
+secretenv registry migrate stripe-key "vault-prod://secret/payments/stripe_key"
 
 # Every repo picks this up on the next secretenv run.
 # No PRs. No re-encryption. No coordination.
 ```
 
-> **Coming in v0.15 — `secretenv registry migrate`.** Today's flow is two steps: move the value to the new backend with your existing tooling, then `registry set` to repoint the alias. A future release folds both into one operation — read from the current backend, write to the new one (where you have write permission), update the pointer atomically. The indirection guarantee doesn't change — repos still inherit on next run.
+`secretenv registry migrate` folds the move into one operation — read from the
+current backend, write to the destination (where you have write permission),
+flip the registry pointer atomically. The source value is **kept by default**;
+add `--delete-source` to remove it after a separately-confirmed prompt. Partial
+failures never auto-roll-back by deletion — you're given the manual recovery
+commands and you decide. Full reference: [docs/reference/migrate.md](docs/reference/migrate.md).
+
+The older two-step flow — move the value with your own tooling, then
+`secretenv registry set` to repoint the alias — still works and remains the
+fallback when you don't have write access to the destination from the machine
+running `secretenv`.
 
 
 ### Workflow 4 — Offboarding an engineer
@@ -529,6 +538,7 @@ secretenv registry list    [--registry <name-or-uri>]
 secretenv registry get     <alias>  [--registry <name-or-uri>]
 secretenv registry set     <alias> <backend-uri>  [--registry <name-or-uri>]
 secretenv registry unset   <alias>  [--registry <name-or-uri>]
+secretenv registry migrate <alias> <dest-uri>  [--dry-run] [--yes] [--from <uri>] [--delete-source] [--json] [--registry <name-or-uri>]
 secretenv registry history <alias>  [--registry <name-or-uri>] [--json]
 secretenv registry invite  [--registry <name-or-uri>] [--invitee <id>] [--json]
 

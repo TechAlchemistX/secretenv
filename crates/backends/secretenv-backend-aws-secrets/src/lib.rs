@@ -396,6 +396,46 @@ impl Backend for AwsSecretsBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint. Uses the default
+    /// 30-day recovery window rather than `--force-delete-without-recovery`
+    /// so the operator's copy-paste leaves a recovery path open if
+    /// they made a mistake. `delete()` itself force-deletes (see that
+    /// impl's comment); `delete_hint` is conservative.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::secret_id(uri);
+        let profile =
+            self.aws_profile.as_deref().map_or_else(String::new, |p| format!(" --profile {p}"));
+        format!(
+            "aws secretsmanager delete-secret --secret-id {name} --recovery-window-in-days 30 --region {region}{profile}",
+            region = self.aws_region,
+        )
+    }
+
+    // v0.15 migrate `--dry-run` write-permission probe: NOT
+    // overridden. Phase 7 audit (code-rev S3) flagged the prior
+    // `aws sts get-caller-identity`-and-discard probe as zero-
+    // signal latency. The full IAM-level probe
+    // (`simulate-principal-policy` against
+    // `secretsmanager:CreateSecret`/`secretsmanager:PutSecretValue`)
+    // defers to v0.16+ for the same reasons as `aws-ssm`. Trait
+    // default returns `Ok(())` and `has_probe_write() = false`.
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         // `--force-delete-without-recovery` is unconditional: the
         // default 30-day recovery window makes `delete` look like it

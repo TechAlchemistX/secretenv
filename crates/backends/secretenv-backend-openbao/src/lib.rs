@@ -386,6 +386,34 @@ impl Backend for OpenBaoBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `bao kv delete`. Mirrors vault's hint shape (`BAO_ADDR` is
+    /// the `OpenBao` analog of `VAULT_ADDR`).
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let path = Self::bao_path(uri);
+        let ns_export = self
+            .bao_namespace
+            .as_deref()
+            .map_or_else(String::new, |n| format!("BAO_NAMESPACE={n} "));
+        format!("BAO_ADDR={addr} {ns_export}bao kv delete {path}", addr = self.bao_address)
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("openbao")?;
         let path = Self::bao_path(uri);

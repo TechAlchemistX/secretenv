@@ -303,6 +303,60 @@ impl Backend for OnePasswordBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Gated` per the v0.15 audit
+    /// table — refuses unless `op_unsafe_set = true` in
+    /// `[backends.<instance>]`. Returns a typed
+    /// [`BackendError::WriteNotSupported`](secretenv_core::BackendError::WriteNotSupported)
+    /// so the migrate handler can dispatch on the variant rather
+    /// than parse the underlying `set()` error's context string.
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        if !self.op_unsafe_set {
+            return Err(secretenv_core::BackendError::WriteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "op_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Gated` per the
+    /// v0.15 audit table — refuses unless `op_unsafe_set = true`,
+    /// same gate as `write_secret`. Wraps `delete()` once authorized.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        if !self.op_unsafe_set {
+            return Err(secretenv_core::BackendError::DeleteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "op_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint. Aligned with this
+    /// backend's `delete()` semantics: 1Password CLI has no field-
+    /// removal — `delete()` clears the field by setting it to the
+    /// empty string. The hint mirrors that exact operation rather
+    /// than `op item delete <item>` (whole-item) so a copy-paste does
+    /// not remove adjacent fields the operator did not intend to
+    /// touch. Phase 7 audit fix — code-rev S2.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let account_flag =
+            self.op_account.as_deref().map_or_else(String::new, |a| format!(" --account {a}"));
+        if let Ok((vault, item, field)) = Self::parse_path(uri) {
+            format!(
+                "# 1Password has no field-removal; this clears the field to empty:\n\
+                 op item edit \"{item}\" \"{field}=\" --vault \"{vault}\"{account_flag}"
+            )
+        } else {
+            format!(
+                "# 1Password has no field-removal; clear the field by setting it empty:\n\
+                 op item edit \"<item>\" \"<field>=\" --vault \"<vault>\"{account_flag}"
+            )
+        }
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("1password")?;
         let (vault, item, field) = Self::parse_path(uri)?;
@@ -337,25 +391,8 @@ impl Backend for OnePasswordBackend {
         Ok(parsed.into_iter().collect())
     }
 
-    fn serialize_registry_doc(
-        &self,
-        map: &std::collections::BTreeMap<String, String>,
-    ) -> Result<String> {
-        toml::to_string(map).with_context(|| {
-            format!("1password backend '{}': serializing registry doc as TOML", self.instance_name)
-        })
-    }
-
-    fn deserialize_registry_doc(
-        &self,
-        body: &str,
-    ) -> Result<std::collections::BTreeMap<String, String>> {
-        toml::from_str(body).with_context(|| {
-            format!(
-                "1password backend '{}': deserializing registry doc as TOML",
-                self.instance_name,
-            )
-        })
+    fn registry_format(&self) -> secretenv_core::RegistryFormat {
+        secretenv_core::RegistryFormat::Toml
     }
 }
 

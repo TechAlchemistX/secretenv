@@ -484,6 +484,41 @@ impl Backend for DopplerBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `doppler secrets delete`. Best-effort: if the URI's short
+    /// form can't resolve to a project/config (missing instance
+    /// defaults), the hint uses placeholders so the operator can
+    /// see the command shape.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| "doppler secrets delete <NAME> --project <project> --config <config>".to_owned(),
+            |t| {
+                format!(
+                    "doppler secrets delete {secret} --project {project} --config {config}",
+                    secret = t.secret,
+                    project = t.project,
+                    config = t.config,
+                )
+            },
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("doppler")?;
         let t = self.resolve_target(uri)?;

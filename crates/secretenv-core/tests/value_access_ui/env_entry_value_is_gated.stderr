@@ -1,0 +1,13 @@
+error[E0432]: unresolved import `secretenv_core::runner`
+  --> tests/value_access_ui/env_entry_value_is_gated.rs:10:21
+   |
+10 | use secretenv_core::runner::EnvEntry;
+   |                     ^^^^^^ could not find `runner` in `secretenv_core`
+   |
+note: found an item that was configured out
+  --> src/lib.rs
+   |
+   | #[cfg(feature = "value-access")]
+   |       ------------------------ the item is gated behind the `value-access` feature
+   | pub mod runner;
+   |         ^^^^^^

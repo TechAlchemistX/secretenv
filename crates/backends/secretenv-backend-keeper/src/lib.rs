@@ -575,6 +575,48 @@ impl Backend for KeeperBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Gated` per the v0.15 audit
+    /// table — refuses unless `keeper_unsafe_set = true` in
+    /// `[backends.<instance>]`. Returns a typed
+    /// [`BackendError::WriteNotSupported`](secretenv_core::BackendError::WriteNotSupported)
+    /// so the migrate handler can dispatch on the variant rather
+    /// than parse the underlying `set()` error's context string.
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        if !self.keeper_unsafe_set {
+            return Err(secretenv_core::BackendError::WriteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "keeper_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Gated` per the
+    /// v0.15 audit table — refuses unless `keeper_unsafe_set = true`,
+    /// same gate as `write_secret`. Wraps `delete()` once authorized.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        if !self.keeper_unsafe_set {
+            return Err(secretenv_core::BackendError::DeleteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "keeper_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `keeper record-rm`. Resolves the record identifier from
+    /// the URI; falls back to a placeholder if the URI doesn't
+    /// resolve cleanly.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| "keeper record-rm <record-uid-or-path>".to_owned(),
+            |target| format!("keeper record-rm {target}"),
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("keeper")?;
         let target = self.resolve_target(uri)?;

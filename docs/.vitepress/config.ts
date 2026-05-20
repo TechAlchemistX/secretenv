@@ -117,6 +117,7 @@ export default defineConfig({
         items: [
           { text: 'CLI Reference', link: '/reference/cli-reference-full' },
           { text: 'Configuration', link: '/reference/configuration' },
+          { text: 'Registry Migrate', link: '/reference/migrate' },
         ],
       },
       {

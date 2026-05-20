@@ -504,6 +504,37 @@ impl Backend for ConjurBackend {
         self.write_value(uri, value, "set").await
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint. Conjur 8.x has no
+    /// CLI `variable delete` — `delete()` semantics in this backend
+    /// are "clear the value" (rewrite to empty string). The hint
+    /// surfaces the same `variable set` form so the operator can
+    /// re-clear or change the value, and documents that full removal
+    /// requires policy-level changes.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let id = Self::variable_id(uri);
+        format!(
+            "# Conjur 8.x has no `variable delete` CLI; clear the value:\n\
+             conjur variable set -i {id} -v ''\n\
+             # To fully remove, update the policy that defines this variable."
+        )
+    }
+
     /// Conjur has no native delete. This implements **clear** semantics
     /// — the variable retains its policy definition but the value is
     /// emptied. Documented at the crate level + in `docs/backends/conjur.md`.

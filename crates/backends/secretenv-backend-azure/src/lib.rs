@@ -501,6 +501,33 @@ impl Backend for AzureBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `az keyvault secret delete`. Soft-delete only; the operator
+    /// can `purge-deleted-secret` separately if their role allows.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::secret_name(uri);
+        format!(
+            "az keyvault secret delete --vault-name {vault} --name {name}",
+            vault = self.vault_name,
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("azure")?;
         let name = Self::secret_name(uri);

@@ -172,6 +172,30 @@ impl Backend for LocalBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint. `local` stores
+    /// secrets as plaintext files on disk; hint points at the file
+    /// path so the operator can remove it directly.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let path = Self::file_path(uri);
+        format!("rm {}", path.display())
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         let path = Self::file_path(uri);
         tokio::fs::remove_file(&path).await.with_context(|| {
@@ -255,22 +279,8 @@ impl Backend for LocalBackend {
         Ok(parse_git_log(&stdout))
     }
 
-    fn serialize_registry_doc(
-        &self,
-        map: &std::collections::BTreeMap<String, String>,
-    ) -> Result<String> {
-        toml::to_string(map).with_context(|| {
-            format!("local backend '{}': serializing registry doc as TOML", self.instance_name)
-        })
-    }
-
-    fn deserialize_registry_doc(
-        &self,
-        body: &str,
-    ) -> Result<std::collections::BTreeMap<String, String>> {
-        toml::from_str(body).with_context(|| {
-            format!("local backend '{}': deserializing registry doc as TOML", self.instance_name)
-        })
+    fn registry_format(&self) -> secretenv_core::RegistryFormat {
+        secretenv_core::RegistryFormat::Toml
     }
 }
 

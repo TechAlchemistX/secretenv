@@ -564,6 +564,44 @@ impl Backend for BitwardenSmBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Gated` per the v0.15 audit
+    /// table — refuses unless `bitwarden_unsafe_set = true` in
+    /// `[backends.<instance>]`. Returns a typed
+    /// [`BackendError::WriteNotSupported`](secretenv_core::BackendError::WriteNotSupported)
+    /// so the migrate handler can dispatch on the variant rather
+    /// than parse the underlying `set()` error's context string.
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        if !self.bitwarden_unsafe_set {
+            return Err(secretenv_core::BackendError::WriteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "bitwarden_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Gated` per the
+    /// v0.15 audit table — refuses unless `bitwarden_unsafe_set = true`,
+    /// same gate as `write_secret`. Wraps `delete()` once authorized.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        if !self.bitwarden_unsafe_set {
+            return Err(secretenv_core::BackendError::DeleteNotSupported {
+                backend_type: self.backend_type().to_owned(),
+                reason: "bitwarden_unsafe_set is false — set the flag in [backends.<instance>] of config.toml to opt in",
+            }
+            .into());
+        }
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `bws secret delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let id = Self::raw_secret_id(uri);
+        format!("bws secret delete {id}")
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("bitwarden-sm")?;
         if !self.bitwarden_unsafe_set {

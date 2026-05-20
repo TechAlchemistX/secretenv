@@ -16,7 +16,45 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
-> v0.14.x hygiene cycle — merged-not-tagged per [[feedback_pr_scoping_hygiene_carrier]]. The v0.15.0 CHANGELOG will absorb these entries on release.
+> v0.14.x hygiene cycle (merged-not-tagged) + v0.15.0 in progress. The v0.15.0 CHANGELOG absorbs the hygiene cycle's entries on tag.
+
+### BREAKING
+
+v0.15.0 Phase 0 lands a bundled BREAKING block — three architectural follow-ups from the v0.14 Phase 9b architect-reviewer audit ([[v0.14-issues/04-v0.15-architectural-followups]] arch-H1/H2/H3). Per [[feedback_prelaunch_breaking_changes]], one bundled BREAKING in a `0.x.y` cycle is acceptable pre-public-announcement; v0.15 honors this by bundling all three into one CHANGELOG block (mirroring v0.14's Q-O1 a/b/c bundle).
+
+- **(arch-H1) `Backend::serialize_registry_doc` + `Backend::deserialize_registry_doc` move off the trait** to free functions over a new `RegistryFormat::{Json, Toml}` enum. Backends now declare their wire format via the new `Backend::registry_format(&self) -> RegistryFormat` trait method (default `Json`); `local` and `1password` override to `Toml`. Wire-format encode/decode is the responsibility of the format enum, not the backend — v0.14's "default-with-override" trait method was an over-fit since the format selection is purely about the wire representation. External backend plugins must (a) remove their `serialize_registry_doc`/`deserialize_registry_doc` overrides and (b) override `registry_format()` if they don't use the JSON default.
+- **(arch-H2) `mcp-safe` Cargo feature polarity flipped to additive `value-access`.** v0.14's subtractive `mcp-safe` was a Cargo anti-pattern (feature unification across the dep graph). v0.15 inverts: default features are now `[]` (the safe surface — what `mcp-safe` enabled at v0.14), and the new `value-access` feature gates `expose_secret`, the `Backend` re-export, the `runner::*` re-exports, and `EnvEntry::value()`. The workspace-level `[workspace.dependencies]` for `secretenv-core` enables `features = ["value-access"]` so every workspace consumer keeps today's behaviour without per-crate Cargo.toml changes. External consumers must:
+  - `default-features = false` on their `secretenv-core` dep to get the safe (no-value-access) surface — formerly: `features = ["mcp-safe"]`.
+  - `features = ["value-access"]` to keep value-producing APIs — formerly: omitting `mcp-safe`.
+- **(arch-H3) `pub mod runner` is now cfg-gated under the `value-access` feature.** v0.14 left the module unconditionally `pub`, so downstream crates could `use secretenv_core::runner::{...}` to bypass the re-export gate. v0.15 closes the bypass at the module declaration site; reaching `runner::*` from a no-`value-access` consumer is now a compile error, not a doc-only convention.
+
+### Added
+
+- **`secretenv registry migrate <alias> <dest-uri>`** — the headline v0.15 feature. Migrates an alias's secret value from one backend to another in a single operation: read from the source, write to the destination, then atomically flip the registry pointer. No consuming repo touches a backend URI, so a migration never requires a code change. Flags: `--dry-run` (probe + plan, zero mutation), `--yes` (skip the top-level prompt), `--from <uri>` (override the inferred source for recovery flows), `--delete-source` (opt-in source cleanup, separately confirmed even under `--yes`), `--json` (machine-readable `MigrateReport` for CI), `--registry <name|uri>` (registry selection). The source value is **kept by default**; partial failures **never auto-roll-back by deletion** — the operator is given the manual recovery commands. Full reference: `docs/reference/migrate.md`.
+- **Five new `Backend` trait methods**, all additive with default impls so existing backends and external plugins compile unchanged:
+  - `write_secret(&self, &BackendUri, &Secret<String>)` — the migrate destination-write path; takes the value by `&Secret<String>` reference (borrow-not-clone). Default returns the typed `BackendError::WriteNotSupported`. 12 `Native` backends override with a passthrough; 3 `Gated` backends (`1password`, `keeper`, `bitwarden-sm`) refuse unless their `*_unsafe_set` config flag is set.
+  - `delete_secret(&self, &BackendUri)` — the opt-in `--delete-source` cleanup leg. Default returns `BackendError::DeleteNotSupported`. Same Native/Gated split as `write_secret`.
+  - `probe_write(&self, &BackendUri)` + `has_probe_write(&self) -> bool` — the `--dry-run` write-permission probe. Default is a no-op (`Ok(())`) with `has_probe_write() == false`; HashiCorp Vault overrides with a real `vault token capabilities` probe.
+  - `delete_hint(&self, &BackendUri) -> String` — a backend-native copy-paste cleanup command surfaced in the migrate success message. Terminal-only; never crosses the JSON / MCP / OTel boundaries.
+- **`secretenv_core::BackendError`** — a new typed error enum (`#[non_exhaustive]`) with variants `WriteNotSupported` and `DeleteNotSupported`, letting the migrate handler dispatch structurally instead of string-matching `anyhow::Error` context.
+- **Migrate telemetry surface** in `secretenv-telemetry::SecretEnvSpan` — six new `record_migrate_*` typed-attribute methods (`record_migrate_phase`, `record_migrate_outcome`, `record_migrate_source_backend_type`, `record_migrate_dest_backend_type`, `record_migrate_delete_source`, `record_migrate_transaction_id`) plus two new closed enums (`MigratePhase`, `MigrateOutcome`). The `RedactionPolicy` canonical matrix gains 11 new rows for migrate attributes — 7 ALLOW, 4 DENY. The migrated value, alias name, source/dest URIs, and source/dest backend instance names are all explicit DENY rows; only the backend TYPE strings, the phase/outcome enums, the `--delete-source` flag value, and the transaction id are ALLOW.
+
+> **Backward-compatibility note:** every trait method above ships with a default implementation that preserves v0.14 behaviour. A backend that does not override `write_secret`/`delete_secret`/`probe_write`/`delete_hint` simply cannot be a migrate destination/source — it is not a compile break. `BackendError` is `#[non_exhaustive]`, so future variants land additively. The v0.15 BREAKING surface is confined entirely to the Phase 0 block above (arch-H1/H2/H3); the migrate feature itself is purely additive.
+
+### Changed
+
+- CI: the trybuild compile-fail harness renamed from `mcp_safe_trybuild` to `value_access_trybuild`; ui fixtures dir from `mcp_safe_ui/` to `value_access_ui/`. The job now invokes `cargo test -p secretenv-core --no-default-features --test value_access_trybuild` (was `--features mcp-safe --test mcp_safe_trybuild`). Same load-bearing assertion: value-producing APIs do not compile on the SAFE surface.
+- **Code-hygiene polish** absorbing Phase 7/9/9b code-reviewer LOW chips:
+  - `refuse_special_paths` now scans the first `Normal` path component, catching relative `proc/foo` / `./proc/foo` inputs (was bounded to `components[1]` which only matched absolute paths). (Code-hygiene chip.)
+  - `Scrubber::pattern_len` documents the Aho-Corasick `pat_id ∈ [0, num_patterns)` invariant + the `pub(crate)` scope that upholds it.
+  - `aggregate_errors` documents the non-empty input precondition.
+  - `SpanGuard._private: ()` documented as the sealed-construction marker (kept, not removed).
+  - `RedactionPolicy` derives `Copy` (was `Clone` only); the type wraps a `&'static` slice and is trivially `Copy`.
+  - Stale `v0.3 TODO` block in `secretenv-backend-aws-secrets/src/lib.rs` rewritten as the current "open follow-ups" view.
+  - Off-by-one regression test added: `streaming_accepts_pattern_at_exact_tail_window` covers `pattern_len == MODE_A_TAIL_WINDOW` (the previous suite only covered `>`).
+  - `tracing` dep in `secretenv-telemetry/Cargo.toml` documented as the anchor for v0.17's planned `tracing::Subscriber` impl (avoiding a remove-then-readd churn).
+  - `runner.rs::inject_env_entries` helper extracts the three identical env-injection loops (tokio pipe-redact, unix `exec()`, non-unix `spawn()`).
+  - `CHANGELOG.md` header documents the project-specific `Known limitations` subsection convention introduced in v0.14.0.
 
 ### Security
 
@@ -30,23 +68,13 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 - **Backup-path setuid mask documented** (`crates/secretenv-core/src/redact/mod.rs::write_backup_secure`). The existing `& 0o777` mask is correct — it drops setuid / setgid / sticky bits from the source — but the invariant was undocumented; a future maintainer might widen the mask without knowing the security commitment. Added an inline comment naming the chip. (DiD chip L6.)
 - **`EnvEntry.alias_name` doc tightened with SEC-INV-19 reference** (`crates/secretenv-core/src/runner.rs`). Field stays `Option<String>` (not `Secret<String>`) per L1 chip's own recommendation; future leak vectors must project away the alias via `RedactionEvent::for_otel`.
 
-### Changed
-
-- **Code-hygiene polish** absorbing Phase 7/9/9b code-reviewer LOW chips:
-  - `refuse_special_paths` now scans the first `Normal` path component, catching relative `proc/foo` / `./proc/foo` inputs (was bounded to `components[1]` which only matched absolute paths). (Code-hygiene chip.)
-  - `Scrubber::pattern_len` documents the Aho-Corasick `pat_id ∈ [0, num_patterns)` invariant + the `pub(crate)` scope that upholds it.
-  - `aggregate_errors` documents the non-empty input precondition.
-  - `SpanGuard._private: ()` documented as the sealed-construction marker (kept, not removed).
-  - `RedactionPolicy` derives `Copy` (was `Clone` only); the type wraps a `&'static` slice and is trivially `Copy`.
-  - Stale `v0.3 TODO` block in `secretenv-backend-aws-secrets/src/lib.rs` rewritten as the current "open follow-ups" view.
-  - Off-by-one regression test added: `streaming_accepts_pattern_at_exact_tail_window` covers `pattern_len == MODE_A_TAIL_WINDOW` (the previous suite only covered `>`).
-  - `tracing` dep in `secretenv-telemetry/Cargo.toml` documented as the anchor for v0.17's planned `tracing::Subscriber` impl (avoiding a remove-then-readd churn).
-  - `runner.rs::inject_env_entries` helper extracts the three identical env-injection loops (tokio pipe-redact, unix `exec()`, non-unix `spawn()`).
-  - `CHANGELOG.md` header documents the project-specific `Known limitations` subsection convention introduced in v0.14.0.
-
 ### CI
 
 - **`rust-toolchain.toml` pinned to `1.95.0`** (was floating `stable`). Symmetric with CI's `dtolnay/rust-toolchain@stable` (which honors the project pin), eliminating red CI on every rust point-release for new clippy lints + trybuild fixture text drift. Bump is its own chore per the new runbook at `kb/wiki/runbooks/rust-toolchain-bump.md`; `CONTRIBUTING.md` references the runbook. (Issue #03.)
+
+### Known limitations
+
+- **(SEC-INV-23) Registry-document read-modify-write is not atomic in v0.15.** Both `secretenv registry set` and the new `secretenv registry migrate` pointer-flip phase implement document mutation as `Backend::list(...)` → mutate the in-memory `BTreeMap` → `Backend::set(...)`. None of the 15 backends carry CAS / If-Match / version-stamp plumbing today, so concurrent registry mutations on the same instance can clobber each other (classic lost-update race). The window is short (one round-trip) and the surface area is operator-driven (registry mutations are rare events), so this is shipping as a documented limitation. Mitigation: operators must serialize their own registry mutations against a single instance. v0.17 will introduce `Backend::cas_set(uri, expected_etag, new)` — backends with native ETag/version semantics (AWS S3, GCS, etcd-backed Vault) will implement it; backends without (local file, 1Password, keychain) will continue to degrade to current behavior under explicit acknowledgment. Phase 7 audit (architect-reviewer H2, code-reviewer B2) flagged this; both agreed v0.15 ships honestly with the limitation documented rather than blocking on the larger v0.17 surface.
 
 ## [0.14.0] - 2026-05-15
 

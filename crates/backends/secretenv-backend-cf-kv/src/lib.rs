@@ -528,6 +528,37 @@ impl Backend for CfKvBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `wrangler kv key delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| "wrangler kv key delete --namespace-id <namespace-id> <key>".to_owned(),
+            |t| {
+                format!(
+                    "wrangler kv key delete --namespace-id {ns} {key}",
+                    ns = t.namespace_id,
+                    key = t.key,
+                )
+            },
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("cf-kv")?;
         let target = self.resolve_target(uri)?;

@@ -355,6 +355,47 @@ impl Backend for AwsSsmBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `aws ssm delete-parameter`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        let name = Self::parameter_name(uri);
+        let profile =
+            self.aws_profile.as_deref().map_or_else(String::new, |p| format!(" --profile {p}"));
+        format!(
+            "aws ssm delete-parameter --name {name} --region {region}{profile}",
+            region = self.aws_region,
+        )
+    }
+
+    // v0.15 migrate `--dry-run` write-permission probe: NOT
+    // overridden. Phase 7 audit (code-rev S3) flagged the prior
+    // `aws sts get-caller-identity`-and-discard probe as
+    // pure-latency-zero-signal. The full IAM-level probe (`aws iam
+    // simulate-principal-policy --action-names ssm:PutParameter
+    // --resource-arns <arn>`) defers to v0.16+: deriving the
+    // resource ARN requires the AWS account ID plus partition +
+    // region, and `simulate-principal-policy` itself requires
+    // `iam:SimulatePrincipalPolicy` permission which most least-
+    // privilege roles don't carry. Fall back to the trait default
+    // (`Ok(())`) with `has_probe_write() = false` so the dry-run
+    // renderer labels this backend as "probe not available".
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("aws-ssm")?;
         let name = Self::parameter_name(uri);

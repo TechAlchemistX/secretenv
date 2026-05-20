@@ -13,11 +13,27 @@ categories.workspace   = true
 readme.workspace       = true
 
 [features]
-# When enabled, `Secret<T>::expose_secret` is removed from the public
-# API. Crates that link with this feature (the v0.16 MCP server crate)
-# cannot read secret values through any safe API by construction.
-# The CLI links without the feature and retains value access.
-mcp-safe = []
+# Default features intentionally empty — the SAFE surface is the
+# default (today's `mcp-safe`-enabled view). Consumers must opt-in
+# via `value-access` to access value-producing APIs.
+#
+# **v0.15 BREAKING (arch-H2 — feature polarity flip).** v0.14 shipped
+# a subtractive `mcp-safe` feature; subtractive features are a Cargo
+# anti-pattern because Cargo's feature unification makes them
+# unreachable to downstream embedders that need them. v0.15 inverts:
+# additive `value-access` opt-in. The v0.16 MCP server takes no
+# features and inherits the safe surface; the CLI explicitly
+# enables `value-access`.
+default = []
+
+# Enables value-producing APIs: `Secret<T>::expose_secret`,
+# `pub use Backend`, `EnvEntry::value()`, `pub mod runner`, and
+# the `run` / `run_with_options` / `build_env` / `EnvEntry` /
+# `RedactMode` / `RunOptions` re-exports. Consumers that link
+# without this feature (the v0.16 MCP server) lose value access
+# by construction — no `#[allow]` escape hatch, the methods do not
+# compile.
+value-access = []
 
 [dependencies]
 aho-corasick.workspace = true
@@ -49,8 +65,12 @@ rustix.workspace      = true
 
 [dev-dependencies]
 tempfile.workspace = true
-# `trybuild` is only used by the `mcp_safe_trybuild` integration test
-# which is `cfg(feature = "mcp-safe")`-gated. Listed as a dev-dep so it
+# `trybuild` is used by the `value_access_trybuild` integration test
+# which is `cfg(not(feature = "value-access"))`-gated (i.e. runs on
+# the default SAFE feature surface; verifies that value-producing
+# APIs are NOT reachable). Invoke via
+# `cargo test -p secretenv-core --no-default-features --test value_access_trybuild`.
+# Listed as a dev-dep so it
 # never enters the default-feature binary closure.
 trybuild = "1"
 

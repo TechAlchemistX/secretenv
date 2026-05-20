@@ -637,6 +637,42 @@ impl Backend for InfisicalBackend {
         Ok(())
     }
 
+    /// v0.15 migrate destination path. `Native` per the v0.15 audit
+    /// table — wraps `set()` taking the value by `&Secret<String>`
+    /// reference (SEC-INV-10 borrow-not-clone; `expose_secret`
+    /// returns a `&str` borrow with the same lifetime as `value`,
+    /// no allocation).
+    async fn write_secret(&self, uri: &BackendUri, value: &Secret<String>) -> Result<()> {
+        self.set(uri, value.expose_secret()).await
+    }
+
+    /// v0.15 migrate `--delete-source` cleanup path. `Native` per
+    /// the v0.15 audit table — passthrough to `delete()`. Not called
+    /// unless the operator opts in via `--delete-source`.
+    async fn delete_secret(&self, uri: &BackendUri) -> Result<()> {
+        self.delete(uri).await
+    }
+
+    /// v0.15 migrate success-message cleanup hint — copy-paste form
+    /// of `infisical secrets delete`.
+    fn delete_hint(&self, uri: &BackendUri) -> String {
+        self.resolve_target(uri).map_or_else(
+            |_| {
+                "infisical secrets delete <KEY> --projectId=<id> --env=<env> --path=<path>"
+                    .to_owned()
+            },
+            |t| {
+                format!(
+                    "infisical secrets delete {name} --projectId={project} --env={env} --path={path}",
+                    name = t.secret_name,
+                    project = t.project_id,
+                    env = t.environment,
+                    path = t.secret_path,
+                )
+            },
+        )
+    }
+
     async fn delete(&self, uri: &BackendUri) -> Result<()> {
         uri.reject_any_fragment("infisical")?;
         let t = self.resolve_target(uri)?;

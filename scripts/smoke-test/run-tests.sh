@@ -3532,6 +3532,14 @@ if [ "${SECTION_ACTIVE}" = "1" ] && [ -n "$GCP_PROJECT" ] && command -v gcloud >
 type = "gcp"
 gcp_project = "$GCP_PROJECT"
 EOF
+    # GCP `gcloud secrets versions add` requires the secret container
+    # to exist; the GCP backend's `set` does not auto-create. Ensure
+    # the dest secret exists before the migrate runs. Idempotent —
+    # `gcloud secrets create` exits non-zero if the secret exists,
+    # which is fine (we suppress the error path here).
+    gcloud secrets describe secretenv_smoke_migrate_v015_dest --project "$GCP_PROJECT" --quiet >/dev/null 2>&1 \
+      || gcloud secrets create secretenv_smoke_migrate_v015_dest --project "$GCP_PROJECT" --replication-policy=automatic --quiet >/dev/null 2>&1 \
+      || true
     # GCP secret names are constrained — alpha-numeric + underscore.
     migrate_smoke_dest "930" "gcp" "$V015M_GCP_CFG" 'gcp-mig:///secretenv_smoke_migrate_v015_dest' "gcp"
 else
@@ -3580,8 +3588,12 @@ type = "local"
 type = "1password"
 EOF
     run_test "940 v0.15 migrate local→1password without op_unsafe_set" 1 "$V015M_OP_REFUSE_WORK/migrate.log" \
-      "$BIN" --config "$V015M_OP_REFUSE_WORK/config.toml" registry migrate op_mig_refuse '1password-mig:///Private/secretenv-smoke-migrate-v015/password' --yes
-    assert_contains "941 1password gated-refusal names op_unsafe_set" "$V015M_OP_REFUSE_WORK/migrate.log" 'op_unsafe_set'
+      "$BIN" --config "$V015M_OP_REFUSE_WORK/config.toml" registry migrate op_mig_refuse 'op-mig:///Private/secretenv-smoke-migrate-v015/password' --yes
+    # Match the typed BackendError::WriteNotSupported message text
+    # ("cannot write at this URI") rather than the field name —
+    # the field name 'op_unsafe_set' also appears in this test's
+    # ### name header line and would match spuriously.
+    assert_contains "941 1password gated-refusal surfaces typed WriteNotSupported" "$V015M_OP_REFUSE_WORK/migrate.log" 'cannot write at this URI'
 
     # Then the gated-ALLOW path: with op_unsafe_set = true, the
     # migrate writes through.
@@ -3591,7 +3603,15 @@ EOF
 type = "1password"
 op_unsafe_set = true
 EOF
-    migrate_smoke_dest "945" "1password" "$V015M_OP_CFG" '1password-mig-allow:///Private/secretenv-smoke-migrate-v015/password' "1password"
+    # 1Password's `op item edit` requires the item to exist; the
+    # 1password backend's `set` does not auto-create. Pre-create
+    # the dest item with a placeholder password field; subsequent
+    # runs reuse it. Errors are tolerated (item already exists).
+    op item get "secretenv-smoke-migrate-v015" --vault Private >/dev/null 2>&1 \
+      || op item create --category 'Login' --title 'secretenv-smoke-migrate-v015' --vault Private \
+            'password=placeholder-pre-migrate' >/dev/null 2>&1 \
+      || true
+    migrate_smoke_dest "945" "1password" "$V015M_OP_CFG" 'op-mig-allow:///Private/secretenv-smoke-migrate-v015/password' "1password"
 else
     record "940 v0.15 migrate local→1password" SKIP "op CLI unavailable / not signed in"
 fi
@@ -3620,20 +3640,37 @@ doppler_config = "dev"
 EOF
     # Doppler secret names must be uppercase + underscores per Doppler validation.
     migrate_smoke_dest "955" "doppler" "$V015M_DP_CFG" 'doppler-mig:///SECRETENV_SMOKE_MIGRATE_V015' "doppler"
+    # CLEANUP: Doppler branch configs INHERIT from parent. The
+    # write above went to project=secretenv-validation/config=dev
+    # which inherits into config=dev_registry (the URI-valued
+    # registry config used by Section 22 tests 312-314). Without
+    # this cleanup, a non-URI value lingers in dev_registry and
+    # breaks the `registry list` validation on the next full run.
+    doppler secrets delete SECRETENV_SMOKE_MIGRATE_V015 \
+        --project secretenv-validation --config dev --yes \
+        >/dev/null 2>&1 || true
 else
     record "955 v0.15 migrate local→doppler" SKIP "doppler unavailable / not authenticated"
 fi
 
 # ----- 33.10 — local → infisical -----
-if [ "${SECTION_ACTIVE}" = "1" ] && command -v infisical >/dev/null 2>&1 && [ -n "${INFISICAL_TOKEN:-}${INFISICAL_PROJECT_ID:-}" ]; then
+# Detection mirrors Section 23: CLI present AND (token-via-login OR
+# $INFISICAL_TOKEN). Project ID uses the same default as Section 23.
+V015M_IF_PROJECT="${SECRETENV_INFISICAL_PROJECT_ID:-46302876-3c2f-4349-9376-f8a8228bdb1e}"
+if [ "${SECTION_ACTIVE}" = "1" ] && command -v infisical >/dev/null 2>&1 \
+   && { infisical user get token --plain >/dev/null 2>&1 || [ -n "${INFISICAL_TOKEN:-}" ]; }; then
     V015M_INF_CFG="$RUNS/960-mig-inf-cfg.toml"
     cat > "$V015M_INF_CFG" <<EOF
 [backends.infisical-mig]
 type = "infisical"
 EOF
-    migrate_smoke_dest "960" "infisical" "$V015M_INF_CFG" "infisical-mig:///${INFISICAL_PROJECT_ID:-PROJECTID}/dev/SECRETENV_SMOKE_MIGRATE_V015" "infisical"
+    migrate_smoke_dest "960" "infisical" "$V015M_INF_CFG" "infisical-mig:///${V015M_IF_PROJECT}/dev/SECRETENV_SMOKE_MIGRATE_V015" "infisical"
+    # CLEANUP: remove the migrated secret from env=dev so it does not
+    # linger in the infisical project across runs.
+    infisical secrets delete SECRETENV_SMOKE_MIGRATE_V015 \
+        --projectId="$V015M_IF_PROJECT" --env=dev >/dev/null 2>&1 || true
 else
-    record "960 v0.15 migrate local→infisical" SKIP "infisical CLI unavailable / no project credentials"
+    record "960 v0.15 migrate local→infisical" SKIP "infisical CLI unavailable / not authenticated"
 fi
 
 # ----- 33.11 — local → keeper (Gated — needs keeper_unsafe_set) -----
@@ -3658,32 +3695,28 @@ type = "keeper"
 EOF
     run_test "965 v0.15 migrate local→keeper without keeper_unsafe_set" 1 "$V015M_KP_REFUSE_WORK/migrate.log" \
       "$BIN" --config "$V015M_KP_REFUSE_WORK/config.toml" registry migrate kp_mig_refuse 'keeper-mig:///secretenv-smoke-migrate-v015' --yes
-    assert_contains "966 keeper gated-refusal names keeper_unsafe_set" "$V015M_KP_REFUSE_WORK/migrate.log" 'keeper_unsafe_set'
+    # Match the typed-error message text rather than the bare field
+    # name — the test ### name header also contains 'keeper_unsafe_set'.
+    assert_contains "966 keeper gated-refusal surfaces typed WriteNotSupported" "$V015M_KP_REFUSE_WORK/migrate.log" 'cannot write at this URI'
 else
     record "965 v0.15 migrate local→keeper" SKIP "keeper CLI unavailable / no persistent login"
 fi
 
 # ----- 33.12 — local → cf-kv -----
+# Namespace ID comes from the committed single-source-of-truth file
+# lib/cfkv-namespace.env (same as Section 25), not a RUNTIME_DIR
+# fixture. `$CFKV_NS` is the scalar namespace; the migrate writes a
+# new key into it (wrangler kv key put creates-or-overwrites).
 if [ "${SECTION_ACTIVE}" = "1" ] && command -v wrangler >/dev/null 2>&1 && wrangler whoami >/dev/null 2>&1; then
-    # cf-kv requires a real namespace-id; we use the one provision.sh
-    # sets up. If absent, skip.
-    if [ -f "${RUNTIME_DIR}/cfkv-namespace.env" ]; then
-        # shellcheck disable=SC1091
-        . "${RUNTIME_DIR}/cfkv-namespace.env"
-        if [ -n "${CFKV_NAMESPACE_ID:-}" ]; then
-            V015M_CF_CFG="$RUNS/970-mig-cf-cfg.toml"
-            cat > "$V015M_CF_CFG" <<EOF
+    # shellcheck disable=SC1091
+    . "$_here/lib/cfkv-namespace.env"
+    V015M_CF_CFG="$RUNS/970-mig-cf-cfg.toml"
+    cat > "$V015M_CF_CFG" <<EOF
 [backends.cf-kv-mig]
 type = "cf-kv"
-cf_kv_default_namespace_id = "${CFKV_NAMESPACE_ID}"
+cf_kv_default_namespace_id = "${CFKV_NS}"
 EOF
-            migrate_smoke_dest "970" "cf-kv" "$V015M_CF_CFG" 'cf-kv-mig:///secretenv-smoke-migrate-v015' "cf-kv"
-        else
-            record "970 v0.15 migrate local→cf-kv" SKIP "no CFKV_NAMESPACE_ID in cfkv-namespace.env"
-        fi
-    else
-        record "970 v0.15 migrate local→cf-kv" SKIP "cfkv-namespace.env not provisioned"
-    fi
+    migrate_smoke_dest "970" "cf-kv" "$V015M_CF_CFG" 'cf-kv-mig:///secretenv-smoke-migrate-v015' "cf-kv"
 else
     record "970 v0.15 migrate local→cf-kv" SKIP "wrangler unavailable / not authenticated"
 fi
@@ -3707,12 +3740,18 @@ else
 fi
 
 # ----- 33.14 — local → conjur -----
-if [ "${SECTION_ACTIVE}" = "1" ] && [ -n "${SECRETENV_TEST_CONJUR_URL:-}" ] && command -v docker >/dev/null 2>&1; then
-    V015M_CJ_URL="${SECRETENV_TEST_CONJUR_URL}"
-    V015M_CJ_ACCT="${SECRETENV_TEST_CONJUR_ACCOUNT:-myorg}"
-    # Conjur smoke uses pre-seeded variables; the migrate destination
-    # variable must exist as a policy declaration. We use the
-    # cycle-fixture path that provision.sh seeds for v0.11 section.
+# Detection mirrors Section 27: CLI present AND `conjur whoami`
+# succeeds against the (defaulted) URL/account. Conjur variables are
+# policy-declared; the migrate destination MUST be a pre-declared
+# variable. provision.sh seeds `secretenv-smoke/cycle` as the
+# designated mutable test variable — reuse it (Section 27's own
+# cycle test re-seeds it to `{}` at section start, so writing a
+# value here is self-healing across runs).
+V015M_CJ_URL="${SECRETENV_TEST_CONJUR_URL:-http://localhost:8083}"
+V015M_CJ_ACCT="${SECRETENV_TEST_CONJUR_ACCOUNT:-myorg}"
+if [ "${SECTION_ACTIVE}" = "1" ] && command -v conjur >/dev/null 2>&1 \
+   && CONJUR_APPLIANCE_URL="$V015M_CJ_URL" CONJUR_ACCOUNT="$V015M_CJ_ACCT" \
+        conjur whoami >/dev/null 2>&1; then
     V015M_CJ_CFG="$RUNS/980-mig-conjur-cfg.toml"
     cat > "$V015M_CJ_CFG" <<EOF
 [backends.conjur-mig]
@@ -3720,11 +3759,9 @@ type = "conjur"
 conjur_url = "${V015M_CJ_URL}"
 conjur_account = "${V015M_CJ_ACCT}"
 EOF
-    # Reuse the cycle variable that provision.sh creates so we don't
-    # need to apply new Conjur policy mid-smoke.
-    migrate_smoke_dest "980" "conjur" "$V015M_CJ_CFG" 'conjur-mig:///secretenv-smoke/conjur-registry' "conjur"
+    migrate_smoke_dest "980" "conjur" "$V015M_CJ_CFG" 'conjur-mig:///secretenv-smoke/cycle' "conjur"
 else
-    record "980 v0.15 migrate local→conjur" SKIP "no SECRETENV_TEST_CONJUR_URL or docker unavailable"
+    record "980 v0.15 migrate local→conjur" SKIP "conjur CLI unavailable / server unreachable / session expired"
 fi
 
 # ----- 33.15 — local → bitwarden-sm (Gated — needs bitwarden_unsafe_set) -----
@@ -3748,15 +3785,16 @@ type = "local"
 type = "bitwarden-sm"
 bws_server_url = "${SECRETENV_TEST_BWS_SERVER_URL:-https://api.bitwarden.com}"
 EOF
-    # We use a pre-existing cycle UUID to avoid needing to create
-    # a new bws secret mid-smoke.
-    if [ -n "${SECRETENV_TEST_BWS_CYCLE_UUID:-}" ]; then
-        run_test "985 v0.15 migrate local→bitwarden-sm without bitwarden_unsafe_set" 1 "$V015M_BWS_REFUSE_WORK/migrate.log" \
-          "$BIN" --config "$V015M_BWS_REFUSE_WORK/config.toml" registry migrate bws_mig_refuse "bws-mig:///${SECRETENV_TEST_BWS_CYCLE_UUID}" --yes
-        assert_contains "986 bitwarden-sm gated-refusal names bitwarden_unsafe_set" "$V015M_BWS_REFUSE_WORK/migrate.log" 'bitwarden_unsafe_set'
-    else
-        record "985 v0.15 migrate local→bitwarden-sm" SKIP "no SECRETENV_TEST_BWS_CYCLE_UUID"
-    fi
+    # The Gated refusal fires in `write_secret` BEFORE any bws CLI
+    # call (the backend checks `bitwarden_unsafe_set` first and
+    # returns BackendError::WriteNotSupported). So the dest UUID
+    # only needs to PARSE — it is never dereferenced. Use a fixed
+    # placeholder UUID; no SECRETENV_TEST_BWS_CYCLE_UUID needed.
+    run_test "985 v0.15 migrate local→bitwarden-sm without bitwarden_unsafe_set" 1 "$V015M_BWS_REFUSE_WORK/migrate.log" \
+      "$BIN" --config "$V015M_BWS_REFUSE_WORK/config.toml" registry migrate bws_mig_refuse 'bws-mig:///00000000-0000-0000-0000-000000000000' --yes
+    # Match the typed-error message text rather than the field
+    # name — the test ### name header also contains 'bitwarden_unsafe_set'.
+    assert_contains "986 bitwarden-sm gated-refusal surfaces typed WriteNotSupported" "$V015M_BWS_REFUSE_WORK/migrate.log" 'cannot write at this URI'
 else
     record "985 v0.15 migrate local→bitwarden-sm" SKIP "bws unavailable / BWS_ACCESS_TOKEN not set"
 fi

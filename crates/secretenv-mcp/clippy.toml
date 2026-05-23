@@ -1,0 +1,21 @@
+# SEC-INV-02 — structural enforcement that `secretenv-mcp` cannot
+# name the secret-bearing types from `secretenv-core`.
+#
+# Every tool handler in `src/tools/` and every response struct in
+# `src/boundary.rs` is rejected at compile time if it names these
+# types. Escape hatches via `#[allow(clippy::disallowed_types)]` are
+# permitted ONLY inside files under `src/internal/`, with a
+# documented justification comment explaining why the value handling
+# is correct (drop-on-use, zeroize, no echo in error output).
+#
+# See [[build-plan-v0.16-mcp]] §5 (the three-gate enforcement stack)
+# and [[v0.14-plus-security-invariants]] SEC-INV-02.
+disallowed-types = [
+    { path = "secretenv_core::Secret", reason = "Secret<T> must never be named in secretenv-mcp outside of src/internal/. SEC-INV-02." },
+]
+# NOTE: the original build-plan §5 example also listed
+# `secretenv_core::ResolvedValue` — that type does NOT exist in
+# `secretenv-core` (as of v0.16 branch open 2026-05-23). Adding a
+# phantom path makes clippy warn `does not refer to a reachable type`
+# which fails `-D warnings`. Re-add this entry IF a `ResolvedValue`
+# type ever lands.

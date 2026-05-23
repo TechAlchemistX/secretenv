@@ -936,6 +936,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretenv-mcp"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "secretenv-core",
+ "secretenv-telemetry",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "secretenv-migrate"
 version = "0.15.0"
 dependencies = [

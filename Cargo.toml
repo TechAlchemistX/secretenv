@@ -4,6 +4,7 @@ members = [
     "crates/secretenv-core",
     "crates/secretenv-telemetry",
     "crates/secretenv-migrate",
+    "crates/secretenv-mcp",
     "crates/secretenv-cli",
     "crates/secretenv-testing",
     "crates/backends/secretenv-backend-local",

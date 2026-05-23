@@ -1,0 +1,39 @@
+[package]
+name        = "secretenv-mcp"
+description = "SecretEnv — MCP server library. Stdio-only Model Context Protocol server giving AI agents structured access to the SecretEnv registry without ever exposing a resolved secret value. See [[build-plan-v0.16-mcp]]."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+# `secretenv-core` is declared with `default-features = false` so this
+# crate does NOT opt into the v0.15 `value-access` feature (arch-H2
+# polarity flip). This is the documentation layer — workspace feature
+# unification means the in-workspace build still resolves
+# `secretenv-core` with `value-access` enabled because `secretenv-cli`
+# opts in. The STRUCTURAL gate that `secretenv-mcp` cannot construct
+# or serialize a `Secret<T>` is enforced by `clippy.toml`
+# (`disallowed-types`) + `tests/boundary_test.rs`. See SEC-INV-02 +
+# build-plan §5.
+[dependencies]
+secretenv-core      = { path = "../secretenv-core", version = "0.15.0", default-features = false }
+secretenv-telemetry.workspace = true
+anyhow.workspace              = true
+tracing.workspace             = true
+serde.workspace               = true
+serde_json.workspace          = true
+
+# rmcp (the official Rust MCP SDK, pinned 1.7.x per [[build-plan-v0.16-mcp]] §3)
+# is deferred to Phase 2 when transport wiring lands — Phase 1b is
+# crate skeleton + boundary gates only.
+#
+# secretenv-migrate is deferred to Phase 6 (`migrate_alias` tool).
+
+[lints]
+workspace = true

@@ -30,6 +30,7 @@ tokio.workspace               = true
 tracing.workspace             = true
 serde.workspace               = true
 serde_json.workspace          = true
+toml.workspace                = true
 
 # rmcp (the official Rust MCP SDK) — pinned 1.7 per [[build-plan-v0.16-mcp]]
 # §3. The `server` default feature pulls `transport-async-rw` (the
@@ -43,6 +44,9 @@ rmcp = { version = "1.7", default-features = false, features = ["server", "macro
 schemars = "1.0"
 
 # secretenv-migrate is deferred to Phase 6 (`migrate_alias` tool).
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

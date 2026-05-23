@@ -673,6 +673,7 @@ dependencies = [
  "secretenv-backend-openbao",
  "secretenv-backend-vault",
  "secretenv-core",
+ "secretenv-migrate",
  "secretenv-telemetry",
  "secretenv-testing",
  "serde",
@@ -932,6 +933,16 @@ dependencies = [
  "tracing",
  "trybuild",
  "zeroize",
+]
+
+[[package]]
+name = "secretenv-migrate"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "secretenv-core",
+ "secretenv-telemetry",
+ "tracing",
 ]
 
 [[package]]

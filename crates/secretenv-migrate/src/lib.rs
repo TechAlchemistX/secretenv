@@ -1,12 +1,16 @@
 // Copyright (C) 2026 Mandeep Patel
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! v0.15 `secretenv registry migrate` library entry.
+//! `secretenv registry migrate` library entry — the alias-migration
+//! engine.
 //!
-//! This module is the load-bearing core of the migrate cycle. The CLI
-//! layer (`crate::cli`) parses args, handles confirmation prompts, and
-//! formats the report; everything between the source read and the
-//! pointer flip lives here.
+//! Shipped in v0.15 as a private module inside the `secretenv-cli`
+//! binary crate; extracted into its own library crate at v0.16 Phase
+//! 1a so the MCP server's `migrate_alias` tool can call the same
+//! library entry the CLI uses (v0.15 architect-reviewer carry-forward
+//! B1). The CLI layer (`secretenv-cli::cli`) parses args, handles
+//! confirmation prompts, and formats the report; everything between
+//! the source read and the pointer flip lives here.
 //!
 //! # Three-step transaction (plus optional fourth)
 //!
@@ -106,8 +110,11 @@ pub struct MigrateArgs {
 /// any URI.
 #[derive(Debug, Clone)]
 pub struct MigrationPlan {
+    /// Registry alias being migrated.
     pub alias: String,
+    /// Parsed source backend URI (where the value currently lives).
     pub source_uri: BackendUri,
+    /// Parsed destination backend URI (where the value will be written).
     pub dest_uri: BackendUri,
     /// Registry source URI we'll re-write to flip the pointer.
     pub registry_source_uri: BackendUri,
@@ -121,10 +128,15 @@ pub struct MigrationPlan {
 #[derive(Debug, Default, Clone, Copy)]
 #[allow(clippy::struct_field_names)]
 pub struct PhaseDurations {
+    /// Time spent in the destination-probe phase (`--dry-run` or pre-write check).
     pub probe_ms: u64,
+    /// Time spent reading the source value.
     pub read_ms: u64,
+    /// Time spent writing to the destination backend.
     pub write_ms: u64,
+    /// Time spent re-serializing and writing the registry document (commit phase).
     pub pointer_flip_ms: u64,
+    /// Time spent deleting the source value (opt-in `--delete-source`); `None` when not requested.
     pub source_delete_ms: Option<u64>,
 }
 
@@ -132,6 +144,7 @@ pub struct PhaseDurations {
 /// [`secretenv_telemetry::span::MigrateOutcome`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrateReportOutcome {
+    /// Migration committed successfully.
     Success,
     /// Pointer flip failed after a successful destination write.
     /// The value exists in BOTH backends; recovery is the operator's
@@ -147,8 +160,8 @@ pub enum MigrateReportOutcome {
     /// break. Phase 7 audit (architect M2): the
     /// `report_outcome_json_round_trip` test exercises the variant
     /// via direct construction so the JSON wire-format stays locked.
-    #[allow(dead_code)] // wire-format anchor; constructed in tests + future v0.16 MCP
-    #[doc(hidden)]
+    /// v0.16 Phase 1a: un-hidden (architect B2/P1 carry-forward) now
+    /// that the MCP boundary will exercise it.
     PartialFailurePointerFlip,
     /// Migration succeeded but the source-delete leg (opt-in) failed.
     /// Migration is complete; cleanup is the operator's call.
@@ -177,16 +190,23 @@ impl MigrateReportOutcome {
 /// re-exports this verbatim.
 #[derive(Debug, Clone)]
 pub struct MigrateReport {
+    /// Registry alias that was migrated.
     pub alias: String,
+    /// Source backend type label (e.g. `"vault"`, `"aws-ssm"`).
     pub source_backend_type: String,
+    /// Destination backend type label.
     pub dest_backend_type: String,
+    /// Final outcome — maps 1:1 to [`MigrateOutcome`].
     pub outcome: MigrateReportOutcome,
+    /// Recorded per-phase durations.
     pub phase_durations: PhaseDurations,
+    /// Whether `--delete-source` was requested.
     pub delete_source: bool,
     /// Copy-paste cleanup command when `--delete-source` was not set
     /// (or was set but failed post-commit). `None` when the source
     /// was successfully deleted.
     pub delete_hint: Option<String>,
+    /// Stable per-invocation identifier (same value as `MigrationPlan::transaction_id`).
     pub transaction_id: String,
     /// Probe diagnostics surface raised in dry-run mode (and recorded
     /// regardless). Each entry is `(backend_instance, "ok" | "error: <msg>")`.
@@ -265,11 +285,12 @@ pub async fn build_migration_plan(
     })
 }
 
-/// Errors raised by `migrate_with_plan` that the partial-failure
-/// stderr renderer needs as structured context. The CLI dispatcher
-/// downcasts the returned `anyhow::Error` against this type to
-/// decide whether to print the manual-recovery block to stderr
-/// (vs. bubble the chain unmodified).
+/// Structured context for the partial-failure stderr renderer.
+///
+/// Raised by `migrate_with_plan`. The CLI dispatcher downcasts the
+/// returned `anyhow::Error` against this type to decide whether to
+/// print the manual-recovery block to stderr (vs. bubble the chain
+/// unmodified).
 ///
 /// SEC-INV-20 / Phase 7 audit (security M2) — the recovery block
 /// carries the destination URI body, which must stay on the
@@ -277,8 +298,11 @@ pub async fn build_migration_plan(
 /// stream as the `anyhow::Error` Display.
 #[derive(Debug)]
 pub struct PointerFlipFailed {
+    /// Alias whose pointer flip failed (the only safe-to-log field).
     pub alias: String,
+    /// Raw destination URI string — for the CLI's terminal-only recovery render. NEVER include in logged error output.
     pub dest_uri_raw: String,
+    /// Backend-specific cleanup command hint for the destination — for the CLI's terminal-only recovery render. NEVER include in logged error output.
     pub dest_delete_hint: String,
 }
 
@@ -306,12 +330,10 @@ impl std::error::Error for PointerFlipFailed {}
 /// plan via [`migrate_with_plan`] (Phase 7 audit fix — code-rev B1
 /// — eliminates the TOCTOU + `transaction_id`-drift between preview
 /// and execution). v0.16 MCP `migrate_alias` and integration tests
-/// are the expected consumers of this entry; `dead_code` allow
-/// retained until v0.16 wires it up.
+/// are the expected consumers of this entry.
 ///
 /// # Errors
 /// See [`migrate_with_plan`].
-#[allow(dead_code)]
 pub async fn migrate<F>(
     args: MigrateArgs,
     config: &Config,
@@ -325,12 +347,13 @@ where
     migrate_with_plan(plan, &args, backends, post_commit_source_delete_consent).await
 }
 
-/// Drive the migration end-to-end against a pre-built plan. The CLI
-/// layer is responsible for the top-level confirmation prompt BEFORE
-/// calling this function. The `--delete-source` extra confirmation
-/// fires AFTER the pointer-flip commit succeeds — per SEC-INV-08 it
-/// must run even when `--yes` is set globally, and the operator must
-/// have seen the commit succeed before deciding.
+/// Drive the migration end-to-end against a pre-built plan.
+///
+/// The CLI layer is responsible for the top-level confirmation prompt
+/// BEFORE calling this function. The `--delete-source` extra
+/// confirmation fires AFTER the pointer-flip commit succeeds — per
+/// SEC-INV-08 it must run even when `--yes` is set globally, and the
+/// operator must have seen the commit succeed before deciding.
 ///
 /// This is the canonical entry point. v0.16 MCP `migrate_alias` will
 /// call this directly with a precomputed plan + a closure that

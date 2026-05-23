@@ -1,0 +1,22 @@
+[package]
+name        = "secretenv-migrate"
+description = "SecretEnv — alias-migration engine. `migrate_with_plan` + `build_migration_plan` lifted from secretenv-cli at v0.16 (B1 carry-forward from v0.15) so the MCP server can wrap the same library entry the CLI uses."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[dependencies]
+secretenv-core.workspace      = true
+secretenv-telemetry.workspace = true
+anyhow.workspace              = true
+tracing.workspace             = true
+
+[lints]
+workspace = true

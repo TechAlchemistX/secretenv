@@ -1206,7 +1206,7 @@ async fn registry_set(
 }
 
 /// `secretenv registry migrate <alias> <dest-uri>` — builds the
-/// `MigrationPlan` once and drives [`crate::migrate::migrate_with_plan`]
+/// `MigrationPlan` once and drives [`secretenv_migrate::migrate_with_plan`]
 /// with all the user-prompt + report-rendering machinery the library
 /// entry leaves to the CLI.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -1222,7 +1222,7 @@ async fn registry_migrate(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    let args = crate::migrate::MigrateArgs {
+    let args = secretenv_migrate::MigrateArgs {
         alias: alias.to_owned(),
         dest_uri: dest_uri.to_owned(),
         source_uri: from.map(str::to_owned),
@@ -1240,7 +1240,7 @@ async fn registry_migrate(
     // preview and once inside `migrate`, producing different
     // `transaction_id`s and opening a TOCTOU window on the registry
     // doc between confirmation and execution.
-    let plan = crate::migrate::build_migration_plan(&args, config, backends).await?;
+    let plan = secretenv_migrate::build_migration_plan(&args, config, backends).await?;
 
     // Top-level confirmation prompt: skipped under --dry-run (no
     // mutation) and under --yes (operator opted out globally).
@@ -1268,7 +1268,7 @@ async fn registry_migrate(
     // `migrate_with_plan` AFTER the pointer flip commits, per
     // SEC-INV-08. It must run even under --yes; the closure handles
     // that by always reading stdin when --delete-source was passed.
-    let post_commit_consent = |plan: &crate::migrate::MigrationPlan| -> bool {
+    let post_commit_consent = |plan: &secretenv_migrate::MigrationPlan| -> bool {
         // No-op in dry-run (delete leg never runs).
         if dry_run {
             return false;
@@ -1283,7 +1283,7 @@ async fn registry_migrate(
     };
 
     let result =
-        crate::migrate::migrate_with_plan(plan, &args, backends, post_commit_consent).await;
+        secretenv_migrate::migrate_with_plan(plan, &args, backends, post_commit_consent).await;
     let report = match result {
         Ok(r) => r,
         Err(e) => {
@@ -1292,7 +1292,7 @@ async fn registry_migrate(
             // recovery block to stderr (terminal-only per
             // SEC-INV-22) without embedding URI bodies in the
             // bubbled error message.
-            if let Some(flip) = e.downcast_ref::<crate::migrate::PointerFlipFailed>() {
+            if let Some(flip) = e.downcast_ref::<secretenv_migrate::PointerFlipFailed>() {
                 eprintln!("Error: migration partially failed.");
                 eprintln!();
                 eprintln!("  Step 1/3  Read from source:           OK");
@@ -1346,8 +1346,8 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
     Ok(line.trim().starts_with(['y', 'Y']))
 }
 
-fn print_migrate_human(report: &crate::migrate::MigrateReport) {
-    use crate::migrate::MigrateReportOutcome;
+fn print_migrate_human(report: &secretenv_migrate::MigrateReport) {
+    use secretenv_migrate::MigrateReportOutcome;
     match report.outcome {
         MigrateReportOutcome::DryRun => {
             eprintln!("secretenv migrate (dry-run):");
@@ -1397,8 +1397,8 @@ fn print_migrate_human(report: &crate::migrate::MigrateReport) {
     }
 }
 
-fn render_migrate_json(report: &crate::migrate::MigrateReport) -> Result<String> {
-    use crate::migrate::MigrateReportOutcome;
+fn render_migrate_json(report: &secretenv_migrate::MigrateReport) -> Result<String> {
+    use secretenv_migrate::MigrateReportOutcome;
     let outcome = match report.outcome {
         MigrateReportOutcome::Success => "success",
         MigrateReportOutcome::DryRun => "dry-run",

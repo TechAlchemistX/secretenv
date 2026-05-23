@@ -25,6 +25,7 @@ readme.workspace       = true
 secretenv-core      = { path = "../secretenv-core", version = "0.15.0", default-features = false }
 secretenv-telemetry.workspace = true
 anyhow.workspace              = true
+directories.workspace         = true
 tokio.workspace               = true
 tracing.workspace             = true
 serde.workspace               = true

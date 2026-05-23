@@ -50,4 +50,4 @@ pub mod internal;
 pub mod server;
 pub mod tools;
 
-pub use server::serve;
+pub use server::{disable, disable_sentinel_path, enable, serve};

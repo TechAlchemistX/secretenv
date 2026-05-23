@@ -87,6 +87,39 @@ See `docs/security.md` for the full Limits matrix.
     /// tainted set and rewrites the file with `[redacted:<alias>]`
     /// substitutions (or `--redact-token <fixed>`).
     Redact(RedactArgs),
+    /// `MCP` (Model Context Protocol) server operations — start the
+    /// stdio-only server, or toggle the disable sentinel that gates
+    /// it. See [[build-plan-v0.16-mcp]] for the full design.
+    #[command(subcommand)]
+    Mcp(McpCommand),
+}
+
+/// `secretenv mcp <subcommand>` — `MCP` server operations.
+///
+/// The disable sentinel lives at `$XDG_CONFIG_HOME/secretenv/mcp-disabled`
+/// and is the single source of truth for "is the server allowed to start
+/// right now". `disable` writes it (optionally with an auto-expiry);
+/// `enable` removes it; `serve` checks it on every start.
+#[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    /// Run the `MCP` server over stdio until the transport closes.
+    /// Honors the disable sentinel — if present and unexpired, exits
+    /// with a clear stderr message before binding.
+    Serve,
+    /// Disable the `MCP` server by writing the sentinel file.
+    /// Subsequent `mcp serve` invocations exit immediately until
+    /// either the sentinel is removed (`mcp enable`) or, when
+    /// `--duration` was given, the embedded expiry has passed.
+    Disable {
+        /// Optional auto-expiry — e.g. `30m`, `2h`, `1d`. Without
+        /// this flag the disable is indefinite (requires explicit
+        /// `mcp enable` to clear).
+        #[arg(long, value_name = "DURATION")]
+        duration: Option<String>,
+    },
+    /// Re-enable the `MCP` server by removing the disable sentinel.
+    /// No-op if the sentinel is already absent.
+    Enable,
 }
 
 /// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
@@ -505,6 +538,61 @@ impl Cli {
                 let _: crate::reports::RedactReport = cmd_redact(args, config, backends).await?;
                 Ok(())
             }
+            Command::Mcp(mc) => cmd_mcp(mc).await,
+        }
+    }
+}
+
+/// Parse a duration string of the form `<n>(s|m|h|d)` into a [`Duration`].
+/// Used by `secretenv mcp disable --duration`.
+fn parse_duration(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    let (n_str, unit) = s.split_at(
+        s.find(|c: char| !c.is_ascii_digit())
+            .ok_or_else(|| anyhow::anyhow!("duration `{s}` missing unit suffix (s|m|h|d)"))?,
+    );
+    let n: u64 = n_str
+        .parse()
+        .with_context(|| format!("duration `{s}` has invalid numeric portion `{n_str}`"))?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 60 * 60,
+        "d" => n * 60 * 60 * 24,
+        other => {
+            anyhow::bail!("duration `{s}` has unknown unit `{other}` (use s|m|h|d)")
+        }
+    };
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+/// Dispatch for `secretenv mcp <subcommand>`. Does NOT take `config`
+/// / `backends` — `mcp serve` bootstraps its own state inside
+/// `secretenv_mcp::serve`, and `mcp disable` / `mcp enable` are pure
+/// sentinel-file operations.
+async fn cmd_mcp(mc: &McpCommand) -> Result<()> {
+    match mc {
+        McpCommand::Serve => secretenv_mcp::serve().await,
+        McpCommand::Disable { duration } => {
+            let d = duration.as_deref().map(parse_duration).transpose()?;
+            let path = secretenv_mcp::disable(d)?;
+            match d {
+                None => eprintln!(
+                    "SecretEnv MCP server disabled (indefinite). Sentinel: {}",
+                    path.display()
+                ),
+                Some(dur) => eprintln!(
+                    "SecretEnv MCP server disabled for {} seconds. Sentinel: {}",
+                    dur.as_secs(),
+                    path.display()
+                ),
+            }
+            Ok(())
+        }
+        McpCommand::Enable => {
+            secretenv_mcp::enable()?;
+            eprintln!("SecretEnv MCP server enabled (disable sentinel cleared).");
+            Ok(())
         }
     }
 }

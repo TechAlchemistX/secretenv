@@ -25,14 +25,22 @@ readme.workspace       = true
 secretenv-core      = { path = "../secretenv-core", version = "0.15.0", default-features = false }
 secretenv-telemetry.workspace = true
 anyhow.workspace              = true
+tokio.workspace               = true
 tracing.workspace             = true
 serde.workspace               = true
 serde_json.workspace          = true
 
-# rmcp (the official Rust MCP SDK, pinned 1.7.x per [[build-plan-v0.16-mcp]] §3)
-# is deferred to Phase 2 when transport wiring lands — Phase 1b is
-# crate skeleton + boundary gates only.
-#
+# rmcp (the official Rust MCP SDK) — pinned 1.7 per [[build-plan-v0.16-mcp]]
+# §3. The `server` default feature pulls `transport-async-rw` (the
+# underlying primitive); `transport-io` is the stdio adapter that
+# turns `rmcp::transport::stdio()` (returning the `tokio::io::Stdin`
+# + `Stdout` pair) into a usable transport for `ServiceExt::serve`.
+# `schemars` is required by the `#[tool]` macro for JSON Schema
+# generation; `macros` provides the `#[tool]` / `#[tool_router]` /
+# `#[tool_handler]` attribute macros themselves.
+rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1.0"
+
 # secretenv-migrate is deferred to Phase 6 (`migrate_alias` tool).
 
 [lints]

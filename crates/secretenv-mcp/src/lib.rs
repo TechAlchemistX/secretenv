@@ -47,4 +47,7 @@ pub mod audit_log;
 pub mod boundary;
 pub mod config;
 pub mod internal;
+pub mod server;
 pub mod tools;
+
+pub use server::serve;

@@ -273,18 +273,21 @@ fn default_config_path() -> Result<PathBuf> {
 /// for testing precedence + deduplication behavior.
 fn candidate_config_paths() -> Result<Vec<PathBuf>> {
     let mut candidates: Vec<PathBuf> = Vec::with_capacity(3);
+    let push_unique = |p: PathBuf, list: &mut Vec<PathBuf>| {
+        if !list.contains(&p) {
+            list.push(p);
+        }
+    };
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        candidates.push(PathBuf::from(xdg).join("secretenv").join("config.toml"));
+        push_unique(PathBuf::from(xdg).join("secretenv").join("config.toml"), &mut candidates);
     }
     if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".config/secretenv/config.toml"));
+        push_unique(PathBuf::from(home).join(".config/secretenv/config.toml"), &mut candidates);
     }
     let base = directories::BaseDirs::new()
         .ok_or_else(|| anyhow!("could not determine a home directory for config lookup"))?;
     let native = base.config_dir().join("secretenv").join("config.toml");
-    if !candidates.contains(&native) {
-        candidates.push(native);
-    }
+    push_unique(native, &mut candidates);
     Ok(candidates)
 }
 

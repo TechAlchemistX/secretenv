@@ -35,7 +35,8 @@ use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
 
 use crate::boundary::{
-    GettingStartedResponse, RedactStatusResponse, ToolListing, VersionInfoResponse,
+    AuthStatus, BackendListing, GettingStartedResponse, ListBackendsResponse, RedactStatusResponse,
+    ToolListing, VersionInfoResponse,
 };
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
@@ -72,6 +73,10 @@ pub struct VersionInfoArgs {}
 /// Argument record for `redact_status` — no inputs.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct RedactStatusArgs {}
+
+/// Argument record for `list_backends` — no inputs.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct ListBackendsArgs {}
 
 /// Pick a deterministic next-tool suggestion from current config shape.
 /// Pure function — exposed for unit tests.
@@ -214,13 +219,37 @@ impl Server {
         not_yet_implemented("list_aliases", 3)
     }
 
-    /// All configured backend instances + auth status + native-gen support.
+    /// All configured backend instances. Config-only; auth probing
+    /// is the dedicated job of `doctor`.
     #[tool(
         name = "list_backends",
-        description = "All configured backend instances + auth status + native-gen support."
+        description = "All configured backend instances. Reports name + type from config.toml; \
+                       auth status is always `unknown` here — call `doctor` or \
+                       `detect_password_managers` for live auth probing."
     )]
-    pub async fn list_backends(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("list_backends", 3)
+    pub async fn list_backends(
+        &self,
+        _args: Parameters<ListBackendsArgs>,
+    ) -> Json<ListBackendsResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.list_backends");
+
+        let mut backends: Vec<BackendListing> = self
+            .config
+            .backends
+            .iter()
+            .map(|(name, cfg)| BackendListing {
+                name: name.clone(),
+                backend_type: cfg.backend_type.clone(),
+                auth_status: AuthStatus::Unknown,
+                auth_status_hint: "Call `doctor` or `detect_password_managers` for a live \
+                                   auth probe of this backend's CLI."
+                    .to_owned(),
+            })
+            .collect();
+        backends.sort_by(|a, b| a.name.cmp(&b.name));
+        let total = backends.len();
+
+        Json(ListBackendsResponse { backends, total })
     }
 
     /// Whether aliases can currently be resolved. NEVER returns the value.

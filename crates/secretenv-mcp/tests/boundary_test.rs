@@ -23,7 +23,8 @@
 
 use schemars::schema_for;
 use secretenv_mcp::boundary::{
-    GettingStartedResponse, RedactStatusResponse, ToolListing, VersionInfoResponse,
+    BackendListing, GettingStartedResponse, ListBackendsResponse, RedactStatusResponse,
+    ToolListing, VersionInfoResponse,
 };
 
 /// Field identifiers that may not appear in any response struct
@@ -83,6 +84,12 @@ fn version_info_response_has_no_banned_fields() {
 #[test]
 fn redact_status_response_has_no_banned_fields() {
     assert_no_banned_field_names::<RedactStatusResponse>("RedactStatusResponse");
+}
+
+#[test]
+fn list_backends_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<ListBackendsResponse>("ListBackendsResponse");
+    assert_no_banned_field_names::<BackendListing>("BackendListing");
 }
 
 // Per-tool registration block — extend as Phase 3-6 handlers land.

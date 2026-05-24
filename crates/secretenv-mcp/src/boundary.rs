@@ -15,6 +15,60 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
+/// Three-bucket authentication status for a backend instance.
+///
+/// `list_backends` always reports [`Unknown`](Self::Unknown) — auth
+/// probing is the dedicated job of `doctor` / `detect_password_managers`.
+/// Splitting "is configured" from "is reachable + authed" keeps
+/// `list_backends` a config-only tool with deterministic output.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStatus {
+    /// Auth state has not been probed. Call `doctor` or
+    /// `detect_password_managers` to find out.
+    Unknown,
+    /// CLI present and a live credential check succeeded.
+    Authenticated,
+    /// CLI present but no valid credential — e.g., session expired
+    /// or the env var is missing.
+    NotAuthenticated,
+    /// Backend CLI is not installed on this machine.
+    CliNotInstalled,
+}
+
+/// One entry in [`ListBackendsResponse::backends`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackendListing {
+    /// `[backends.<name>]` instance name from `config.toml`.
+    pub name: String,
+    /// `type = "..."` field from the backend block (e.g., `"1password"`,
+    /// `"vault"`, `"aws-ssm"`).
+    pub backend_type: String,
+    /// Three-bucket auth state. Always [`AuthStatus::Unknown`] for
+    /// this tool — `doctor` is the auth probe.
+    pub auth_status: AuthStatus,
+    /// Human-readable hint pointing at the tool that would actually
+    /// probe auth state.
+    pub auth_status_hint: String,
+}
+
+/// Response payload for the `list_backends` tool.
+///
+/// Config-only: enumerates the `[backends.*]` tables in the loaded
+/// config without contacting any backend CLI. Live auth + reachability
+/// probing belongs to `doctor`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListBackendsResponse {
+    /// One listing per `[backends.*]` table, sorted by name for
+    /// deterministic output.
+    pub backends: Vec<BackendListing>,
+    /// `backends.len()` — convenience field so a consumer that
+    /// `select`s a subset can still know the configured total.
+    pub total: usize,
+}
+
 /// One entry in [`VersionInfoResponse::tools`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

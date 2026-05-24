@@ -42,7 +42,18 @@ async fn main() -> Result<()> {
     let allow_missing = matches!(cli.command, cli::Command::Setup(_));
     let config = load_config(&cli, allow_missing)?;
 
-    let backends = backends_init::build_registry(&config)?;
+    // `mcp serve` runs an introspection server — it must tolerate a
+    // config whose `[backends.*]` factory validation fails so the
+    // agent can call `list_backends` / `doctor` to discover what's
+    // broken. The handlers that actually need a live registry build
+    // one themselves at call time. Every other subcommand still
+    // eagerly builds the registry so misconfigured backends fail
+    // fast at startup.
+    let backends = if matches!(cli.command, cli::Command::Mcp(_)) {
+        secretenv_core::BackendRegistry::new()
+    } else {
+        backends_init::build_registry(&config)?
+    };
 
     cli.run(&config, &backends).await
 }

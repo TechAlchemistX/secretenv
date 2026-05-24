@@ -50,6 +50,7 @@ pub mod error;
 pub mod internal;
 pub mod policy;
 pub mod server;
+pub mod setup;
 pub mod tools;
 
 pub use server::{disable, disable_sentinel_path, enable, serve};

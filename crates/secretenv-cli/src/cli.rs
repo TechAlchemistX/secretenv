@@ -120,6 +120,43 @@ pub enum McpCommand {
     /// Re-enable the `MCP` server by removing the disable sentinel.
     /// No-op if the sentinel is already absent.
     Enable,
+    /// Emit a paste-ready MCP-client config block for one of the
+    /// supported IDEs (Claude Code, Cursor, Codex, VS Code Copilot,
+    /// Continue, Cline, Gemini Code Assist, `OpenCode`).
+    ///
+    /// Default behavior: print the rendered config + the target
+    /// config-file path to stdout. The operator decides whether to
+    /// paste, merge, or pipe to a file. With `--write`, the helper
+    /// writes the file directly — refusing if the target already
+    /// exists unless `--force` is set.
+    Setup {
+        /// Which IDE to render for. Use `--list-ides` to see options.
+        /// Required unless `--list-ides` is given.
+        #[arg(long, value_name = "IDE", conflicts_with = "list_ides")]
+        ide: Option<String>,
+        /// Print the supported IDE keys + their config-file paths
+        /// and exit. Useful when you don't remember the exact key.
+        #[arg(long, conflicts_with = "ide")]
+        list_ides: bool,
+        /// Absolute path to the `secretenv` binary the IDE will spawn.
+        /// Defaults to `secretenv` (relies on the IDE's `$PATH`).
+        /// Set this to the output of `which secretenv` for portable
+        /// per-IDE setup that works regardless of the IDE's shell
+        /// initialization.
+        #[arg(long, value_name = "PATH", default_value = "secretenv")]
+        binary: String,
+        /// Write the rendered config to the target file. Default is
+        /// stdout. Refuses if the target file already exists unless
+        /// `--force` is set (existing-file merging is not yet
+        /// implemented — paste manually for now).
+        #[arg(long)]
+        write: bool,
+        /// With `--write`, overwrite the target file even if it
+        /// already exists. Without this flag, an existing file is
+        /// treated as an error and the helper exits non-zero.
+        #[arg(long, requires = "write")]
+        force: bool,
+    },
 }
 
 /// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
@@ -595,7 +632,84 @@ async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
             eprintln!("SecretEnv MCP server enabled (disable sentinel cleared).");
             Ok(())
         }
+        McpCommand::Setup { ide, list_ides, binary, write, force } => {
+            cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force)
+        }
     }
+}
+
+/// `secretenv mcp setup` dispatch — print or write per-IDE config.
+fn cmd_mcp_setup(
+    ide: Option<&str>,
+    list_ides: bool,
+    binary: &str,
+    write: bool,
+    force: bool,
+) -> Result<()> {
+    use secretenv_mcp::setup::{expand_home, find_profile, render_config, IDE_PROFILES};
+
+    if list_ides {
+        println!("Supported IDEs for `secretenv mcp setup`:\n");
+        let widest = IDE_PROFILES.iter().map(|p| p.key.len()).max().unwrap_or(0);
+        for p in IDE_PROFILES {
+            println!(
+                "  {key:<width$}  {name}\n    config: {path}\n    note:   {note}\n",
+                key = p.key,
+                width = widest,
+                name = p.display_name,
+                path = p.config_path,
+                note = p.note,
+            );
+        }
+        return Ok(());
+    }
+
+    let ide_key = ide.ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing --ide <name>. Run `secretenv mcp setup --list-ides` to see options."
+        )
+    })?;
+    let profile = find_profile(ide_key).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown IDE `{ide_key}`. Run `secretenv mcp setup --list-ides` to see options.",
+        )
+    })?;
+    let body = render_config(profile, binary);
+
+    if !write {
+        println!("# MCP config block for {} ({}):", profile.display_name, profile.key);
+        println!("# Target file: {}", profile.config_path);
+        println!("# Note: {}", profile.note);
+        println!("# ---");
+        print!("{body}");
+        return Ok(());
+    }
+
+    let target = expand_home(profile.config_path)
+        .with_context(|| format!("expanding home directory for `{}`", profile.config_path))?;
+    if target.exists() && !force {
+        anyhow::bail!(
+            "target file `{}` already exists. Re-run with `--force` to overwrite, \
+             or paste the block from `secretenv mcp setup --ide {}` into the \
+             existing file manually.",
+            target.display(),
+            profile.key,
+        );
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("creating parent directory `{}` for IDE config", parent.display())
+        })?;
+    }
+    std::fs::write(&target, &body)
+        .with_context(|| format!("writing MCP config to `{}`", target.display()))?;
+    eprintln!(
+        "Wrote {} MCP config for {} ({}).",
+        body.len(),
+        profile.display_name,
+        target.display()
+    );
+    Ok(())
 }
 
 // ---- Registry selection resolution --------------------------------------

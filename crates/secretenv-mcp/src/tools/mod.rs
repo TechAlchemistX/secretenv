@@ -25,11 +25,13 @@
 
 pub mod aliases;
 pub mod doctor;
+pub mod init_project;
 pub mod password_managers;
 pub mod registry_writer;
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
@@ -42,9 +44,10 @@ use serde::{Deserialize, Serialize};
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
     AuthStatus, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
-    DoctorResponse, GettingStartedResponse, ListAliasesResponse, ListBackendsResponse,
-    MutationOutcome, OperatorDecisionEcho, RedactStatusResponse, ResolveStatusRegistryProbe,
-    ResolveStatusResponse, SetAliasResponse, ToolListing, VersionInfoResponse,
+    DoctorResponse, GettingStartedResponse, InitProjectResponse, ListAliasesResponse,
+    ListBackendsResponse, MutationOutcome, OperatorDecisionEcho, RedactStatusResponse,
+    ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse, ToolListing,
+    VersionInfoResponse,
 };
 use crate::config::McpConfig;
 use crate::policy::{enforce_mutation_policy, MutationRequest};
@@ -132,6 +135,24 @@ pub struct DeleteAliasArgs {
     /// Optional registry name; defaults to `"default"` when omitted.
     #[serde(default)]
     pub registry: Option<String>,
+    /// The agent's stated reason. Audit-log only; never echoed.
+    pub reason: String,
+}
+
+/// Argument record for `init_project`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InitProjectArgs {
+    /// Working directory to scaffold under (absolute or relative to
+    /// the server process's CWD). When omitted, uses the server's
+    /// own CWD.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// When `true`, actually writes `secretenv.toml`. When `false`
+    /// (default), returns the proposed body without writing — the
+    /// proposal IS the deliverable. Apply mode is gated by
+    /// `[mcp].allow_mutations`.
+    #[serde(default)]
+    pub apply: bool,
     /// The agent's stated reason. Audit-log only; never echoed.
     pub reason: String,
 }
@@ -766,10 +787,142 @@ impl Server {
     /// Scaffold secretenv.toml; detect .env key names (NOT values).
     #[tool(
         name = "init_project",
-        description = "Scaffold secretenv.toml; detect .env key names (NOT values). Default: propose without writing (apply: false)."
+        description = "Scaffold a `secretenv.toml` manifest from a `.env` file's KEY NAMES \
+                       (values are never read). Default `apply = false` returns the \
+                       proposed body without writing. `apply = true` writes the file and \
+                       is gated by [mcp].allow_mutations + audit-logged."
     )]
-    pub async fn init_project(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("init_project", 4)
+    pub async fn init_project(
+        &self,
+        args: Parameters<InitProjectArgs>,
+    ) -> Json<InitProjectResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.init_project");
+        let args = args.0;
+        let cwd = args
+            .cwd
+            .as_deref()
+            .map_or_else(|| std::env::current_dir().unwrap_or_default(), std::path::PathBuf::from);
+
+        // Always scaffold (no value access; safe regardless of policy).
+        let scaffold = match init_project::scaffold(&cwd) {
+            Ok(s) => s,
+            Err(e) => {
+                return Json(InitProjectResponse {
+                    working_directory: cwd.display().to_string(),
+                    manifest_path: cwd.join("secretenv.toml").display().to_string(),
+                    applied: false,
+                    detected_env_keys: Vec::new(),
+                    env_file_found: false,
+                    manifest_already_existed: false,
+                    proposed_manifest_toml: String::new(),
+                    outcome: MutationOutcome::WriteFailed,
+                    decision: OperatorDecisionEcho::Approved,
+                    error_message: Some(format!("{e:#}")),
+                });
+            }
+        };
+
+        // Dry-run (`apply = false`): no mutation, no policy gate, no
+        // audit-log entry — proposing is read-only behaviour.
+        if !args.apply {
+            return Json(InitProjectResponse {
+                working_directory: cwd.display().to_string(),
+                manifest_path: scaffold.manifest_path.display().to_string(),
+                applied: false,
+                detected_env_keys: scaffold.detected_keys,
+                env_file_found: scaffold.env_file_found,
+                manifest_already_existed: scaffold.manifest_already_existed,
+                proposed_manifest_toml: scaffold.proposed_toml,
+                outcome: MutationOutcome::Applied,
+                decision: OperatorDecisionEcho::AutoApproved,
+                error_message: None,
+            });
+        }
+
+        // Apply mode — policy gate + write + audit log.
+        let policy_request = MutationRequest {
+            tool_name: "init_project",
+            action_summary: &format!(
+                "write `secretenv.toml` at `{}` (manifest_already_existed={})",
+                scaffold.manifest_path.display(),
+                scaffold.manifest_already_existed
+            ),
+            agent_reason: &args.reason,
+        };
+
+        let (decision_echo, outcome, error_message) =
+            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+                Err(e) => {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "init_project".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (
+                        OperatorDecisionEcho::PolicyRefusal,
+                        MutationOutcome::Refused,
+                        Some(format!("{e:#}")),
+                    )
+                }
+                Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                    let outcome = if decision == OperatorDecision::Timeout {
+                        MutationOutcome::Timeout
+                    } else {
+                        MutationOutcome::Refused
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "init_project".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (echo_decision(decision), outcome, None)
+                }
+                Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
+                    let write_result =
+                        std::fs::write(&scaffold.manifest_path, scaffold.proposed_toml.as_bytes())
+                            .with_context(|| {
+                                format!("writing `{}`", scaffold.manifest_path.display())
+                            });
+                    let (outcome, err) = match write_result {
+                        Ok(()) => (MutationOutcome::Applied, None),
+                        Err(e) => (MutationOutcome::WriteFailed, Some(format!("{e:#}"))),
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "init_project".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (echo_decision(decision), outcome, err)
+                }
+            };
+
+        Json(InitProjectResponse {
+            working_directory: cwd.display().to_string(),
+            manifest_path: scaffold.manifest_path.display().to_string(),
+            applied: matches!(outcome, MutationOutcome::Applied),
+            detected_env_keys: scaffold.detected_keys,
+            env_file_found: scaffold.env_file_found,
+            manifest_already_existed: scaffold.manifest_already_existed,
+            proposed_manifest_toml: scaffold.proposed_toml,
+            outcome,
+            decision: decision_echo,
+            error_message,
+        })
     }
 
     /// Scan file for resolvable secret values and redact.

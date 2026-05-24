@@ -209,6 +209,46 @@ pub struct DeleteAliasResponse {
     pub error_message: Option<String>,
 }
 
+/// Response payload for the `init_project` tool.
+///
+/// Reports what `secretenv.toml` would (or did) contain after
+/// scaffolding from a `.env` file. NEVER returns any `.env` value —
+/// only the env-var names. Per build-plan §1.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InitProjectResponse {
+    /// CWD the tool inspected (absolute path).
+    pub working_directory: String,
+    /// Absolute path of the `secretenv.toml` that was written or
+    /// would be written.
+    pub manifest_path: String,
+    /// Whether the file was actually written (`apply = true`) or
+    /// just proposed (`apply = false`, default).
+    pub applied: bool,
+    /// Env-var key names detected in `.env` (or `[]` when no `.env`
+    /// was found). VALUES ARE NEVER INCLUDED.
+    pub detected_env_keys: Vec<String>,
+    /// Whether a `.env` file was found in the working directory.
+    pub env_file_found: bool,
+    /// Whether a `secretenv.toml` already existed at the target
+    /// path BEFORE this call. Useful so an agent can warn the
+    /// operator before applying.
+    pub manifest_already_existed: bool,
+    /// The exact bytes the tool would write (or did write) to
+    /// `secretenv.toml`. Safe to surface — these are env-var-name
+    /// declarations, not values.
+    pub proposed_manifest_toml: String,
+    /// Outcome bucket — `Applied` (wrote the file), `Refused`
+    /// (policy denied), or `WriteFailed` (write attempted but
+    /// failed). `apply = false` also returns `Applied` since the
+    /// proposal IS the deliverable.
+    pub outcome: MutationOutcome,
+    /// Decision recorded in the audit log.
+    pub decision: OperatorDecisionEcho,
+    /// Error message when `outcome = WriteFailed` / `Refused`.
+    pub error_message: Option<String>,
+}
+
 /// One entry in [`DoctorResponse::backends`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

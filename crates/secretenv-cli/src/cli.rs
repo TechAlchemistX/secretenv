@@ -685,6 +685,15 @@ fn cmd_mcp_setup(
         return Ok(());
     }
 
+    // The `generic` profile has no real target path; refuse --write.
+    if profile.key == "generic" {
+        anyhow::bail!(
+            "`--ide generic` is print-only — it doesn't target a specific config file. \
+             Re-run without `--write`, then paste the block into the IDE's MCP config \
+             (compatible with Claude Code, Cursor, Cline, Gemini CLI / Code Assist).",
+        );
+    }
+
     let target = expand_home(profile.config_path)
         .with_context(|| format!("expanding home directory for `{}`", profile.config_path))?;
     if target.exists() && !force {

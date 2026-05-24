@@ -145,11 +145,11 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
     },
     IdeProfile {
         key: "gemini",
-        display_name: "Gemini Code Assist (Google)",
+        display_name: "Gemini CLI + Gemini Code Assist (Google)",
         config_path: "~/.gemini/settings.json",
         format: FileFormat::Json,
         shape: ConfigShape::JsonMcpServers,
-        note: "Restart your editor after editing this file for Gemini to re-scan.",
+        note: "Single config covers both the standalone Gemini CLI and the Gemini Code Assist IDE extension. Restart the editor/CLI after editing for the re-scan.",
     },
     IdeProfile {
         key: "opencode",
@@ -158,6 +158,14 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonOpenCode,
         note: "OpenCode uses a `command`-as-list form; safe to merge under an existing `mcp` block.",
+    },
+    IdeProfile {
+        key: "generic",
+        display_name: "Generic (Claude-shape `mcpServers` block)",
+        config_path: "(paste into the IDE's MCP config file)",
+        format: FileFormat::Json,
+        shape: ConfigShape::JsonMcpServers,
+        note: "Drop-in for ANY IDE that adopts the de-facto Claude `mcpServers` shape: Claude Code, Cursor, Cline, Gemini CLI / Code Assist, and emerging clients. NOT compatible with VS Code Copilot (needs `\"type\": \"stdio\"`), Continue (`experimental.modelContextProtocolServers`), OpenCode (`command`-as-list), or Codex (TOML).",
     },
 ];
 
@@ -313,6 +321,32 @@ mod tests {
         let body = render_config(profile, "secretenv");
         assert!(body.contains("\"mcpServers\""));
         assert!(body.contains("\"secretenv\""));
+    }
+
+    #[test]
+    fn generic_profile_matches_claude_shape() {
+        let generic = find_profile("generic").unwrap();
+        let claude = find_profile("claude-code").unwrap();
+        assert_eq!(generic.shape, claude.shape);
+        // Generic rendered body is byte-identical to claude-code's
+        // rendering — they share the de-facto `mcpServers` block.
+        assert_eq!(render_config(generic, "secretenv"), render_config(claude, "secretenv"),);
+    }
+
+    #[test]
+    fn generic_profile_note_lists_compatible_ides() {
+        let generic = find_profile("generic").unwrap();
+        // The note documents which IDEs accept the generic block
+        // as-is, and which ones need their own per-IDE profile.
+        for compat in ["Claude Code", "Cursor", "Cline", "Gemini"] {
+            assert!(generic.note.contains(compat), "generic note missing compatible IDE: {compat}");
+        }
+        for incompat in ["VS Code Copilot", "Continue", "OpenCode", "Codex"] {
+            assert!(
+                generic.note.contains(incompat),
+                "generic note missing incompatible-IDE warning: {incompat}",
+            );
+        }
     }
 
     #[test]

@@ -22,7 +22,6 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use rmcp::service::{ElicitationError, Peer};
 use rmcp::RoleServer;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::time::timeout;
 
@@ -111,10 +110,30 @@ pub struct MutationRequest<'a> {
 /// | Decline | `Err(UserDeclined)` | `Denied` |
 /// | Cancel | `Err(UserCancelled)` | `Denied` |
 ///
-/// The empty-object schema renders as a fieldless form on every
-/// spec-compliant client (Claude Code, Cursor, Cline, Gemini, etc.).
-#[derive(Debug, Deserialize, JsonSchema)]
+/// # `JsonSchema` impl
+///
+/// Hand-written rather than `#[derive(JsonSchema)]` because schemars
+/// 1.0 emits `{"type": "object"}` for fieldless structs (no
+/// `properties` key). The MCP elicitation validator requires
+/// `properties` to be present even when empty — derive output fails
+/// validation server-side with `missing field properties`. Phase 7e
+/// follow-up after the Claude Code walkthrough surfaced the error.
+#[derive(Debug, Deserialize)]
 struct MutationApproval {}
+
+impl schemars::JsonSchema for MutationApproval {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "MutationApproval".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+}
 
 rmcp::elicit_safe!(MutationApproval);
 

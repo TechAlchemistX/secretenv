@@ -1,0 +1,89 @@
+[package]
+name        = "secretenv-mcp"
+description = "SecretEnv — MCP server library. Stdio-only Model Context Protocol server giving AI agents structured access to the SecretEnv registry without ever exposing a resolved secret value. See [[build-plan-v0.16-mcp]]."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+# `secretenv-core` is declared with `default-features = false` so this
+# crate does NOT opt into the v0.15 `value-access` feature (arch-H2
+# polarity flip). This is the documentation layer — workspace feature
+# unification means the in-workspace build still resolves
+# `secretenv-core` with `value-access` enabled because `secretenv-cli`
+# opts in. The STRUCTURAL gate that `secretenv-mcp` cannot construct
+# or serialize a `Secret<T>` is enforced by `clippy.toml`
+# (`disallowed-types`) + `tests/boundary_test.rs`. See SEC-INV-02 +
+# build-plan §5.
+[dependencies]
+secretenv-core      = { path = "../secretenv-core", version = "0.16.0", default-features = false }
+# `secretenv-backends-init` is the SHARED factory wiring used by both
+# the CLI and the MCP server. Pulled in for `doctor` + `resolve_status`
+# which need a live `BackendRegistry` at call time. Naming
+# `secretenv_core::Backend` from the resulting trait objects is
+# permitted: the SEC-INV-02 clippy ban is scoped to
+# `secretenv_core::Secret`, not the `Backend` trait, and `Backend::check()`
+# returns `BackendStatus` (a metadata-only enum — never a `Secret`).
+# Calls to value-producing methods (`get`, `set`) inside this crate
+# would still need to land in `src/internal/` per the documented
+# escape-hatch rule in `clippy.toml`.
+secretenv-backends-init.workspace = true
+# `secretenv-migrate` is the Phase 1a-extracted library that
+# `migrate_alias` (Phase 6) wraps. Calling `build_migration_plan` +
+# `migrate_with_plan` from the mcp handler is the value-free path:
+# the migrate engine handles value handoff between backends entirely
+# server-side via its own `Secret`-naming, never surfacing the
+# bytes to the caller.
+secretenv-migrate.workspace = true
+secretenv-telemetry.workspace = true
+anyhow.workspace              = true
+directories.workspace         = true
+tokio.workspace               = true
+futures.workspace             = true
+# `getrandom` is the entropy source for the `gen_password` fallback
+# path in `src/internal/gen_engine.rs` (Phase 5a). Native-gen
+# overrides (Phase 5b) shell out to the backend's CLI and never
+# enter this module's getrandom path.
+getrandom.workspace           = true
+# `zeroize` for `Zeroizing<Vec<u8>>` wrapping the raw entropy bytes
+# before they're encoded into the value `Secret<String>`.
+zeroize.workspace             = true
+tracing.workspace             = true
+serde.workspace               = true
+serde_json.workspace          = true
+toml.workspace                = true
+
+# rmcp (the official Rust MCP SDK) — pinned 1.7 per [[build-plan-v0.16-mcp]]
+# §3. The `server` default feature pulls `transport-async-rw` (the
+# underlying primitive); `transport-io` is the stdio adapter that
+# turns `rmcp::transport::stdio()` (returning the `tokio::io::Stdin`
+# + `Stdout` pair) into a usable transport for `ServiceExt::serve`.
+# `schemars` is required by the `#[tool]` macro for JSON Schema
+# generation; `macros` provides the `#[tool]` / `#[tool_router]` /
+# `#[tool_handler]` attribute macros themselves. `elicitation` is the
+# MCP server→client elicit RPC primitive (v0.16 Phase 7c FINDING-4 fix:
+# replaces the broken `/dev/tty` confirmation surface for IDE-driven
+# MCP hosts; surfaces approval prompts through the IDE's own UI).
+rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "schemars", "transport-io", "elicitation"] }
+schemars = "1.0"
+
+# secretenv-migrate is deferred to Phase 6 (`migrate_alias` tool).
+
+[dev-dependencies]
+tempfile.workspace = true
+# `trybuild` powers the SEC-INV-02 compile-fail guard at
+# `tests/boundary_ui/secret_is_not_serializable.rs` — proves that
+# `secretenv_core::Secret<T>` does NOT implement `serde::Serialize`,
+# so the boundary closure of `serde_json::to_value(...)` calls in
+# tool handler return paths structurally cannot leak a value. Listed
+# as dev-dep so it never enters the runtime closure.
+trybuild = "1"
+
+[lints]
+workspace = true

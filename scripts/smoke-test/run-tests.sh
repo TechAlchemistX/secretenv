@@ -126,6 +126,12 @@ SECTIONS=(
     "32|v0.15 migrate — local-only semantics + JSON wire-format|no"
     "33|v0.15 migrate — live per-backend matrix|yes"
     "34|v0.15 migrate — --delete-source flow + SEC-INV-08 lock|no"
+    # Section 35 is offline (uses only the local backend for MCP
+    # fixtures). A future cloud-backend MCP section can land as 35b
+    # if/when we want to exercise live backend writes through the
+    # MCP boundary; v0.16 ships with local + SEC-INV-20 + value-grep
+    # as the must-have surface.
+    "35|v0.16 secretenv mcp — protocol smoke + SEC-INV-20 + value-grep|no"
 )
 
 print_section_inventory() {
@@ -3944,6 +3950,250 @@ EOF
     record "1040 v0.15 --delete-source Gated-refusal (1password)" SKIP "live 1password gated-delete coverage deferred to manual smoke; unit-test locks the variant"
 else
     record "1040 v0.15 --delete-source Gated-refusal (1password)" SKIP "op CLI unavailable / not signed in"
+fi
+
+
+# ---------------------------------------------------------------
+section_begin 35 "v0.16 secretenv mcp — protocol smoke + SEC-INV-20 + value-grep"
+
+# Local-only MCP smoke. Exercises the rmcp stdio transport end-to-end
+# through ALL 14 tools against a local-backend fixture registry.
+# Three structural gates ride alongside per-tool assertions:
+#   1. **tools/list count** — must be exactly 14 (matches the
+#      Phase 3-6 inventory; drift would mean a tool went missing or
+#      a stub leaked in).
+#   2. **Value-grep gate (SEC-INV-15, SEC-INV-02)** — a sentinel
+#      string is seeded into a fixture alias's value. After every
+#      tool runs, every response payload is grep'd for the sentinel.
+#      Any hit = SEC-INV failure.
+#   3. **SEC-INV-20 gate (Phase 7b fix)** — every error_message
+#      field is grep'd for `scheme://body` URI patterns from the 16
+#      backend schemes. The Phase 7b scrubber redacts to
+#      `scheme://[redacted]`; any unredacted URI = regression.
+#
+# Driver: scripts/smoke-test/lib/mcp-driver.py spawns
+# `secretenv mcp serve --config <fixture>`, performs the MCP
+# initialize handshake, then issues tools/call frames in order from
+# a plan.json. Responses + tools/list are written to a single JSON
+# blob that this section's jq/python assertions read.
+
+V016M_RUN_ID="$(date +%s)-$$"
+V016M_SENTINEL="SECRETENV_SMOKE_FIXTURE_SENTINEL_${V016M_RUN_ID}_DO_NOT_LEAK"
+V016M_WORK="$RUNS/1100-v0.16-mcp"
+mkdir -p "$V016M_WORK"
+
+# Stage a self-contained MCP fixture:
+#   - allow_mutations = "always" (bypass TTY in automation)
+#   - default registry pointing at a local-backend registry doc
+#   - one fixture alias `smoke-sentinel` → file containing $V016M_SENTINEL
+#   - one mutation target `smoke-target` (an empty file the
+#     set_alias call will register a pointer to)
+printf '%s' "$V016M_SENTINEL" > "$V016M_WORK/sentinel.txt"
+: > "$V016M_WORK/target.txt"
+cat > "$V016M_WORK/registry.toml" <<EOF
+smoke-sentinel = "local-data://${V016M_WORK}/sentinel.txt"
+EOF
+cat > "$V016M_WORK/config.toml" <<EOF
+[mcp]
+allow_mutations = "always"
+confirm_via = "none"
+mutation_log = "${V016M_WORK}/mutation.log"
+
+[backends.local-reg]
+type = "local"
+
+[backends.local-data]
+type = "local"
+
+[registries.default]
+sources = ["local-reg://${V016M_WORK}/registry.toml"]
+EOF
+
+# Build the plan: 14 tools in inventory order. Mutations use the
+# always-approve policy so no TTY interaction is needed.
+cat > "$V016M_WORK/plan.json" <<EOF
+{
+  "timeout_secs": 30,
+  "calls": [
+    {"id": "1",  "name": "version_info",            "arguments": {}},
+    {"id": "2",  "name": "getting_started",         "arguments": {}},
+    {"id": "3",  "name": "redact_status",           "arguments": {}},
+    {"id": "4",  "name": "list_backends",           "arguments": {}},
+    {"id": "5",  "name": "detect_password_managers","arguments": {}},
+    {"id": "6",  "name": "list_aliases",            "arguments": {}},
+    {"id": "7",  "name": "doctor",                  "arguments": {}},
+    {"id": "8",  "name": "resolve_status",          "arguments": {"aliases": ["smoke-sentinel"]}},
+    {"id": "9",  "name": "init_project",            "arguments": {"working_directory": "${V016M_WORK}", "apply": false, "reason": "smoke section 35 init"}},
+    {"id": "10", "name": "redact_file",             "arguments": {"file_path": "${V016M_WORK}/sentinel.txt", "registry": "default", "apply": false, "reason": "smoke section 35 redact"}},
+    {"id": "11", "name": "set_alias",               "arguments": {"alias": "smoke-target", "target_uri": "local-data://${V016M_WORK}/target.txt", "registry": "default", "reason": "smoke section 35 set"}},
+    {"id": "12", "name": "delete_alias",            "arguments": {"alias": "smoke-target", "registry": "default", "reason": "smoke section 35 delete"}},
+    {"id": "13", "name": "gen_password",            "arguments": {"alias": "smoke-genpw", "target_uri": "local-data://${V016M_WORK}/genpw.txt", "registry": "default", "charset": "alphanumeric", "length": 32, "reason": "smoke section 35 genpw"}},
+    {"id": "14", "name": "migrate_alias",           "arguments": {"alias": "smoke-sentinel", "dest_uri": "local-data://${V016M_WORK}/migrated.txt", "registry": "default", "dry_run": true, "reason": "smoke section 35 migrate"}}
+  ]
+}
+EOF
+
+V016M_RESP="$V016M_WORK/responses.json"
+V016M_LOG="$V016M_WORK/driver.log"
+
+# Drive the MCP server end-to-end.
+if [ "$SECTION_ACTIVE" = "1" ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        record "1100 v0.16 MCP driver prerequisite (python3)" SKIP "python3 not available; section skipped"
+    elif ! "$_here/lib/mcp-driver.py" \
+            --bin "$BIN" \
+            --config "$V016M_WORK/config.toml" \
+            --plan "$V016M_WORK/plan.json" \
+            > "$V016M_RESP" 2> "$V016M_LOG"; then
+        record "1100 v0.16 MCP driver end-to-end run" FAIL "driver exited non-zero; see $V016M_LOG"
+    else
+        record "1100 v0.16 MCP driver end-to-end run" PASS "responses written to $V016M_RESP"
+
+        # ---- structural gate 1: tools/list count ----
+        V016M_TOOL_COUNT=$(python3 -c "import json; print(len(json.load(open('$V016M_RESP'))['tools']))")
+        if [ "$V016M_TOOL_COUNT" = "14" ]; then
+            record "1101 v0.16 MCP tools/list count = 14" PASS "all 14 tools enumerate"
+        else
+            record "1101 v0.16 MCP tools/list count = 14" FAIL "expected 14, got $V016M_TOOL_COUNT"
+        fi
+
+        # ---- per-tool happy-path gates ----
+        for CALL_ID in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+            TOOL_NAME=$(python3 -c "
+import json
+r = json.load(open('$V016M_RESP'))
+for c in r['responses']:
+    if c['id'] == '$CALL_ID':
+        print(c['tool'])
+        break
+")
+            OK_FLAG=$(python3 -c "
+import json
+r = json.load(open('$V016M_RESP'))
+for c in r['responses']:
+    if c['id'] == '$CALL_ID':
+        print('1' if c['ok'] and not c.get('isError', False) else '0')
+        break
+")
+            if [ "$OK_FLAG" = "1" ]; then
+                record "$((1110+CALL_ID)) v0.16 MCP tools/call $TOOL_NAME" PASS "structuredContent returned, no JSON-RPC error"
+            else
+                record "$((1110+CALL_ID)) v0.16 MCP tools/call $TOOL_NAME" FAIL "tool returned isError=true or JSON-RPC error"
+            fi
+        done
+
+        # ---- structural gate 2: value-grep (SEC-INV-15 + SEC-INV-02) ----
+        # The sentinel was seeded into smoke-sentinel's backing file.
+        # Every response payload (across ALL 14 tools, including
+        # resolve_status which DID resolve it) must NOT contain the
+        # sentinel bytes in any serialized form.
+        if ! grep -q "$V016M_SENTINEL" "$V016M_RESP"; then
+            record "1130 v0.16 MCP value-grep — sentinel absent from ALL responses" PASS "no leak"
+        else
+            HITS=$(grep -c "$V016M_SENTINEL" "$V016M_RESP")
+            record "1130 v0.16 MCP value-grep — sentinel absent from ALL responses" FAIL "sentinel appeared $HITS times — SEC-INV breach"
+        fi
+
+        # ---- structural gate 3: SEC-INV-20 URI redaction ----
+        # Every error_message field must not contain an unredacted
+        # backend-scheme URI. The Phase 7b scrubber rewrites
+        # `scheme://body` to `scheme://[redacted]`. Any other pattern
+        # is a regression.
+        URI_LEAK=$(python3 -c "
+import json, re
+SCHEMES = ['op','aws-sm','gcp-sm','azure-kv','vault','openbao','bitwarden','bws','doppler','infisical','keepass','pass','keychain','secret-tool','conjur','secretenv','local-reg','local-data']
+r = json.load(open('$V016M_RESP'))
+leaks = []
+for c in r['responses']:
+    result = c.get('result') or {}
+    err_msg = result.get('error_message') if isinstance(result, dict) else None
+    if not err_msg:
+        continue
+    for sch in SCHEMES:
+        for m in re.finditer(re.escape(sch + '://') + r'(?!\\[redacted\\])', err_msg):
+            leaks.append((c['tool'], sch, err_msg[m.start():m.start()+80]))
+print(len(leaks))
+if leaks:
+    for tool, sch, snippet in leaks:
+        print(f'  {tool} {sch}: {snippet!r}', flush=True)
+")
+        if [ "$(echo "$URI_LEAK" | head -1)" = "0" ]; then
+            record "1131 v0.16 MCP SEC-INV-20 — no unredacted URIs in error_message" PASS "all error chains scrubbed"
+        else
+            record "1131 v0.16 MCP SEC-INV-20 — no unredacted URIs in error_message" FAIL "$URI_LEAK"
+        fi
+
+        # ---- audit log gate: every mutation logged ----
+        if [ -s "$V016M_WORK/mutation.log" ]; then
+            ENTRY_COUNT=$(grep -c '"operator_decision"' "$V016M_WORK/mutation.log" || echo 0)
+            # set_alias + delete_alias + redact_file(apply=false → no audit)
+            # + gen_password + migrate_alias(dry_run=true → no audit) +
+            # init_project(apply=false → no audit). Expect: 3 entries.
+            if [ "$ENTRY_COUNT" -ge "3" ]; then
+                record "1132 v0.16 MCP audit log — mutation entries present" PASS "$ENTRY_COUNT entries"
+            else
+                record "1132 v0.16 MCP audit log — mutation entries present" FAIL "expected ≥3 audit entries, got $ENTRY_COUNT"
+            fi
+
+            # SEC-INV-12: agent_reason captured verbatim in audit log
+            if grep -q '"agent_reason":"smoke section 35 set"' "$V016M_WORK/mutation.log"; then
+                record "1133 v0.16 MCP SEC-INV-12 — agent_reason verbatim in audit" PASS "set_alias reason captured"
+            else
+                record "1133 v0.16 MCP SEC-INV-12 — agent_reason verbatim in audit" FAIL "agent_reason missing or transformed"
+            fi
+        else
+            record "1132 v0.16 MCP audit log — mutation entries present" FAIL "audit log empty or missing"
+        fi
+
+        # ---- gen_password value-leak check ----
+        # gen_password generated a 32-char alphanumeric value into
+        # genpw.txt. That value must NOT appear in the responses JSON.
+        if [ -f "$V016M_WORK/genpw.txt" ]; then
+            GENPW_VAL=$(cat "$V016M_WORK/genpw.txt")
+            if [ -n "$GENPW_VAL" ] && [ "${#GENPW_VAL}" = "32" ]; then
+                if ! grep -qF "$GENPW_VAL" "$V016M_RESP"; then
+                    record "1134 v0.16 MCP gen_password SEC-INV-15 — value absent from response" PASS "generated value not in JSON"
+                else
+                    record "1134 v0.16 MCP gen_password SEC-INV-15 — value absent from response" FAIL "generated value leaked into response"
+                fi
+            else
+                record "1134 v0.16 MCP gen_password SEC-INV-15 — value absent from response" FAIL "genpw.txt malformed (expected 32 chars, got ${#GENPW_VAL})"
+            fi
+        else
+            record "1134 v0.16 MCP gen_password SEC-INV-15 — value absent from response" FAIL "genpw.txt not written by tool"
+        fi
+
+        # ---- adversarial gate TS-01: control-char alias in mutation ----
+        # Send a set_alias call with an alias name containing \n and ESC.
+        # Expected: the policy gate sanitizes for the prompt (already
+        # tested in unit tests); the response error_message (if any)
+        # must not contain raw control chars.
+        cat > "$V016M_WORK/ts01-plan.json" <<EOF2
+{
+  "timeout_secs": 30,
+  "calls": [
+    {"id": "ts01", "name": "set_alias", "arguments": {"alias": "ts01\\n\\u001b[2KApproved", "target_uri": "local-data://${V016M_WORK}/ts01.txt", "registry": "default", "reason": "TS-01 adversarial"}}
+  ]
+}
+EOF2
+        if "$_here/lib/mcp-driver.py" \
+                --bin "$BIN" \
+                --config "$V016M_WORK/config.toml" \
+                --plan "$V016M_WORK/ts01-plan.json" \
+                > "$V016M_WORK/ts01-resp.json" 2> "$V016M_WORK/ts01.log"; then
+            # The mutation completed (allow_mutations=always); the
+            # check is that no raw ESC (0x1B) or CR (0x0D) lands in
+            # the response payload.
+            if ! grep -q $'\x1b' "$V016M_WORK/ts01-resp.json" && ! grep -q $'\r' "$V016M_WORK/ts01-resp.json"; then
+                record "1140 v0.16 MCP TS-01 — control chars absent from adversarial response" PASS "ESC/CR scrubbed"
+            else
+                record "1140 v0.16 MCP TS-01 — control chars absent from adversarial response" FAIL "raw control chars surfaced in response"
+            fi
+        else
+            # If the driver itself failed, that's still informative.
+            record "1140 v0.16 MCP TS-01 — control chars absent from adversarial response" FAIL "TS-01 driver invocation failed; see $V016M_WORK/ts01.log"
+        fi
+    fi
 fi
 
 

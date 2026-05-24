@@ -307,6 +307,7 @@ mod tests {
                 instance.to_owned(),
                 BackendConfig { backend_type: backend_type.to_owned(), raw_fields },
             )]),
+            mcp: None,
         }
     }
 
@@ -339,6 +340,7 @@ mod tests {
                 RegistryConfig { sources: vec!["aws-ssm-prod:///registries/shared".into()] },
             )]),
             backends: HashMap::new(),
+            mcp: None,
         };
         let sel = RegistrySelection::Name("default".into());
         let err = build_invitation(&cfg, &sel, None).unwrap_err();

@@ -1,0 +1,35 @@
+[package]
+name        = "secretenv-backends-init"
+description = "SecretEnv — shared backend-factory wiring used by the CLI and the MCP server. Single source of truth for the compiled-in factory list; do not register factories from anywhere else."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[dependencies]
+secretenv-core.workspace               = true
+secretenv-backend-local.workspace      = true
+secretenv-backend-aws-ssm.workspace    = true
+secretenv-backend-1password.workspace  = true
+secretenv-backend-vault.workspace      = true
+secretenv-backend-aws-secrets.workspace = true
+secretenv-backend-gcp.workspace        = true
+secretenv-backend-azure.workspace      = true
+secretenv-backend-keychain.workspace   = true
+secretenv-backend-doppler.workspace    = true
+secretenv-backend-infisical.workspace  = true
+secretenv-backend-keeper.workspace     = true
+secretenv-backend-cf-kv.workspace      = true
+secretenv-backend-openbao.workspace    = true
+secretenv-backend-conjur.workspace     = true
+secretenv-backend-bitwarden-sm.workspace = true
+anyhow.workspace                       = true
+
+[lints]
+workspace = true

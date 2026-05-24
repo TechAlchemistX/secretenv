@@ -2,39 +2,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Build a [`BackendRegistry`] pre-populated with every shipped backend
-//! factory + instances loaded from `config`.
+//! factory + instances loaded from a [`Config`].
 //!
-//! Shared between `main.rs` (startup wiring) and `setup.rs` (post-write
-//! verification with the freshly-written config). Factored out so
-//! the factory-registration list is the single source of truth.
+//! Single source of truth for the compiled-in factory list. Used by
+//! both `secretenv-cli` (startup wiring + `setup` post-write
+//! verification) and `secretenv-mcp` (registry construction inside
+//! the `doctor` / `resolve_status` tool handlers). Do not register
+//! factories from anywhere else.
 //!
 //! **Keychain registration is unconditional across platforms.** The
 //! `KeychainFactory` compiles on every target; it bails at
 //! `create()` time on non-macOS with a clear error. This keeps the
 //! workspace buildable on Linux / Windows CI without cfg-gating the
 //! registration list.
-//!
-//! v0.6 adds `doppler` (Doppler secrets-manager CLI wrapper).
-//! v0.7 adds `infisical` (Infisical `SaaS` + self-hostable CLI wrapper).
-//! v0.8 adds `keeper` (Keeper Commander CLI wrapper; requires persistent
-//! login set up via `this-device register` + `persistent-login on`).
-//! v0.9 adds `cf-kv` (Cloudflare Workers KV via `wrangler` CLI wrapper).
-//! v0.10 adds `openbao` (Linux Foundation MPL-2.0 fork of Vault — KV
-//! v1/v2 via the `bao` CLI, tap-less brew install).
-//! v0.11 adds `conjur` (`CyberArk` Conjur OSS / Enterprise via the
-//! Go-based `conjur` v8 CLI).
-//! v0.12 adds `bitwarden-sm` (`Bitwarden` Secrets Manager via the
-//! `bws` CLI v2.x; project-scoped secrets, machine-account access
-//! tokens). Distinct from a future `bitwarden` (Password Manager)
-//! backend.
 
 use anyhow::{Context, Result};
 use secretenv_core::{BackendRegistry, Config};
 
-/// Register every compiled-in backend factory (`local`, `aws-ssm`,
-/// `1password`, `vault`, `aws-secrets`, `gcp`, `azure`, `keychain`,
-/// `doppler`, `infisical`, `keeper`, `cf-kv`, `openbao`, `conjur`,
-/// `bitwarden-sm`) and instantiate the backends declared in `config`.
+/// Register every compiled-in backend factory and instantiate the
+/// backends declared in `config`.
+///
+/// Factories registered: `local`, `aws-ssm`, `1password`, `vault`,
+/// `aws-secrets`, `gcp`, `azure`, `keychain`, `doppler`, `infisical`,
+/// `keeper`, `cf-kv`, `openbao`, `conjur`, `bitwarden-sm`.
 ///
 /// # Errors
 /// Returns an error if any `[backends.<name>]` block references a

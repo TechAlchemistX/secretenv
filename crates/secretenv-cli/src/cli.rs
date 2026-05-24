@@ -28,8 +28,17 @@ use secretenv_core::{
     about = "Run commands with secrets injected from any backend"
 )]
 pub struct Cli {
-    /// Path to `config.toml`. Defaults to the XDG-standard location
-    /// (`$XDG_CONFIG_HOME/secretenv/config.toml`).
+    /// Path to `config.toml`. Default lookup precedence (first
+    /// existing file wins):
+    ///   1. `$XDG_CONFIG_HOME/secretenv/config.toml` (any platform,
+    ///      explicit env var)
+    ///   2. `~/.config/secretenv/config.toml` (cross-platform XDG
+    ///      convention; honored on macOS since v0.16 Phase 7d for
+    ///      stow / chezmoi / yadm dotfile users)
+    ///   3. Platform-native: `~/Library/Application Support/secretenv/`
+    ///      on macOS, `%APPDATA%\secretenv\` on Windows.
+    ///
+    /// On Linux #1/#2/#3 collapse to the same `~/.config/` path.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -87,6 +96,135 @@ See `docs/security.md` for the full Limits matrix.
     /// tainted set and rewrites the file with `[redacted:<alias>]`
     /// substitutions (or `--redact-token <fixed>`).
     Redact(RedactArgs),
+    /// `MCP` (Model Context Protocol) server operations — start the
+    /// stdio-only server, or toggle the disable sentinel that gates
+    /// it. See [[build-plan-v0.16-mcp]] for the full design.
+    #[command(subcommand)]
+    Mcp(McpCommand),
+}
+
+/// Clap-friendly mirror of `secretenv_mcp::AllowMutations`. Kept here
+/// rather than `clap::ValueEnum`-deriving the upstream enum so that
+/// the MCP crate's public surface doesn't gain a clap dependency.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum AllowMutationsCli {
+    Never,
+    Confirm,
+    Always,
+}
+
+impl AllowMutationsCli {
+    const fn to_mcp(self) -> secretenv_mcp::AllowMutations {
+        match self {
+            Self::Never => secretenv_mcp::AllowMutations::Never,
+            Self::Confirm => secretenv_mcp::AllowMutations::Confirm,
+            Self::Always => secretenv_mcp::AllowMutations::Always,
+        }
+    }
+}
+
+/// Clap-friendly mirror of `secretenv_mcp::ConfirmVia`.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum ConfirmViaCli {
+    Auto,
+    Elicitation,
+    Tty,
+    Notification,
+    None,
+}
+
+impl ConfirmViaCli {
+    const fn to_mcp(self) -> secretenv_mcp::ConfirmVia {
+        match self {
+            Self::Auto => secretenv_mcp::ConfirmVia::Auto,
+            Self::Elicitation => secretenv_mcp::ConfirmVia::Elicitation,
+            Self::Tty => secretenv_mcp::ConfirmVia::Tty,
+            Self::Notification => secretenv_mcp::ConfirmVia::Notification,
+            Self::None => secretenv_mcp::ConfirmVia::None,
+        }
+    }
+}
+
+/// `secretenv mcp <subcommand>` — `MCP` server operations.
+///
+/// The disable sentinel lives at `$XDG_CONFIG_HOME/secretenv/mcp-disabled`
+/// and is the single source of truth for "is the server allowed to start
+/// right now". `disable` writes it (optionally with an auto-expiry);
+/// `enable` removes it; `serve` checks it on every start.
+#[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    /// Run the `MCP` server over stdio until the transport closes.
+    /// Honors the disable sentinel — if present and unexpired, exits
+    /// with a clear stderr message before binding.
+    Serve {
+        /// Per-launch override for `[mcp].allow_mutations`. Takes
+        /// precedence over the value in `config.toml`. v0.16 Phase 7f
+        /// addition for per-IDE config scoping: IDEs that don't
+        /// advertise MCP elicitation (e.g. Gemini CLI 0.43.0) can
+        /// register secretenv with `args: ["mcp", "serve",
+        /// "--allow-mutations", "always"]` to bypass the gate
+        /// (mutations still audit-logged) without globally weakening
+        /// `[mcp].allow_mutations` in the user's config.
+        #[arg(long, value_name = "MODE")]
+        allow_mutations: Option<AllowMutationsCli>,
+        /// Per-launch override for `[mcp].confirm_via`. Same precedence
+        /// + scoping rationale as `--allow-mutations`.
+        #[arg(long, value_name = "SURFACE")]
+        confirm_via: Option<ConfirmViaCli>,
+    },
+    /// Disable the `MCP` server by writing the sentinel file.
+    /// Subsequent `mcp serve` invocations exit immediately until
+    /// either the sentinel is removed (`mcp enable`) or, when
+    /// `--duration` was given, the embedded expiry has passed.
+    Disable {
+        /// Optional auto-expiry — e.g. `30m`, `2h`, `1d`. Without
+        /// this flag the disable is indefinite (requires explicit
+        /// `mcp enable` to clear).
+        #[arg(long, value_name = "DURATION")]
+        duration: Option<String>,
+    },
+    /// Re-enable the `MCP` server by removing the disable sentinel.
+    /// No-op if the sentinel is already absent.
+    Enable,
+    /// Emit a paste-ready MCP-client config block for one of the
+    /// supported IDEs (Claude Code, Cursor, Codex, VS Code Copilot,
+    /// Continue, Cline, Gemini Code Assist, `OpenCode`).
+    ///
+    /// Default behavior: print the rendered config + the target
+    /// config-file path to stdout. The operator decides whether to
+    /// paste, merge, or pipe to a file. With `--write`, the helper
+    /// writes the file directly — refusing if the target already
+    /// exists unless `--force` is set.
+    Setup {
+        /// Which IDE to render for. Use `--list-ides` to see options.
+        /// Required unless `--list-ides` is given.
+        #[arg(long, value_name = "IDE", conflicts_with = "list_ides")]
+        ide: Option<String>,
+        /// Print the supported IDE keys + their config-file paths
+        /// and exit. Useful when you don't remember the exact key.
+        #[arg(long, conflicts_with = "ide")]
+        list_ides: bool,
+        /// Absolute path to the `secretenv` binary the IDE will spawn.
+        /// Defaults to `secretenv` (relies on the IDE's `$PATH`).
+        /// Set this to the output of `which secretenv` for portable
+        /// per-IDE setup that works regardless of the IDE's shell
+        /// initialization.
+        #[arg(long, value_name = "PATH", default_value = "secretenv")]
+        binary: String,
+        /// Write the rendered config to the target file. Default is
+        /// stdout. Refuses if the target file already exists unless
+        /// `--force` is set (existing-file merging is not yet
+        /// implemented — paste manually for now).
+        #[arg(long)]
+        write: bool,
+        /// With `--write`, overwrite the target file even if it
+        /// already exists. Without this flag, an existing file is
+        /// treated as an error and the helper exits non-zero.
+        #[arg(long, requires = "write")]
+        force: bool,
+    },
 }
 
 /// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
@@ -505,8 +643,168 @@ impl Cli {
                 let _: crate::reports::RedactReport = cmd_redact(args, config, backends).await?;
                 Ok(())
             }
+            Command::Mcp(mc) => cmd_mcp(mc, self.config.clone()).await,
         }
     }
+}
+
+/// Parse a duration string of the form `<n>(s|m|h|d)` into a [`Duration`].
+/// Used by `secretenv mcp disable --duration`.
+fn parse_duration(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    let (n_str, unit) = s.split_at(
+        s.find(|c: char| !c.is_ascii_digit())
+            .ok_or_else(|| anyhow::anyhow!("duration `{s}` missing unit suffix (s|m|h|d)"))?,
+    );
+    let n: u64 = n_str
+        .parse()
+        .with_context(|| format!("duration `{s}` has invalid numeric portion `{n_str}`"))?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 60 * 60,
+        "d" => n * 60 * 60 * 24,
+        other => {
+            anyhow::bail!("duration `{s}` has unknown unit `{other}` (use s|m|h|d)")
+        }
+    };
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+/// Dispatch for `secretenv mcp <subcommand>`. `config_path` is the
+/// global `--config <path>` flag (resolved to `None` for the XDG
+/// default); `secretenv_mcp::serve` loads the [`Config`] itself so it
+/// can `Arc`-wrap and own it. `mcp disable` / `mcp enable` are pure
+/// sentinel-file operations and ignore `config_path`.
+async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
+    match mc {
+        McpCommand::Serve { allow_mutations, confirm_via } => {
+            let overrides = secretenv_mcp::PolicyOverrides {
+                allow_mutations: allow_mutations.map(AllowMutationsCli::to_mcp),
+                confirm_via: confirm_via.map(ConfirmViaCli::to_mcp),
+            };
+            secretenv_mcp::serve_with_overrides(config_path, overrides).await
+        }
+        McpCommand::Disable { duration } => {
+            let d = duration.as_deref().map(parse_duration).transpose()?;
+            let path = secretenv_mcp::disable(d)?;
+            match d {
+                None => eprintln!(
+                    "SecretEnv MCP server disabled (indefinite). Sentinel: {}",
+                    path.display()
+                ),
+                Some(dur) => eprintln!(
+                    "SecretEnv MCP server disabled for {} seconds. Sentinel: {}",
+                    dur.as_secs(),
+                    path.display()
+                ),
+            }
+            Ok(())
+        }
+        McpCommand::Enable => {
+            secretenv_mcp::enable()?;
+            eprintln!("SecretEnv MCP server enabled (disable sentinel cleared).");
+            Ok(())
+        }
+        McpCommand::Setup { ide, list_ides, binary, write, force } => {
+            cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force)
+        }
+    }
+}
+
+/// `secretenv mcp setup` dispatch — print or write per-IDE config.
+fn cmd_mcp_setup(
+    ide: Option<&str>,
+    list_ides: bool,
+    binary: &str,
+    write: bool,
+    force: bool,
+) -> Result<()> {
+    use secretenv_mcp::setup::{expand_home, find_profile, render_config, IDE_PROFILES};
+
+    if list_ides {
+        println!("Supported IDEs for `secretenv mcp setup`:\n");
+        let widest = IDE_PROFILES.iter().map(|p| p.key.len()).max().unwrap_or(0);
+        for p in IDE_PROFILES {
+            println!(
+                "  {key:<width$}  {name}\n    config: {path}\n    note:   {note}\n",
+                key = p.key,
+                width = widest,
+                name = p.display_name,
+                path = p.config_path,
+                note = p.note,
+            );
+        }
+        return Ok(());
+    }
+
+    let ide_key = ide.ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing --ide <name>. Run `secretenv mcp setup --list-ides` to see options."
+        )
+    })?;
+    let profile = find_profile(ide_key).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown IDE `{ide_key}`. Run `secretenv mcp setup --list-ides` to see options.",
+        )
+    })?;
+    let body = render_config(profile, binary);
+
+    if !write {
+        println!("# MCP config block for {} ({}):", profile.display_name, profile.key);
+        println!("# Target file: {}", profile.config_path);
+        println!("# Note: {}", profile.note);
+        println!("# ---");
+        print!("{body}");
+        return Ok(());
+    }
+
+    // The `generic` and `claude-code` profiles are print-only:
+    // - `generic` doesn't target a specific config file
+    // - `claude-code` emits a `claude mcp add` shell command (the
+    //   official safe mechanism; `~/.claude.json` is a 1000+ line
+    //   shared config that must not be overwritten)
+    if profile.key == "generic" {
+        anyhow::bail!(
+            "`--ide generic` is print-only — it doesn't target a specific config file. \
+             Re-run without `--write`, then paste the block into the IDE's MCP config \
+             (compatible with Claude Code, Cursor, Cline, Gemini CLI / Code Assist).",
+        );
+    }
+    if profile.key == "claude-code" {
+        anyhow::bail!(
+            "`--ide claude-code` is print-only — it emits the official `claude mcp add` \
+             shell command rather than overwriting `~/.claude.json` (which carries \
+             unrelated Claude Code state). Re-run without `--write` and run the \
+             printed command in your shell.",
+        );
+    }
+
+    let target = expand_home(profile.config_path)
+        .with_context(|| format!("expanding home directory for `{}`", profile.config_path))?;
+    if target.exists() && !force {
+        anyhow::bail!(
+            "target file `{}` already exists. Re-run with `--force` to overwrite, \
+             or paste the block from `secretenv mcp setup --ide {}` into the \
+             existing file manually.",
+            target.display(),
+            profile.key,
+        );
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("creating parent directory `{}` for IDE config", parent.display())
+        })?;
+    }
+    std::fs::write(&target, &body)
+        .with_context(|| format!("writing MCP config to `{}`", target.display()))?;
+    eprintln!(
+        "Wrote {} MCP config for {} ({}).",
+        body.len(),
+        profile.display_name,
+        target.display()
+    );
+    Ok(())
 }
 
 // ---- Registry selection resolution --------------------------------------
@@ -1206,7 +1504,7 @@ async fn registry_set(
 }
 
 /// `secretenv registry migrate <alias> <dest-uri>` — builds the
-/// `MigrationPlan` once and drives [`crate::migrate::migrate_with_plan`]
+/// `MigrationPlan` once and drives [`secretenv_migrate::migrate_with_plan`]
 /// with all the user-prompt + report-rendering machinery the library
 /// entry leaves to the CLI.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -1222,7 +1520,7 @@ async fn registry_migrate(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    let args = crate::migrate::MigrateArgs {
+    let args = secretenv_migrate::MigrateArgs {
         alias: alias.to_owned(),
         dest_uri: dest_uri.to_owned(),
         source_uri: from.map(str::to_owned),
@@ -1240,7 +1538,7 @@ async fn registry_migrate(
     // preview and once inside `migrate`, producing different
     // `transaction_id`s and opening a TOCTOU window on the registry
     // doc between confirmation and execution.
-    let plan = crate::migrate::build_migration_plan(&args, config, backends).await?;
+    let plan = secretenv_migrate::build_migration_plan(&args, config, backends).await?;
 
     // Top-level confirmation prompt: skipped under --dry-run (no
     // mutation) and under --yes (operator opted out globally).
@@ -1268,7 +1566,7 @@ async fn registry_migrate(
     // `migrate_with_plan` AFTER the pointer flip commits, per
     // SEC-INV-08. It must run even under --yes; the closure handles
     // that by always reading stdin when --delete-source was passed.
-    let post_commit_consent = |plan: &crate::migrate::MigrationPlan| -> bool {
+    let post_commit_consent = |plan: &secretenv_migrate::MigrationPlan| -> bool {
         // No-op in dry-run (delete leg never runs).
         if dry_run {
             return false;
@@ -1283,7 +1581,7 @@ async fn registry_migrate(
     };
 
     let result =
-        crate::migrate::migrate_with_plan(plan, &args, backends, post_commit_consent).await;
+        secretenv_migrate::migrate_with_plan(plan, &args, backends, post_commit_consent).await;
     let report = match result {
         Ok(r) => r,
         Err(e) => {
@@ -1292,7 +1590,7 @@ async fn registry_migrate(
             // recovery block to stderr (terminal-only per
             // SEC-INV-22) without embedding URI bodies in the
             // bubbled error message.
-            if let Some(flip) = e.downcast_ref::<crate::migrate::PointerFlipFailed>() {
+            if let Some(flip) = e.downcast_ref::<secretenv_migrate::PointerFlipFailed>() {
                 eprintln!("Error: migration partially failed.");
                 eprintln!();
                 eprintln!("  Step 1/3  Read from source:           OK");
@@ -1346,8 +1644,8 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
     Ok(line.trim().starts_with(['y', 'Y']))
 }
 
-fn print_migrate_human(report: &crate::migrate::MigrateReport) {
-    use crate::migrate::MigrateReportOutcome;
+fn print_migrate_human(report: &secretenv_migrate::MigrateReport) {
+    use secretenv_migrate::MigrateReportOutcome;
     match report.outcome {
         MigrateReportOutcome::DryRun => {
             eprintln!("secretenv migrate (dry-run):");
@@ -1394,16 +1692,24 @@ fn print_migrate_human(report: &crate::migrate::MigrateReport) {
             // structured partial-failure reports instead of Err.
             eprintln!("Migration partially failed.");
         }
+        // `MigrateReportOutcome` is `#[non_exhaustive]` (Phase 7h
+        // R-4); future variants render as a generic "unknown
+        // outcome" message rather than breaking the CLI at build
+        // time. Operator upgrades secretenv-cli to get the new
+        // variant rendered precisely.
+        _ => eprintln!("Migration completed with an unknown outcome variant — upgrade secretenv to render details."),
     }
 }
 
-fn render_migrate_json(report: &crate::migrate::MigrateReport) -> Result<String> {
-    use crate::migrate::MigrateReportOutcome;
+fn render_migrate_json(report: &secretenv_migrate::MigrateReport) -> Result<String> {
+    use secretenv_migrate::MigrateReportOutcome;
     let outcome = match report.outcome {
         MigrateReportOutcome::Success => "success",
         MigrateReportOutcome::DryRun => "dry-run",
         MigrateReportOutcome::SourceDeleteFailedPostCommit => "source-delete-failed-post-commit",
         MigrateReportOutcome::PartialFailurePointerFlip => "partial-failure-pointer-flip",
+        // `MigrateReportOutcome` is `#[non_exhaustive]` (Phase 7h R-4).
+        _ => "unknown",
     };
     let mut durations = serde_json::json!({
         "probe_ms": report.phase_durations.probe_ms,
@@ -1828,6 +2134,7 @@ mod tests {
                 "local".to_owned(),
                 BackendConfig { backend_type: "local".into(), raw_fields: HashMap::new() },
             )]),
+            mcp: None,
         }
     }
 

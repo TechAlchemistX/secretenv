@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/secretenv-core",
     "crates/secretenv-telemetry",
+    "crates/secretenv-migrate",
+    "crates/secretenv-backends-init",
+    "crates/secretenv-mcp",
     "crates/secretenv-cli",
     "crates/secretenv-testing",
     "crates/backends/secretenv-backend-local",
@@ -23,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.15.0"
+version      = "0.16.0"
 edition      = "2021"
 license      = "AGPL-3.0-only"
 repository   = "https://github.com/TechAlchemistX/secretenv"
@@ -41,23 +44,26 @@ readme       = "README.md"
 # (`secretenv-core`, `secretenv-backend-*`). The CLI is the exception: it
 # lives at `crates/secretenv-cli/` but publishes as `secretenv` so
 # `cargo install secretenv` and the binary name line up.
-secretenv-core               = { path = "crates/secretenv-core",                           version = "0.15.0", features = ["value-access"] }
-secretenv-telemetry          = { path = "crates/secretenv-telemetry",                      version = "0.15.0" }
-secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.15.0" }
-secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.15.0" }
-secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.15.0" }
-secretenv-backend-vault      = { path = "crates/backends/secretenv-backend-vault",         version = "0.15.0" }
-secretenv-backend-aws-secrets = { path = "crates/backends/secretenv-backend-aws-secrets",  version = "0.15.0" }
-secretenv-backend-gcp        = { path = "crates/backends/secretenv-backend-gcp",           version = "0.15.0" }
-secretenv-backend-azure      = { path = "crates/backends/secretenv-backend-azure",         version = "0.15.0" }
-secretenv-backend-keychain   = { path = "crates/backends/secretenv-backend-keychain",      version = "0.15.0" }
-secretenv-backend-doppler    = { path = "crates/backends/secretenv-backend-doppler",       version = "0.15.0" }
-secretenv-backend-infisical  = { path = "crates/backends/secretenv-backend-infisical",     version = "0.15.0" }
-secretenv-backend-keeper     = { path = "crates/backends/secretenv-backend-keeper",        version = "0.15.0" }
-secretenv-backend-cf-kv      = { path = "crates/backends/secretenv-backend-cf-kv",         version = "0.15.0" }
-secretenv-backend-openbao    = { path = "crates/backends/secretenv-backend-openbao",       version = "0.15.0" }
-secretenv-backend-conjur     = { path = "crates/backends/secretenv-backend-conjur",        version = "0.15.0" }
-secretenv-backend-bitwarden-sm = { path = "crates/backends/secretenv-backend-bitwarden-sm", version = "0.15.0" }
+secretenv-core               = { path = "crates/secretenv-core",                           version = "0.16.0", features = ["value-access"] }
+secretenv-telemetry          = { path = "crates/secretenv-telemetry",                      version = "0.16.0" }
+secretenv-migrate            = { path = "crates/secretenv-migrate",                        version = "0.16.0" }
+secretenv-backends-init      = { path = "crates/secretenv-backends-init",                  version = "0.16.0" }
+secretenv-mcp                = { path = "crates/secretenv-mcp",                            version = "0.16.0" }
+secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.16.0" }
+secretenv-backend-aws-ssm    = { path = "crates/backends/secretenv-backend-aws-ssm",       version = "0.16.0" }
+secretenv-backend-1password  = { path = "crates/backends/secretenv-backend-1password",     version = "0.16.0" }
+secretenv-backend-vault      = { path = "crates/backends/secretenv-backend-vault",         version = "0.16.0" }
+secretenv-backend-aws-secrets = { path = "crates/backends/secretenv-backend-aws-secrets",  version = "0.16.0" }
+secretenv-backend-gcp        = { path = "crates/backends/secretenv-backend-gcp",           version = "0.16.0" }
+secretenv-backend-azure      = { path = "crates/backends/secretenv-backend-azure",         version = "0.16.0" }
+secretenv-backend-keychain   = { path = "crates/backends/secretenv-backend-keychain",      version = "0.16.0" }
+secretenv-backend-doppler    = { path = "crates/backends/secretenv-backend-doppler",       version = "0.16.0" }
+secretenv-backend-infisical  = { path = "crates/backends/secretenv-backend-infisical",     version = "0.16.0" }
+secretenv-backend-keeper     = { path = "crates/backends/secretenv-backend-keeper",        version = "0.16.0" }
+secretenv-backend-cf-kv      = { path = "crates/backends/secretenv-backend-cf-kv",         version = "0.16.0" }
+secretenv-backend-openbao    = { path = "crates/backends/secretenv-backend-openbao",       version = "0.16.0" }
+secretenv-backend-conjur     = { path = "crates/backends/secretenv-backend-conjur",        version = "0.16.0" }
+secretenv-backend-bitwarden-sm = { path = "crates/backends/secretenv-backend-bitwarden-sm", version = "0.16.0" }
 # Unpublished test harness — path-only, no version. Revisit publishing once
 # the API has proven itself across Vault + AWS Secrets backends (v0.3+).
 secretenv-testing            = { path = "crates/secretenv-testing" }
@@ -77,6 +83,7 @@ indexmap           = { version = "2", features = ["serde"] }
 regex              = "1"
 directories        = "5"
 futures            = "0.3"
+getrandom          = "0.2"
 tempfile           = "3"
 aho-corasick       = "1"
 rustix             = { version = "1", features = ["fs", "process"] }

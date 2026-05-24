@@ -84,6 +84,46 @@ jobs:
       - name: SEC-INV-17 grep (tracing macro value leaks)
         run: bash scripts/check_tracing_leaks.sh
 
+  mcp-boundary-clippy:
+    # SEC-INV-02 — visible-named per-crate boundary gate.
+    # The generic `clippy` job above already covers `secretenv-mcp`
+    # under the full-workspace run; this job exists so the boundary
+    # gate appears as a dedicated PR check (faster to spot when it
+    # breaks) and so the `clippy.toml` `disallowed-types` rule is
+    # exercised in isolation. See `crates/secretenv-mcp/src/lib.rs`
+    # for the three-gate enforcement design.
+    name: MCP boundary clippy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p secretenv-mcp --all-targets -- -D warnings
+
+  mcp-tools-inventory:
+    # Phase 1b: assert the inventory file exists and lists exactly the
+    # 14 planned tools (8 read-only + 4 mutation + gen_password +
+    # migrate_alias). Phase 2+ extends this job to diff the inventory
+    # against the set of registered handlers in `src/tools/` and fail
+    # on mismatch (see [[build-plan-v0.16-mcp]] §7 Phase 1).
+    name: MCP tools-inventory presence + count
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: assert inventory has 14 tool entries
+        run: |
+          set -euo pipefail
+          file=crates/secretenv-mcp/tools-inventory.yaml
+          test -f "$file" || { echo "missing $file"; exit 1; }
+          count=$(grep -c '^  - name:' "$file")
+          if [ "$count" -ne 14 ]; then
+            echo "expected 14 tools in $file; found $count"
+            exit 1
+          fi
+          echo "ok: tools-inventory.yaml lists $count tools"
+
   secret-no-leak-grep:
     name: Secret<T> no-leak grep gate
     runs-on: ubuntu-latest

@@ -18,7 +18,8 @@ use anyhow::{bail, Context, Result};
 use secretenv_core::{BackendUri, Config};
 use tokio::fs;
 
-use crate::backends_init::build_registry;
+use secretenv_backends_init::build_registry;
+
 use crate::doctor::run_doctor;
 
 /// All inputs to [`run_setup`]. Lifted out of `SetupArgs` so unit

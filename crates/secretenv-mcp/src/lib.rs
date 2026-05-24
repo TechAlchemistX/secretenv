@@ -1,0 +1,91 @@
+// Copyright (C) 2026 Mandeep Patel
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! `secretenv-mcp` — `MCP` (Model Context Protocol) server library.
+//!
+//! Stdio-only `MCP` server giving AI agents structured access to the
+//! `SecretEnv` registry **without ever exposing a resolved secret
+//! value**.
+//!
+//! # Structural no-leak invariant (SEC-INV-02)
+//!
+//! This crate **structurally cannot** construct, deserialize, or
+//! serialize a [`secretenv_core::Secret`]. The enforcement stack:
+//!
+//! - **clippy.toml** bans naming `secretenv_core::Secret` via
+//!   `disallowed-types`. Escape hatches via `#[allow(...)]` are
+//!   permitted only inside [`internal`] modules.
+//! - **`tests/boundary_test.rs`** holds compile-time assertions:
+//!   `Secret: !Serialize` (negative-bound) + per-tool response-struct
+//!   exhaustiveness checks banning the field names `value`, `secret`,
+//!   `password`, `token`, `raw`.
+//! - **Phase 8 live-smoke value-grep** injects a fixture secret and
+//!   asserts its bytes never appear in any tool response payload.
+//!
+//! The `secretenv-core` dep is declared with `default-features = false`
+//! (does NOT opt into v0.15's `value-access` feature). Workspace
+//! feature unification means in-workspace builds still resolve
+//! `secretenv-core` with `value-access` enabled because `secretenv-cli`
+//! opts in — so the feature gate is documentation, not the structural
+//! guarantee. The three gates above are.
+//!
+//! # Module layout (Phase 1b skeleton)
+//!
+//! - [`boundary`] — `McpBoundary` safe response types (filled per-tool
+//!   in Phases 3-6).
+//! - [`tools`] — one module per `MCP` tool handler (filled in Phases 3-6).
+//! - [`internal`] — the single subtree allowed to name value-bearing
+//!   types. Houses `gen_engine` (the wrapper-first password generation
+//!   engine; Phase 5).
+//! - [`config`] — `[mcp]` config-section parsing (Phase 2).
+//! - [`audit_log`] — mutation audit log writer (Phase 4).
+//!
+//! Phase 2 adds the `rmcp` SDK dep + transport scaffold; Phase 6 adds
+//! the `secretenv-migrate` dep for the `migrate_alias` tool.
+//!
+//! # Public-API stability (v0.16.0, Phase 9 audit R-1)
+//!
+//! The stable public surface that external embedders SHOULD depend on:
+//!
+//! - [`serve`], [`serve_with_overrides`] — entry points for the stdio
+//!   MCP server lifecycle.
+//! - [`disable`], [`enable`], [`disable_sentinel_path`] — operator
+//!   toggles for the persistent disable sentinel.
+//! - [`PolicyOverrides`] — per-launch override knobs for
+//!   `[mcp].allow_mutations` + `[mcp].confirm_via`. Surfaced via the
+//!   `secretenv mcp serve --allow-mutations <mode>` + `--confirm-via
+//!   <surface>` CLI flags.
+//! - [`AllowMutations`], [`ConfirmVia`] — config-section enums; both
+//!   are `#[non_exhaustive]` so variant additions in v0.16.x patches
+//!   are not breaking changes.
+//!
+//! The `pub mod` modules below (`tools`, `boundary`, `policy`,
+//! `internal`, `setup`, `audit_log`, `config`, `error`) are
+//! **`#[doc(hidden)]` from the public API perspective** — they exist
+//! `pub` so the CLI crate and integration tests can reach them, but
+//! their shapes are NOT covered by semver guarantees for external
+//! embedders. Treat them as internal implementation detail and use
+//! the re-exports above instead.
+
+#[doc(hidden)]
+pub mod audit_log;
+#[doc(hidden)]
+pub mod boundary;
+#[doc(hidden)]
+pub mod config;
+#[doc(hidden)]
+pub mod error;
+#[doc(hidden)]
+pub mod internal;
+#[doc(hidden)]
+pub mod policy;
+pub mod server;
+#[doc(hidden)]
+pub mod setup;
+#[doc(hidden)]
+pub mod tools;
+
+pub use config::{AllowMutations, ConfirmVia};
+pub use server::{
+    disable, disable_sentinel_path, enable, serve, serve_with_overrides, PolicyOverrides,
+};

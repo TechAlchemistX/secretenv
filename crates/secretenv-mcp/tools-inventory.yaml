@@ -1,0 +1,115 @@
+# SecretEnv MCP tool inventory.
+#
+# 13 tools — 8 read-only, 5 mutation (including `migrate_alias` and
+# `gen_password`). The full surface is locked here at Phase 1b; tool
+# handlers land per-phase across Phases 3-6.
+#
+# This file is the source of truth for the `MCP boundary clippy check`
+# CI drift gate (Phase 2 onwards): on every PR, CI diffs this inventory
+# against the set of handler registrations in `src/tools/` and fails on
+# mismatch.
+#
+# Schema:
+#   name:                  kebab-case MCP tool name.
+#   phase:                 Build-plan phase that lands the handler.
+#   mutation:              Whether the tool mutates state (alias
+#                          registry, secret value, or filesystem).
+#   requires_confirmation: Whether the tool gates on per-call operator
+#                          confirmation (always true for mutation
+#                          tools when `allow_mutations = "confirm"`).
+#   short_description:     One-line summary for the LLM-facing tool
+#                          description. Full descriptions live with
+#                          the handler.
+#
+# Build-plan reference: [[build-plan-v0.16-mcp]] §8.
+
+version: 1
+
+tools:
+  # --- Phase 3: read-only (8) ---
+  - name: getting_started
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "Overview of SecretEnv + suggested next tool given current state."
+
+  - name: version_info
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "SecretEnv version, MCP protocol version, available tools."
+
+  - name: list_aliases
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "All alias names + backend type/instance in the registry. Never URIs, never values."
+
+  - name: list_backends
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "All configured backend instances + auth status + native-gen support."
+
+  - name: resolve_status
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "Whether aliases can currently be resolved. NEVER returns the value. No flag makes this return a value."
+
+  - name: detect_password_managers
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "Installed + authenticated secret backend CLIs on this machine."
+
+  - name: doctor
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "Three-level health check: CLI installed, authenticated, registry reachable. Hint strings for remediation; no --fix."
+
+  - name: redact_status
+    phase: 3
+    mutation: false
+    requires_confirmation: false
+    short_description: "Whether runtime redaction is active; count of values that would be masked. No alias names, no values."
+
+  # --- Phase 4: mutation (4) ---
+  - name: set_alias
+    phase: 4
+    mutation: true
+    requires_confirmation: true
+    short_description: "Create or update alias → backend-URI mapping. CONFIRM WITH USER before calling. Does not create the backend secret."
+
+  - name: delete_alias
+    phase: 4
+    mutation: true
+    requires_confirmation: true
+    short_description: "Remove alias from registry. Backend secret NOT deleted. ALWAYS CONFIRM PER ALIAS. Never batch without per-alias gates."
+
+  - name: init_project
+    phase: 4
+    mutation: true
+    requires_confirmation: true
+    short_description: "Scaffold secretenv.toml; detect .env key names (NOT values). Default: propose without writing (apply: false)."
+
+  - name: redact_file
+    phase: 4
+    mutation: true
+    requires_confirmation: true
+    short_description: "Scan file for resolvable secret values and redact. Writes count, not matched bytes. CONFIRM before writing."
+
+  # --- Phase 5: password generation (1) ---
+  - name: gen_password
+    phase: 5
+    mutation: true
+    requires_confirmation: true
+    short_description: "Generate secret, store in backend, register alias. Value NEVER returned. Wrapper-first (native gen preferred)."
+
+  # --- Phase 6: migrate (1) ---
+  - name: migrate_alias
+    phase: 6
+    mutation: true
+    requires_confirmation: true
+    short_description: "Move secret to new backend; atomically repoint alias. Value transits server-side only. Source NOT deleted by default."

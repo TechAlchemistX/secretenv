@@ -26,18 +26,52 @@
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::wrapper::Parameters;
+use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use secretenv_core::Config;
+use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
+
+use crate::boundary::GettingStartedResponse;
 
 /// Empty argument record used by every Phase 2a stub. Real per-tool
 /// argument types land with the tool's Phase-3-6 handler — at which
 /// point the stub's parameterless signature is replaced.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct StubArgs {}
+
+/// Argument record for `getting_started` — the tool takes no inputs.
+/// Defined as its own type (rather than reusing [`StubArgs`]) so the
+/// generated JSON Schema names a tool-specific input shape.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct GettingStartedArgs {}
+
+/// Pick a deterministic next-tool suggestion from current config shape.
+/// Pure function — exposed for unit tests.
+#[must_use]
+pub const fn suggest_next_tool(registries: usize, backends: usize) -> (&'static str, &'static str) {
+    if backends == 0 {
+        (
+            "doctor",
+            "No backend instances are configured. Run `doctor` to see which secret-backend \
+             CLIs are installed and authenticated on this machine.",
+        )
+    } else if registries == 0 {
+        (
+            "list_backends",
+            "Backend instances are configured but no registries point at them yet. \
+             `list_backends` shows which backends are reachable for alias storage.",
+        )
+    } else {
+        (
+            "list_aliases",
+            "Registries and backends are configured. `list_aliases` enumerates the \
+             alias → backend mappings without ever returning a resolved value.",
+        )
+    }
+}
 
 /// The `SecretEnv` `MCP` server handler.
 ///
@@ -78,12 +112,43 @@ impl Server {
     // ----- Phase 3: read-only (8) ----------------------------------
 
     /// Overview of `SecretEnv` + suggested next tool given current state.
+    ///
+    /// Pure-static: counts the `[registries.*]` and `[backends.*]`
+    /// tables in the loaded config and picks a deterministic
+    /// next-tool hint. Never reaches a backend; safe to call as the
+    /// agent's first MCP request.
     #[tool(
         name = "getting_started",
         description = "Overview of SecretEnv + suggested next tool given current state."
     )]
-    pub async fn getting_started(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("getting_started", 3)
+    pub async fn getting_started(
+        &self,
+        _args: Parameters<GettingStartedArgs>,
+    ) -> Json<GettingStartedResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.getting_started");
+
+        let registries = self.config.registries.len();
+        let backends = self.config.backends.len();
+        let (next_tool, reason) = suggest_next_tool(registries, backends);
+
+        let all_tools: Vec<String> =
+            self.tool_router.list_all().into_iter().map(|t| t.name.into_owned()).collect();
+
+        Json(GettingStartedResponse {
+            overview: "SecretEnv is a registry of aliases that point at secrets stored in \
+                       backends such as 1Password, Vault, AWS SSM, GCP Secret Manager, and \
+                       similar systems. This MCP server lets agents inspect and manage that \
+                       registry; it never returns a resolved secret value — that surface is \
+                       structurally absent. Use `run` from the SecretEnv CLI when a child \
+                       process actually needs the value as an environment variable."
+                .to_owned(),
+            mcp_server_version: env!("CARGO_PKG_VERSION").to_owned(),
+            registries_configured: registries,
+            backend_instances_configured: backends,
+            suggested_next_tool: next_tool.to_owned(),
+            suggested_next_tool_reason: reason.to_owned(),
+            all_tools,
+        })
     }
 
     /// `SecretEnv` version, `MCP` protocol version, available tools.
@@ -231,5 +296,36 @@ impl ServerHandler for Server {
                 .into(),
         );
         info
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn suggest_next_tool_no_backends_picks_doctor() {
+        let (name, _) = suggest_next_tool(0, 0);
+        assert_eq!(name, "doctor");
+
+        let (name, _) = suggest_next_tool(3, 0);
+        assert_eq!(name, "doctor", "no backends always picks doctor regardless of registries");
+    }
+
+    #[test]
+    fn suggest_next_tool_backends_no_registries_picks_list_backends() {
+        let (name, _) = suggest_next_tool(0, 2);
+        assert_eq!(name, "list_backends");
+    }
+
+    #[test]
+    fn suggest_next_tool_full_config_picks_list_aliases() {
+        let (name, _) = suggest_next_tool(1, 1);
+        assert_eq!(name, "list_aliases");
+
+        let (name, _) = suggest_next_tool(5, 10);
+        assert_eq!(name, "list_aliases");
     }
 }

@@ -47,6 +47,13 @@ schemars = "1.0"
 
 [dev-dependencies]
 tempfile.workspace = true
+# `trybuild` powers the SEC-INV-02 compile-fail guard at
+# `tests/boundary_ui/secret_is_not_serializable.rs` — proves that
+# `secretenv_core::Secret<T>` does NOT implement `serde::Serialize`,
+# so the boundary closure of `serde_json::to_value(...)` calls in
+# tool handler return paths structurally cannot leak a value. Listed
+# as dev-dep so it never enters the runtime closure.
+trybuild = "1"
 
 [lints]
 workspace = true

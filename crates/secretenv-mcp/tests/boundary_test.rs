@@ -4,38 +4,74 @@
 //! `SEC-INV-02` — structural boundary harness for the `secretenv-mcp`
 //! crate.
 //!
-//! This is the runtime complement to the `clippy.toml`
-//! `disallowed-types` rule and the Phase 8 live-smoke value-grep —
-//! together they form the three-gate enforcement stack documented in
-//! `crates/secretenv-mcp/src/lib.rs`.
+//! Runtime complement to the `clippy.toml` `disallowed-types` rule
+//! (the static gate against naming `secretenv_core::Secret`), the
+//! `tests/secret_not_serializable.rs` trybuild guard (the static gate
+//! against `Secret: Serialize`), and the Phase 8 live-smoke value-grep
+//! (the runtime gate against value bytes appearing in response
+//! payloads).
 //!
-//! # Phase 1b scope
+//! # Field-name exhaustiveness
 //!
-//! Phase 1b lands the test harness (file exists, `cargo test
-//! -p secretenv-mcp` finds it, CI runs it) with a structural
-//! placeholder. Per-tool assertions land alongside their handlers in
-//! Phases 3-6:
-//!
-//! - **Negative-bound assertion** that `secretenv_core::Secret` does
-//!   NOT implement `serde::Serialize`. Land as a `trybuild`
-//!   compile-fail fixture in Phase 3 — `trybuild` is the right tool
-//!   for "this should fail to compile" assertions and is already used
-//!   by `secretenv-core` for the `value-access` boundary.
-//! - **Per-tool response-struct exhaustiveness checks** — every
-//!   response type defined in `src/boundary.rs` is registered here
-//!   and the test asserts it has no field named `value`, `secret`,
-//!   `password`, `token`, or `raw`. Lands per-tool in Phases 3-6.
-//!
-//! The Phase 1b placeholder below is intentionally trivial — its
-//! purpose is to establish that the integration-test target compiles
-//! and runs under the same `clippy.toml` constraints as the library.
+//! Every response struct in [`secretenv_mcp::boundary`] is registered
+//! here via [`assert_no_banned_field_names`]. The set of banned
+//! identifiers — `value`, `secret`, `password`, `token`, `raw` —
+//! mirrors the documentation rule in `src/boundary.rs`. A new tool
+//! adds its response struct here when its handler lands.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use schemars::schema_for;
+use secretenv_mcp::boundary::GettingStartedResponse;
+
+/// Field identifiers that may not appear in any response struct
+/// reachable from a tool handler. Mirrors `src/boundary.rs`
+/// documentation rule.
+const BANNED_FIELD_NAMES: &[&str] = &["value", "secret", "password", "token", "raw"];
+
+/// Walk a JSON Schema and collect every `properties.<key>` identifier
+/// found anywhere in the tree (recurses into nested objects and array
+/// item schemas). The schema-driven walk catches transitive field
+/// names that a literal `std::any::type_name` inspection would miss.
+fn collect_property_names(schema: &serde_json::Value, out: &mut Vec<String>) {
+    if let Some(props) = schema.get("properties").and_then(|v| v.as_object()) {
+        for (k, v) in props {
+            out.push(k.clone());
+            collect_property_names(v, out);
+        }
+    }
+    if let Some(items) = schema.get("items") {
+        collect_property_names(items, out);
+    }
+    if let Some(defs) = schema.get("$defs").and_then(|v| v.as_object()) {
+        for v in defs.values() {
+            collect_property_names(v, out);
+        }
+    }
+}
+
+fn assert_no_banned_field_names<T: schemars::JsonSchema>(struct_name: &str) {
+    let schema = schema_for!(T);
+    let schema_value = serde_json::to_value(&schema).expect("schema should serialize");
+    let mut names = Vec::new();
+    collect_property_names(&schema_value, &mut names);
+
+    for banned in BANNED_FIELD_NAMES {
+        assert!(
+            !names.iter().any(|n| n == banned),
+            "response struct `{struct_name}` exposes a banned field name `{banned}`. \
+             SEC-INV-02: tool response payloads must not name `value`/`secret`/\
+             `password`/`token`/`raw` anywhere in the schema tree. Schema fields \
+             observed: {names:?}"
+        );
+    }
+}
 
 #[test]
-fn boundary_harness_compiles() {
-    // Phase 1b placeholder: the act of compiling this file under
-    // `crates/secretenv-mcp/clippy.toml` is itself the assertion —
-    // any future addition here that names `secretenv_core::Secret`
-    // outside `src/internal/` will fail CI.
-    //
-    // Real per-tool assertions land in Phases 3-6.
+fn getting_started_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<GettingStartedResponse>("GettingStartedResponse");
 }
+
+// Per-tool registration block — extend as Phase 3-6 handlers land.
+// Adding a tool here without adding its response struct to
+// `src/boundary.rs` first will fail to compile, which is the point.

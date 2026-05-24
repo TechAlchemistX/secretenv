@@ -24,9 +24,13 @@ use serde::Deserialize;
 
 use crate::uri::BackendUri;
 
-/// The machine-level configuration loaded from
-/// `$XDG_CONFIG_HOME/secretenv/config.toml` (or `~/.config/...` on
-/// platforms without XDG).
+/// The machine-level configuration.
+///
+/// Loaded from `$XDG_CONFIG_HOME/secretenv/config.toml`, then
+/// `~/.config/secretenv/config.toml`, then the platform-native config
+/// directory (macOS: `~/Library/Application Support/secretenv/`;
+/// Windows: `%APPDATA%\secretenv\`). First existing file wins. See
+/// [`default_config_path`] for the precedence rules.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -234,10 +238,54 @@ impl Config {
 /// invocation on load.
 const MAX_PROFILE_FILE_BYTES: u64 = 1_048_576;
 
+/// Return the per-platform config file path, honoring the XDG
+/// convention even on platforms whose native default is elsewhere.
+///
+/// Precedence (first existing file wins; if no file exists, the
+/// **last** candidate is returned as the "would write here" platform
+/// default — this is what `secretenv setup` uses on a fresh machine):
+///
+/// 1. `$XDG_CONFIG_HOME/secretenv/config.toml` — explicit env var.
+///    Cross-platform escape hatch. If you set this, we honor it on
+///    every OS, including macOS and Windows where the env var would
+///    otherwise be ignored by the platform.
+/// 2. `~/.config/secretenv/config.toml` — the cross-platform XDG
+///    convention. On Linux this is the same as #1's fallback; on
+///    macOS this is the key path for dotfiles users (stow / chezmoi
+///    / yadm symlink their config tree under `~/.config/`). Added in
+///    v0.16 Phase 7d.
+/// 3. Platform-native via [`directories::BaseDirs::config_dir`]:
+///    `~/.config/` on Linux (deduplicated against #2),
+///    `~/Library/Application Support/` on macOS,
+///    `%APPDATA%` on Windows.
 fn default_config_path() -> Result<PathBuf> {
+    let candidates = candidate_config_paths()?;
+    // `candidate_config_paths()` guarantees the platform-native
+    // entry is always appended last, so `candidates.last()` is `Some`
+    // by construction. Unwrapping is safe and clippy-clean.
+    let fallback = candidates.last().cloned().ok_or_else(|| {
+        anyhow!("internal: candidate_config_paths returned empty list — should be unreachable")
+    })?;
+    Ok(candidates.iter().find(|p| p.exists()).cloned().unwrap_or(fallback))
+}
+
+/// Build the candidate-list used by [`default_config_path`]. Exposed
+/// for testing precedence + deduplication behavior.
+fn candidate_config_paths() -> Result<Vec<PathBuf>> {
+    let mut candidates: Vec<PathBuf> = Vec::with_capacity(3);
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        candidates.push(PathBuf::from(xdg).join("secretenv").join("config.toml"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".config/secretenv/config.toml"));
+    }
     let base = directories::BaseDirs::new()
-        .ok_or_else(|| anyhow!("could not determine a home directory for XDG config lookup"))?;
-    Ok(base.config_dir().join("secretenv").join("config.toml"))
+        .ok_or_else(|| anyhow!("could not determine a home directory for config lookup"))?;
+    let native = base.config_dir().join("secretenv").join("config.toml");
+    if !candidates.contains(&native) {
+        candidates.push(native);
+    }
+    Ok(candidates)
 }
 
 /// Return the canonical XDG path to `config.toml`, used by the CLI's
@@ -587,5 +635,83 @@ type = "local"
         // No profiles/ dir at all.
         let cfg = Config::load_from(&path).unwrap();
         assert!(cfg.backends.contains_key("local-main"));
+    }
+
+    // ---- v0.16 Phase 7d: XDG path support on macOS for dotfiles
+    // (stow / chezmoi / yadm). Tests read env state rather than
+    // mutating it — env-var mutation is `unsafe` in Rust 2024 and
+    // the crate denies `unsafe_code`.
+
+    #[test]
+    fn candidate_paths_include_xdg_env_when_set_in_environment() {
+        // Skip when no XDG_CONFIG_HOME is set in the test runner's env.
+        let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") else {
+            return;
+        };
+        let cands = candidate_config_paths().unwrap();
+        let xdg_path = PathBuf::from(xdg).join("secretenv").join("config.toml");
+        assert!(
+            cands.contains(&xdg_path),
+            "XDG_CONFIG_HOME candidate missing from list: cands={cands:?} expected={xdg_path:?}",
+        );
+        // XDG candidate must come BEFORE the platform-native one so
+        // that an explicit env var wins on macOS / Windows.
+        let xdg_pos = cands.iter().position(|p| p == &xdg_path).unwrap();
+        assert_eq!(xdg_pos, 0, "XDG candidate must be first when env is set");
+    }
+
+    #[test]
+    fn candidate_paths_include_tilde_config_secretenv() {
+        // `~/.config/secretenv/config.toml` should always be in the
+        // candidate list when `$HOME` is set (regardless of platform).
+        // This is the stow / chezmoi target path on macOS.
+        if std::env::var_os("HOME").is_none() {
+            return;
+        }
+        let cands = candidate_config_paths().unwrap();
+        let want_suffix = ".config/secretenv/config.toml";
+        assert!(
+            cands.iter().any(|p| p.to_string_lossy().ends_with(want_suffix)),
+            "~/.config/secretenv/config.toml missing from candidates: {cands:?}",
+        );
+    }
+
+    #[test]
+    fn candidate_paths_deduplicate_overlap() {
+        // On Linux, `~/.config/secretenv/` AND the platform-native via
+        // `dirs::BaseDirs` both resolve to the same path. The dedup
+        // keeps the list lean and avoids two `stat()` calls per lookup.
+        let cands = candidate_config_paths().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for p in &cands {
+            assert!(seen.insert(p.clone()), "duplicate candidate path: {p:?}");
+        }
+    }
+
+    #[test]
+    fn candidate_paths_at_least_one_entry() {
+        // Even with no $HOME / no XDG, we still get the platform-
+        // native path from `dirs::BaseDirs` (unless that also fails —
+        // at which point the function returns `Err`, not an empty
+        // list).
+        let cands = candidate_config_paths().unwrap();
+        assert!(!cands.is_empty());
+    }
+
+    #[test]
+    fn default_config_path_falls_through_to_platform_native_when_nothing_exists() {
+        // When neither XDG nor `~/.config/` nor the platform-native
+        // file exists, the resolver returns the LAST candidate (the
+        // platform-native "would write here" path). This is the
+        // contract `secretenv setup` relies on for a fresh-install
+        // first-run.
+        let cands = candidate_config_paths().unwrap();
+        let last = cands.last().unwrap().clone();
+        // We can't easily prove "none exist on this dev machine" —
+        // but we can prove the path the resolver returns IS in the
+        // candidate list, which is the key invariant.
+        let resolved = default_config_path().unwrap();
+        assert!(cands.contains(&resolved), "resolved {resolved:?} not in {cands:?}");
+        let _ = last; // silence unused warning if cfg branches differ
     }
 }

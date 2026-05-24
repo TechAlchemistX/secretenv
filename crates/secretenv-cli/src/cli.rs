@@ -28,11 +28,17 @@ use secretenv_core::{
     about = "Run commands with secrets injected from any backend"
 )]
 pub struct Cli {
-    /// Path to `config.toml`. Defaults to the platform's standard
-    /// config directory: `$XDG_CONFIG_HOME/secretenv/config.toml` on
-    /// Linux (XDG fallback `~/.config/secretenv/config.toml`),
-    /// `~/Library/Application Support/secretenv/config.toml` on
-    /// macOS, `%APPDATA%\secretenv\config.toml` on Windows.
+    /// Path to `config.toml`. Default lookup precedence (first
+    /// existing file wins):
+    ///   1. `$XDG_CONFIG_HOME/secretenv/config.toml` (any platform,
+    ///      explicit env var)
+    ///   2. `~/.config/secretenv/config.toml` (cross-platform XDG
+    ///      convention; honored on macOS since v0.16 Phase 7d for
+    ///      stow / chezmoi / yadm dotfile users)
+    ///   3. Platform-native: `~/Library/Application Support/secretenv/`
+    ///      on macOS, `%APPDATA%\secretenv\` on Windows.
+    ///
+    /// On Linux #1/#2/#3 collapse to the same `~/.config/` path.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 

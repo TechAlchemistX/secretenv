@@ -95,14 +95,26 @@ pub struct MutationRequest<'a> {
     pub agent_reason: &'a str,
 }
 
-/// Approval response shape elicited from the MCP client via the
-/// `elicitation/create` RPC. Surfaced through the IDE's native UI as a
-/// single-question dialog ("Approve?" boolean).
+/// Empty-form schema for the elicit RPC. The MCP elicitation spec
+/// defines three native button outcomes — Accept / Decline / Cancel —
+/// which already encode the operator's decision. Adding a boolean
+/// `approved` field would force the IDE to render a checkbox the
+/// operator must tick BEFORE clicking Accept (a redundant two-step
+/// interaction per Phase 7e Phase 8b walkthrough finding).
+///
+/// With an empty schema, the modal shows only the body message + the
+/// three native buttons. Single click = decision:
+///
+/// | Button | rmcp returns | `OperatorDecision` |
+/// |---|---|---|
+/// | Accept | `Ok(Some(MutationApproval {}))` | `Approved` |
+/// | Decline | `Err(UserDeclined)` | `Denied` |
+/// | Cancel | `Err(UserCancelled)` | `Denied` |
+///
+/// The empty-object schema renders as a fieldless form on every
+/// spec-compliant client (Claude Code, Cursor, Cline, Gemini, etc.).
 #[derive(Debug, Deserialize, JsonSchema)]
-struct MutationApproval {
-    /// Whether the user approved the requested mutation.
-    approved: bool,
-}
+struct MutationApproval {}
 
 rmcp::elicit_safe!(MutationApproval);
 
@@ -250,9 +262,8 @@ async fn prompt_via_elicitation(
     // every documented `ElicitationError` variant onto an
     // `OperatorDecision` per Phase 7c task #2 design.
     match peer.elicit_with_timeout::<MutationApproval>(message, Some(TTY_PROMPT_TIMEOUT)).await {
-        Ok(Some(MutationApproval { approved: true })) => Ok(OperatorDecision::Approved),
-        Ok(Some(MutationApproval { approved: false }) | None)
-        | Err(ElicitationError::UserDeclined | ElicitationError::UserCancelled) => {
+        Ok(Some(MutationApproval {})) => Ok(OperatorDecision::Approved),
+        Ok(None) | Err(ElicitationError::UserDeclined | ElicitationError::UserCancelled) => {
             Ok(OperatorDecision::Denied)
         }
         Err(ElicitationError::Service(rmcp::ServiceError::Timeout { .. })) => {

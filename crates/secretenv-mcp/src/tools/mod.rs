@@ -26,6 +26,7 @@
 pub mod aliases;
 pub mod doctor;
 pub mod password_managers;
+pub mod registry_writer;
 
 use std::sync::Arc;
 
@@ -38,13 +39,15 @@ use secretenv_core::Config;
 use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
 
-use crate::audit_log::MutationLog;
+use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
-    AuthStatus, BackendListing, DetectPasswordManagersResponse, DoctorResponse,
-    GettingStartedResponse, ListAliasesResponse, ListBackendsResponse, RedactStatusResponse,
-    ResolveStatusRegistryProbe, ResolveStatusResponse, ToolListing, VersionInfoResponse,
+    AuthStatus, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
+    DoctorResponse, GettingStartedResponse, ListAliasesResponse, ListBackendsResponse,
+    MutationOutcome, OperatorDecisionEcho, RedactStatusResponse, ResolveStatusRegistryProbe,
+    ResolveStatusResponse, SetAliasResponse, ToolListing, VersionInfoResponse,
 };
 use crate::config::McpConfig;
+use crate::policy::{enforce_mutation_policy, MutationRequest};
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
 /// `version_info`; kept in sync manually with the `[dependencies]`
@@ -102,6 +105,36 @@ pub struct ResolveStatusArgs {}
 /// Argument record for `list_aliases` — no inputs.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct ListAliasesArgs {}
+
+/// Argument record for `set_alias`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SetAliasArgs {
+    /// Alias name to create or update (e.g. `"STRIPE_API_KEY"`).
+    pub alias: String,
+    /// Target URI the alias should resolve to (e.g.
+    /// `"vault-prod:///secret/stripe/api-key"`). Must be a direct
+    /// backend URI; `secretenv://` chains are rejected.
+    pub target_uri: String,
+    /// Optional registry name; defaults to `"default"` when omitted.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// The agent's stated reason. Recorded verbatim in the mutation
+    /// audit log. NEVER echoed back in the response. NEVER set as an
+    /// `OTel` attribute. Per SEC-INV-12.
+    pub reason: String,
+}
+
+/// Argument record for `delete_alias`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DeleteAliasArgs {
+    /// Alias name to remove from the registry.
+    pub alias: String,
+    /// Optional registry name; defaults to `"default"` when omitted.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// The agent's stated reason. Audit-log only; never echoed.
+    pub reason: String,
+}
 
 /// Pick a deterministic next-tool suggestion from current config shape.
 /// Pure function — exposed for unit tests.
@@ -184,6 +217,32 @@ impl Server {
         }
         Self { tool_router, config, mcp_config, mutation_log }
     }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Map [`OperatorDecision`] (audit-log enum) to its agent-facing
+/// [`OperatorDecisionEcho`] twin in `boundary.rs`. Two enums because
+/// the audit-log set is shared with future non-tool surfaces, and
+/// adding `PolicyRefusal` to it would force every audit-log writer
+/// to handle a never-emitted variant.
+const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
+    match decision {
+        OperatorDecision::Approved => OperatorDecisionEcho::Approved,
+        OperatorDecision::Denied => OperatorDecisionEcho::Denied,
+        OperatorDecision::Timeout => OperatorDecisionEcho::Timeout,
+        OperatorDecision::AutoApproved => OperatorDecisionEcho::AutoApproved,
+    }
+}
+
+/// Map a [`MutationOutcome`] to whether the audit log should record
+/// the call. Every outcome lands in the audit log (even refusals);
+/// the function exists so the call site reads as an explicit policy
+/// rather than an unconditional write.
+const fn should_audit(_outcome: MutationOutcome) -> bool {
+    true
 }
 
 fn not_yet_implemented(tool: &str, phase: u8) -> String {
@@ -496,19 +555,212 @@ impl Server {
     /// Create or update alias → backend-URI mapping. CONFIRM WITH USER before calling.
     #[tool(
         name = "set_alias",
-        description = "Create or update alias → backend-URI mapping. CONFIRM WITH USER before calling. Does not create the backend secret."
+        description = "Create or update an alias → backend-URI mapping in a registry. \
+                       CONFIRM WITH USER before calling. Does NOT create or modify the \
+                       backend secret itself — only the registry pointer. Subject to \
+                       [mcp].allow_mutations policy + recorded in the mutation audit log."
     )]
-    pub async fn set_alias(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("set_alias", 4)
+    pub async fn set_alias(&self, args: Parameters<SetAliasArgs>) -> Json<SetAliasResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.set_alias");
+        let args = args.0;
+
+        // Best-effort backend-instance extraction for the response
+        // (target_uri may be invalid; the writer below will surface
+        // a structured error in that case).
+        let backend_instance = secretenv_core::BackendUri::parse(&args.target_uri)
+            .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme);
+        let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
+
+        let policy_request = MutationRequest {
+            tool_name: "set_alias",
+            action_summary: &format!(
+                "set alias `{}` → `{}` in registry `{}`",
+                args.alias, args.target_uri, registry_name
+            ),
+            agent_reason: &args.reason,
+        };
+
+        let (decision_echo, outcome, error_message) =
+            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+                Err(e) => {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "set_alias".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    if should_audit(MutationOutcome::Refused) {
+                        let _ = self.mutation_log.append(&entry);
+                    }
+                    (
+                        OperatorDecisionEcho::PolicyRefusal,
+                        MutationOutcome::Refused,
+                        Some(format!("{e:#}")),
+                    )
+                }
+                Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                    let outcome = if decision == OperatorDecision::Timeout {
+                        MutationOutcome::Timeout
+                    } else {
+                        MutationOutcome::Refused
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "set_alias".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (echo_decision(decision), outcome, None)
+                }
+                Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
+                    let write_result = match secretenv_backends_init::build_registry(&self.config) {
+                        Ok(backends) => {
+                            registry_writer::set_alias_in_registry(
+                                &args.alias,
+                                &args.target_uri,
+                                args.registry.as_deref(),
+                                &self.config,
+                                &backends,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e.context("building backend registry for set_alias")),
+                    };
+                    let (outcome, err) = match write_result {
+                        Ok(()) => (MutationOutcome::Applied, None),
+                        Err(e) => (MutationOutcome::WriteFailed, Some(format!("{e:#}"))),
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "set_alias".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (echo_decision(decision), outcome, err)
+                }
+            };
+
+        Json(SetAliasResponse {
+            alias_name: args.alias,
+            backend_instance,
+            registry_name,
+            outcome,
+            decision: decision_echo,
+            error_message,
+        })
     }
 
     /// Remove alias from registry. Backend secret NOT deleted. ALWAYS CONFIRM PER ALIAS.
     #[tool(
         name = "delete_alias",
-        description = "Remove alias from registry. Backend secret NOT deleted. ALWAYS CONFIRM PER ALIAS. Never batch without per-alias gates."
+        description = "Remove an alias from a registry. The underlying backend secret is \
+                       NOT deleted — call the backend's native delete CLI for that. \
+                       ALWAYS CONFIRM PER ALIAS; never batch without per-alias gates. \
+                       Subject to [mcp].allow_mutations + recorded in the audit log."
     )]
-    pub async fn delete_alias(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("delete_alias", 4)
+    pub async fn delete_alias(
+        &self,
+        args: Parameters<DeleteAliasArgs>,
+    ) -> Json<DeleteAliasResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.delete_alias");
+        let args = args.0;
+        let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
+
+        let policy_request = MutationRequest {
+            tool_name: "delete_alias",
+            action_summary: &format!(
+                "remove alias `{}` from registry `{}`",
+                args.alias, registry_name
+            ),
+            agent_reason: &args.reason,
+        };
+
+        let (decision_echo, outcome, error_message) =
+            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+                Err(e) => {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "delete_alias".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (
+                        OperatorDecisionEcho::PolicyRefusal,
+                        MutationOutcome::Refused,
+                        Some(format!("{e:#}")),
+                    )
+                }
+                Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                    let outcome = if decision == OperatorDecision::Timeout {
+                        MutationOutcome::Timeout
+                    } else {
+                        MutationOutcome::Refused
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "delete_alias".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (echo_decision(decision), outcome, None)
+                }
+                Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
+                    let write_result = match secretenv_backends_init::build_registry(&self.config) {
+                        Ok(backends) => {
+                            registry_writer::delete_alias_in_registry(
+                                &args.alias,
+                                args.registry.as_deref(),
+                                &self.config,
+                                &backends,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e.context("building backend registry for delete_alias")),
+                    };
+                    let (outcome, err) = match write_result {
+                        Ok(()) => (MutationOutcome::Applied, None),
+                        Err(e) => (MutationOutcome::WriteFailed, Some(format!("{e:#}"))),
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "delete_alias".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    (echo_decision(decision), outcome, err)
+                }
+            };
+
+        Json(DeleteAliasResponse {
+            alias_name: args.alias,
+            registry_name,
+            outcome,
+            decision: decision_echo,
+            error_message,
+        })
     }
 
     /// Scaffold secretenv.toml; detect .env key names (NOT values).

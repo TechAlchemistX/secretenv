@@ -23,10 +23,11 @@
 
 use schemars::schema_for;
 use secretenv_mcp::boundary::{
-    AliasListing, BackendListing, DetectPasswordManagersResponse, DoctorBackendStatus,
-    DoctorResponse, GettingStartedResponse, ListAliasesResponse, ListBackendsResponse,
-    PasswordManagerDetection, RedactStatusResponse, RegistryAliasesProbe,
-    ResolveStatusRegistryProbe, ResolveStatusResponse, ToolListing, VersionInfoResponse,
+    AliasListing, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
+    DoctorBackendStatus, DoctorResponse, GettingStartedResponse, ListAliasesResponse,
+    ListBackendsResponse, PasswordManagerDetection, RedactStatusResponse, RegistryAliasesProbe,
+    ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse, ToolListing,
+    VersionInfoResponse,
 };
 
 /// Field identifiers that may not appear in any response struct
@@ -119,6 +120,16 @@ fn list_aliases_response_has_no_banned_fields() {
     assert_no_banned_field_names::<ListAliasesResponse>("ListAliasesResponse");
     assert_no_banned_field_names::<AliasListing>("AliasListing");
     assert_no_banned_field_names::<RegistryAliasesProbe>("RegistryAliasesProbe");
+}
+
+#[test]
+fn set_alias_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<SetAliasResponse>("SetAliasResponse");
+}
+
+#[test]
+fn delete_alias_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<DeleteAliasResponse>("DeleteAliasResponse");
 }
 
 // Per-tool registration block — extend as Phase 3-6 handlers land.

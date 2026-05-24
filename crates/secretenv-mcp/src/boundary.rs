@@ -126,6 +126,89 @@ pub struct ListAliasesResponse {
     pub total_aliases: usize,
 }
 
+/// Outcome of one mutation tool call. Closed enum — extending it is
+/// a breaking change for clients that pattern-match on the variant.
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationOutcome {
+    /// Mutation completed successfully (operator approved + write
+    /// succeeded, or `allow_mutations = "always"` auto-approved + write
+    /// succeeded).
+    Applied,
+    /// Operator denied at the confirmation prompt, OR
+    /// `allow_mutations = "never"` policy was active. No mutation
+    /// happened; the audit log records the decision.
+    Refused,
+    /// Confirmation prompt timed out (30s default) — no operator
+    /// response. Treated as refusal; same audit-log entry shape as
+    /// `Refused`.
+    Timeout,
+    /// The mutation was approved but the underlying write failed
+    /// (e.g. backend unauthenticated, network error, permission
+    /// denied). `error_message` carries detail; the audit log
+    /// records Approved + this outcome so a post-incident review
+    /// can distinguish "agent asked + we failed" from "agent asked
+    /// + we said no".
+    WriteFailed,
+}
+
+/// Echoed decision-string in the same enum value space as
+/// [`crate::audit_log::OperatorDecision`]. Surfaced to the agent so
+/// it knows whether the operator was prompted, auto-approved, etc.
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorDecisionEcho {
+    /// Operator typed `y`/`yes` at the prompt.
+    Approved,
+    /// Operator typed anything else.
+    Denied,
+    /// No response before the 30s timeout.
+    Timeout,
+    /// `allow_mutations = "always"` was set — no prompt fired.
+    AutoApproved,
+    /// `allow_mutations = "never"` was set — no prompt fired and
+    /// the mutation was refused outright.
+    PolicyRefusal,
+}
+
+/// Response payload for the `set_alias` tool.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetAliasResponse {
+    /// Alias that was requested.
+    pub alias_name: String,
+    /// Target backend instance the alias was set to point at
+    /// (extracted from the requested URI's scheme).
+    pub backend_instance: String,
+    /// Registry name the alias was set under (resolves to the
+    /// `[registries.default]` table if the agent did not name one).
+    pub registry_name: String,
+    /// Outcome bucket.
+    pub outcome: MutationOutcome,
+    /// Decision recorded in the audit log.
+    pub decision: OperatorDecisionEcho,
+    /// Error message when `outcome = WriteFailed` or when the policy
+    /// refused with an explanatory message.
+    pub error_message: Option<String>,
+}
+
+/// Response payload for the `delete_alias` tool.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteAliasResponse {
+    /// Alias that was requested.
+    pub alias_name: String,
+    /// Registry name the alias was deleted from.
+    pub registry_name: String,
+    /// Outcome bucket.
+    pub outcome: MutationOutcome,
+    /// Decision recorded in the audit log.
+    pub decision: OperatorDecisionEcho,
+    /// Error message when `outcome = WriteFailed` or when the policy
+    /// refused with an explanatory message.
+    pub error_message: Option<String>,
+}
+
 /// One entry in [`DoctorResponse::backends`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

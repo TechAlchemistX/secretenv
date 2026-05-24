@@ -47,9 +47,8 @@ fn pick_primary_source<'a>(
         .sources
         .first()
         .ok_or_else(|| anyhow!("registry `{name}` has no source URIs"))?;
-    let source_uri = BackendUri::parse(raw_primary).with_context(|| {
-        format!("registry `{name}` primary source `{raw_primary}` is not a valid URI")
-    })?;
+    let source_uri = BackendUri::parse(raw_primary)
+        .with_context(|| format!("registry `{name}` primary source URI is not parseable"))?;
     let backend = backends.get(&source_uri.scheme).ok_or_else(|| {
         anyhow!(
             "registry `{name}` primary source references backend instance \
@@ -77,30 +76,27 @@ pub async fn set_alias_in_registry(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    let target = BackendUri::parse(target_uri)
-        .with_context(|| format!("target `{target_uri}` is not a valid URI"))?;
+    let target =
+        BackendUri::parse(target_uri).with_context(|| "target URI is not parseable".to_owned())?;
     if target.is_alias() {
         bail!("target must be a direct backend URI, not a secretenv:// alias");
     }
     if backends.get(&target.scheme).is_none() {
-        bail!(
-            "target `{target_uri}` references backend instance `{}` which is not configured",
-            target.scheme
-        );
+        bail!("target references backend instance `{}` which is not configured", target.scheme);
     }
 
+    let registry_label = registry_name.unwrap_or("default").to_owned();
     let (source_uri, backend) = pick_primary_source(registry_name, config, backends)?;
     let current = backend
         .list(&source_uri)
         .await
-        .with_context(|| format!("reading registry document at `{}`", source_uri.raw))?;
+        .with_context(|| format!("reading registry document for registry `{registry_label}`"))?;
     let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.insert(alias.to_owned(), target_uri.to_owned());
     let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&source_uri, &serialized)
-        .await
-        .with_context(|| format!("writing updated registry document to `{}`", source_uri.raw))?;
+    backend.set(&source_uri, &serialized).await.with_context(|| {
+        format!("writing updated registry document for registry `{registry_label}`")
+    })?;
     Ok(())
 }
 
@@ -118,17 +114,17 @@ pub async fn delete_alias_in_registry(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
+    let registry_label = registry_name.unwrap_or("default").to_owned();
     let (source_uri, backend) = pick_primary_source(registry_name, config, backends)?;
     let current = backend
         .list(&source_uri)
         .await
-        .with_context(|| format!("reading registry document at `{}`", source_uri.raw))?;
+        .with_context(|| format!("reading registry document for registry `{registry_label}`"))?;
     let mut map: BTreeMap<String, String> = current.into_iter().collect();
     map.remove(alias);
     let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&source_uri, &serialized)
-        .await
-        .with_context(|| format!("writing updated registry document to `{}`", source_uri.raw))?;
+    backend.set(&source_uri, &serialized).await.with_context(|| {
+        format!("writing updated registry document for registry `{registry_label}`")
+    })?;
     Ok(())
 }

@@ -45,7 +45,7 @@ pub async fn probe_all_backends(config: &Config) -> Vec<DoctorBackendStatus> {
                 remediation_hint: Some(
                     "Fix the [backends.*] block flagged in error_message, then retry.".to_owned(),
                 ),
-                error_message: Some(format!("{e:#}")),
+                error_message: Some(crate::error::safe_error_message(&e)),
             }];
         }
     };

@@ -53,7 +53,7 @@ pub async fn enumerate_all(config: &Config) -> AliasEnumeration {
                 registries: vec![RegistryAliasesProbe {
                     registry_name: "<registry-build-failed>".to_owned(),
                     alias_count: 0,
-                    error: Some(format!("{e:#}")),
+                    error: Some(crate::error::safe_error_message(&e)),
                 }],
             };
         }
@@ -91,7 +91,7 @@ pub async fn enumerate_all(config: &Config) -> AliasEnumeration {
                 probes.push(RegistryAliasesProbe {
                     registry_name: reg_name.clone(),
                     alias_count: 0,
-                    error: Some(format!("{e:#}")),
+                    error: Some(crate::error::safe_error_message(&e)),
                 });
             }
         }

@@ -51,6 +51,7 @@ use crate::boundary::{
     VersionInfoResponse,
 };
 use crate::config::McpConfig;
+use crate::error::safe_error_message;
 use crate::policy::{enforce_mutation_policy, MutationRequest};
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
@@ -734,7 +735,7 @@ impl Server {
                     (
                         OperatorDecisionEcho::PolicyRefusal,
                         MutationOutcome::Refused,
-                        Some(format!("{e:#}")),
+                        Some(safe_error_message(&e)),
                     )
                 }
                 Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -771,7 +772,7 @@ impl Server {
                     };
                     let (outcome, err) = match write_result {
                         Ok(()) => (MutationOutcome::Applied, None),
-                        Err(e) => (MutationOutcome::WriteFailed, Some(format!("{e:#}"))),
+                        Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
                     };
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -838,7 +839,7 @@ impl Server {
                     (
                         OperatorDecisionEcho::PolicyRefusal,
                         MutationOutcome::Refused,
-                        Some(format!("{e:#}")),
+                        Some(safe_error_message(&e)),
                     )
                 }
                 Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -874,7 +875,7 @@ impl Server {
                     };
                     let (outcome, err) = match write_result {
                         Ok(()) => (MutationOutcome::Applied, None),
-                        Err(e) => (MutationOutcome::WriteFailed, Some(format!("{e:#}"))),
+                        Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
                     };
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -932,7 +933,7 @@ impl Server {
                     proposed_manifest_toml: String::new(),
                     outcome: MutationOutcome::WriteFailed,
                     decision: OperatorDecisionEcho::Approved,
-                    error_message: Some(format!("{e:#}")),
+                    error_message: Some(safe_error_message(&e)),
                 });
             }
         };
@@ -981,7 +982,7 @@ impl Server {
                     (
                         OperatorDecisionEcho::PolicyRefusal,
                         MutationOutcome::Refused,
-                        Some(format!("{e:#}")),
+                        Some(safe_error_message(&e)),
                     )
                 }
                 Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -1010,7 +1011,7 @@ impl Server {
                             });
                     let (outcome, err) = match write_result {
                         Ok(()) => (MutationOutcome::Applied, None),
-                        Err(e) => (MutationOutcome::WriteFailed, Some(format!("{e:#}"))),
+                        Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
                     };
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -1097,7 +1098,7 @@ impl Server {
                     let _ = self.mutation_log.append(&entry);
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
-                    response.error_message = Some(format!("{e:#}"));
+                    response.error_message = Some(safe_error_message(&e));
                     return Json(response);
                 }
                 Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -1211,7 +1212,7 @@ impl Server {
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.decision = echo_decision(allowed_decision);
-                response.error_message = Some(format!("{e:#}"));
+                response.error_message = Some(safe_error_message(&e));
             }
         }
 
@@ -1289,7 +1290,7 @@ impl Server {
                 let _ = self.mutation_log.append(&entry);
                 response.outcome = MutationOutcome::Refused;
                 response.decision = OperatorDecisionEcho::PolicyRefusal;
-                response.error_message = Some(format!("{e:#}"));
+                response.error_message = Some(safe_error_message(&e));
                 return Json(response);
             }
             Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -1360,7 +1361,7 @@ impl Server {
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.decision = echo_decision(decision);
-                response.error_message = Some(format!("{e:#}"));
+                response.error_message = Some(safe_error_message(&e));
                 let entry = MutationLogEntry {
                     ts_unix_secs: now_secs(),
                     tool_name: "gen_password".to_owned(),
@@ -1402,7 +1403,7 @@ impl Server {
         if let Err(e) = gen_result {
             response.outcome = MutationOutcome::WriteFailed;
             response.decision = echo_decision(decision);
-            response.error_message = Some(format!("{e:#}"));
+            response.error_message = Some(safe_error_message(&e));
             let entry = MutationLogEntry {
                 ts_unix_secs: now_secs(),
                 tool_name: "gen_password".to_owned(),
@@ -1554,7 +1555,7 @@ impl Server {
                 Err(e) => {
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
-                    response.error_message = Some(format!("{e:#}"));
+                    response.error_message = Some(safe_error_message(&e));
                     audit_migrate(self, &args, OperatorDecision::Denied);
                     return Json(response);
                 }
@@ -1617,7 +1618,7 @@ impl Server {
                         ptr.alias, ptr.dest_delete_hint, ptr.dest_uri_raw
                     ));
                 } else {
-                    response.error_message = Some(format!("{e:#}"));
+                    response.error_message = Some(safe_error_message(&e));
                 }
             }
         }

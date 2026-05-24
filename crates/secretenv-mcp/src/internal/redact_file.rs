@@ -80,9 +80,10 @@ pub async fn build_tainted_set(
         // handed to `TaintedValue::from_alias` (which owns the bytes
         // + zeroes them on drop), then the `Secret` itself is dropped
         // by going out of scope at the end of the loop body.
-        let value = backend.get(target).await.with_context(|| {
-            format!("fetching value for alias `{alias_name}` (target=`{}`)", target.raw)
-        })?;
+        let value = backend
+            .get(target)
+            .await
+            .with_context(|| format!("fetching value for alias `{alias_name}`"))?;
         tainted.insert(TaintedValue::from_alias(alias_name.clone(), value.expose_secret()));
     }
     Ok(tainted)

@@ -128,6 +128,28 @@ impl McpConfig {
             toml::from_str(body).context("parsing config.toml for [mcp] section")?;
         Ok(parsed.mcp.unwrap_or_default())
     }
+
+    /// Parse a typed [`McpConfig`] out of the `toml::Value` that
+    /// `secretenv_core::Config` carries in its `mcp` field.
+    ///
+    /// `None` → [`McpConfig::default`] (`allow_mutations = Confirm`,
+    /// `confirm_via = Tty`, no disabled tools, default audit-log
+    /// path).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value is not a TOML table or contains
+    /// an unknown field / invalid enum value.
+    pub fn from_core_value(value: Option<&toml::Value>) -> Result<Self> {
+        value.map_or_else(
+            || Ok(Self::default()),
+            |v| {
+                v.clone()
+                    .try_into::<Self>()
+                    .context("parsing [mcp] section from secretenv_core::Config")
+            },
+        )
+    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,8 @@ use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use secretenv_core::Config;
 
+use crate::audit_log::MutationLog;
+use crate::config::McpConfig;
 use crate::tools::Server;
 
 /// `$XDG_CONFIG_HOME/secretenv/mcp-disabled` sentinel path. `secretenv mcp disable`
@@ -190,8 +192,16 @@ pub async fn serve(config_path: Option<PathBuf>) -> Result<()> {
     }
 
     let config = Arc::new(load_config(config_path.as_deref())?);
+    let mcp_config = Arc::new(
+        McpConfig::from_core_value(config.mcp.as_ref())
+            .context("parsing [mcp] section from loaded config")?,
+    );
+    let mutation_log = Arc::new(
+        MutationLog::open_with_default(mcp_config.mutation_log.as_deref())
+            .context("opening MCP mutation audit log")?,
+    );
 
-    let service = Server::new(config)
+    let service = Server::new(config, mcp_config, mutation_log)
         .serve(stdio())
         .await
         .map_err(|e| anyhow!("rmcp serve failed during initialize: {e}"))?;

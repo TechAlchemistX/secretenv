@@ -39,6 +39,14 @@ pub struct Config {
     /// [`Backend`](crate::Backend) via the factory named by `type`.
     #[serde(default)]
     pub backends: HashMap<String, BackendConfig>,
+    /// `[mcp]` section — owned by `secretenv-mcp`'s typed schema, but
+    /// accepted here as an opaque [`toml::Value`] so the strict
+    /// `deny_unknown_fields` loader does not reject it. `secretenv-mcp`
+    /// re-parses this value via its own `McpConfig::from_toml_str`
+    /// loader at server startup; `secretenv-core` itself has no opinion
+    /// about the contents.
+    #[serde(default)]
+    pub mcp: Option<toml::Value>,
 }
 
 /// A single registry as configured under `[registries.<name>]`.

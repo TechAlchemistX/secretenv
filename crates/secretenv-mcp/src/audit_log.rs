@@ -94,9 +94,25 @@ impl MutationLogEntry {
     }
 }
 
+/// Compute the default audit-log path used when `[mcp].mutation_log`
+/// is unset.
+///
+/// On Linux: `$XDG_STATE_HOME/secretenv/mcp-mutations.log`
+/// (defaulting `XDG_STATE_HOME` to `~/.local/state`).
+/// On macOS / other platforms with no XDG state dir: falls back to
+/// `<data_local_dir>/secretenv/mcp-mutations.log`
+/// (`~/Library/Application Support/secretenv/...` on macOS).
+fn default_audit_log_path() -> Result<PathBuf> {
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| anyhow!("could not determine a home directory for audit-log path lookup"))?;
+    let dir = base.state_dir().unwrap_or_else(|| base.data_local_dir());
+    Ok(dir.join("secretenv").join("mcp-mutations.log"))
+}
+
 /// Append-only mutation audit log. One file handle, guarded by a
 /// `Mutex` so concurrent tool handlers (Phases 4-6) serialize their
 /// writes without interleaving JSON Lines.
+#[derive(Debug)]
 pub struct MutationLog {
     path: PathBuf,
     file: Mutex<File>,
@@ -119,6 +135,28 @@ impl MutationLog {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
 
+        Self::open_at(path)
+    }
+
+    /// Resolve [`McpConfig::mutation_log`] to a concrete path, then
+    /// [`Self::open`] it. When the config field is `None`, computes
+    /// `$XDG_STATE_HOME/secretenv/mcp-mutations.log` (falling back to
+    /// `~/.local/state/...` on platforms without `XDG_STATE_HOME`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no home directory can be determined for
+    /// the XDG default lookup (only when `configured_path` is `None`),
+    /// or if [`Self::open`] fails.
+    pub fn open_with_default(configured_path: Option<&str>) -> Result<Self> {
+        let path = match configured_path {
+            Some(p) => PathBuf::from(p),
+            None => default_audit_log_path()?,
+        };
+        Self::open(path)
+    }
+
+    fn open_at(path: PathBuf) -> Result<Self> {
         let mut opts = OpenOptions::new();
         opts.create(true).append(true);
 

@@ -38,11 +38,13 @@ use secretenv_core::Config;
 use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
 
+use crate::audit_log::MutationLog;
 use crate::boundary::{
     AuthStatus, BackendListing, DetectPasswordManagersResponse, DoctorResponse,
     GettingStartedResponse, ListAliasesResponse, ListBackendsResponse, RedactStatusResponse,
     ResolveStatusRegistryProbe, ResolveStatusResponse, ToolListing, VersionInfoResponse,
 };
+use crate::config::McpConfig;
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
 /// `version_info`; kept in sync manually with the `[dependencies]`
@@ -140,15 +142,29 @@ pub struct Server {
     /// Machine-level config loaded at startup. `Arc` so handlers can
     /// cheaply borrow without cloning the underlying `HashMap` tables.
     pub config: Arc<Config>,
+    /// Typed `[mcp]` config. Drives `allow_mutations` enforcement +
+    /// `disabled_tools` filtering + audit-log path resolution. Phase
+    /// 4 mutation handlers read from here; Phase 3 read-only handlers
+    /// don't reference it.
+    pub mcp_config: Arc<McpConfig>,
+    /// Mutation audit-log writer, opened at startup from
+    /// `mcp_config.mutation_log` (or the XDG default). `Arc` so every
+    /// mutation handler's `append` call shares the same `Mutex<File>`
+    /// and serializes writes.
+    pub mutation_log: Arc<MutationLog>,
 }
 
 impl Server {
     /// Build a server with the tool router materialized from the
-    /// `#[tool_router]`-annotated impl block below and the supplied
-    /// [`Config`].
+    /// `#[tool_router]`-annotated impl block below, plus the loaded
+    /// [`Config`] / [`McpConfig`] / [`MutationLog`] handles.
     #[must_use]
-    pub fn new(config: Arc<Config>) -> Self {
-        Self { tool_router: Self::tool_router(), config }
+    pub fn new(
+        config: Arc<Config>,
+        mcp_config: Arc<McpConfig>,
+        mutation_log: Arc<MutationLog>,
+    ) -> Self {
+        Self { tool_router: Self::tool_router(), config, mcp_config, mutation_log }
     }
 }
 

@@ -8,13 +8,26 @@
 //! (`mcp-tools-inventory`) — the file count and the registration
 //! count must agree.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::Arc;
 
 use secretenv_core::Config;
+use secretenv_mcp::audit_log::MutationLog;
+use secretenv_mcp::config::McpConfig;
 use secretenv_mcp::tools::Server;
+use tempfile::tempdir;
 
 fn test_server() -> Server {
-    Server::new(Arc::new(Config::default()))
+    // Per-test ephemeral audit-log path keeps the test suite from
+    // touching the user's real $XDG_STATE_HOME.
+    let dir = tempdir().unwrap();
+    let log = MutationLog::open(dir.path().join("audit.log")).unwrap();
+    // Leak the tempdir so the file outlives this fn (only acceptable
+    // because every test process is short-lived); avoid by passing
+    // a dir-owning struct if these tests grow.
+    std::mem::forget(dir);
+    Server::new(Arc::new(Config::default()), Arc::new(McpConfig::default()), Arc::new(log))
 }
 
 #[test]

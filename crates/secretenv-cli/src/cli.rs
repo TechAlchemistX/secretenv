@@ -1917,6 +1917,7 @@ mod tests {
                 "local".to_owned(),
                 BackendConfig { backend_type: "local".into(), raw_fields: HashMap::new() },
             )]),
+            mcp: None,
         }
     }
 

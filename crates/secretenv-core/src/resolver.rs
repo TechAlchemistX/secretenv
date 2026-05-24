@@ -628,6 +628,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            mcp: None,
         };
 
         let mut backends = BackendRegistry::new();

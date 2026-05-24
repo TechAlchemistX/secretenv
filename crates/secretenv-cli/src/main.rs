@@ -13,7 +13,7 @@ use clap::Parser;
 use secretenv_core::Config;
 use tracing_subscriber::EnvFilter;
 
-mod backends_init;
+use secretenv_backends_init as backends_init;
 mod cli;
 mod doctor;
 mod invite;

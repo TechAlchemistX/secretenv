@@ -20,6 +20,7 @@ path = "src/main.rs"
 secretenv-core.workspace             = true
 secretenv-telemetry.workspace        = true
 secretenv-migrate.workspace          = true
+secretenv-backends-init.workspace    = true
 secretenv-mcp.workspace              = true
 secretenv-backend-local.workspace    = true
 secretenv-backend-aws-ssm.workspace  = true

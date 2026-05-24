@@ -23,8 +23,9 @@
 
 use schemars::schema_for;
 use secretenv_mcp::boundary::{
-    BackendListing, DetectPasswordManagersResponse, GettingStartedResponse, ListBackendsResponse,
-    PasswordManagerDetection, RedactStatusResponse, ToolListing, VersionInfoResponse,
+    BackendListing, DetectPasswordManagersResponse, DoctorBackendStatus, DoctorResponse,
+    GettingStartedResponse, ListBackendsResponse, PasswordManagerDetection, RedactStatusResponse,
+    ResolveStatusRegistryProbe, ResolveStatusResponse, ToolListing, VersionInfoResponse,
 };
 
 /// Field identifiers that may not appear in any response struct
@@ -98,6 +99,18 @@ fn detect_password_managers_response_has_no_banned_fields() {
         "DetectPasswordManagersResponse",
     );
     assert_no_banned_field_names::<PasswordManagerDetection>("PasswordManagerDetection");
+}
+
+#[test]
+fn doctor_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<DoctorResponse>("DoctorResponse");
+    assert_no_banned_field_names::<DoctorBackendStatus>("DoctorBackendStatus");
+}
+
+#[test]
+fn resolve_status_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<ResolveStatusResponse>("ResolveStatusResponse");
+    assert_no_banned_field_names::<ResolveStatusRegistryProbe>("ResolveStatusRegistryProbe");
 }
 
 // Per-tool registration block — extend as Phase 3-6 handlers land.

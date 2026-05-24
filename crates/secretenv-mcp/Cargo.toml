@@ -23,6 +23,17 @@ readme.workspace       = true
 # build-plan §5.
 [dependencies]
 secretenv-core      = { path = "../secretenv-core", version = "0.15.0", default-features = false }
+# `secretenv-backends-init` is the SHARED factory wiring used by both
+# the CLI and the MCP server. Pulled in for `doctor` + `resolve_status`
+# which need a live `BackendRegistry` at call time. Naming
+# `secretenv_core::Backend` from the resulting trait objects is
+# permitted: the SEC-INV-02 clippy ban is scoped to
+# `secretenv_core::Secret`, not the `Backend` trait, and `Backend::check()`
+# returns `BackendStatus` (a metadata-only enum — never a `Secret`).
+# Calls to value-producing methods (`get`, `set`) inside this crate
+# would still need to land in `src/internal/` per the documented
+# escape-hatch rule in `clippy.toml`.
+secretenv-backends-init.workspace = true
 secretenv-telemetry.workspace = true
 anyhow.workspace              = true
 directories.workspace         = true

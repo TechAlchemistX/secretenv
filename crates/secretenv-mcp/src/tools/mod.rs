@@ -23,6 +23,7 @@
 //! intentionally do NOT yet open spans (no logic to attribute); the
 //! pattern lands in Phase 3 with the first real handler.
 
+pub mod doctor;
 pub mod password_managers;
 
 use std::sync::Arc;
@@ -37,8 +38,9 @@ use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
 
 use crate::boundary::{
-    AuthStatus, BackendListing, DetectPasswordManagersResponse, GettingStartedResponse,
-    ListBackendsResponse, RedactStatusResponse, ToolListing, VersionInfoResponse,
+    AuthStatus, BackendListing, DetectPasswordManagersResponse, DoctorResponse,
+    GettingStartedResponse, ListBackendsResponse, RedactStatusResponse, ResolveStatusRegistryProbe,
+    ResolveStatusResponse, ToolListing, VersionInfoResponse,
 };
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
@@ -83,6 +85,16 @@ pub struct ListBackendsArgs {}
 /// Argument record for `detect_password_managers` — no inputs.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct DetectPasswordManagersArgs {}
+
+/// Argument record for `doctor` — no inputs (the MCP boundary
+/// intentionally drops `--fix` from the CLI equivalent; remediation
+/// is the agent + operator's joint decision).
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct DoctorArgs {}
+
+/// Argument record for `resolve_status` — no inputs.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct ResolveStatusArgs {}
 
 /// Pick a deterministic next-tool suggestion from current config shape.
 /// Pure function — exposed for unit tests.
@@ -261,10 +273,92 @@ impl Server {
     /// Whether aliases can currently be resolved. NEVER returns the value.
     #[tool(
         name = "resolve_status",
-        description = "Whether aliases can currently be resolved. NEVER returns the value. No flag makes this return a value."
+        description = "Per-registry probe of whether alias resolution would succeed. \
+                       Reports the backend instance backing each registry's primary source \
+                       URI and that backend's auth status. NEVER returns alias values. \
+                       Per-alias resolution lands with `list_aliases` in a follow-up."
     )]
-    pub async fn resolve_status(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("resolve_status", 3)
+    pub async fn resolve_status(
+        &self,
+        _args: Parameters<ResolveStatusArgs>,
+    ) -> Json<ResolveStatusResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.resolve_status");
+
+        // Run a single doctor probe and reuse its per-instance status
+        // map; cheaper than re-probing each backend per registry.
+        let probes = doctor::probe_all_backends(&self.config).await;
+        let status_by_instance: std::collections::HashMap<_, _> =
+            probes.iter().map(|p| (p.instance_name.clone(), p.status.clone())).collect();
+
+        let mut registries: Vec<ResolveStatusRegistryProbe> = self
+            .config
+            .registries
+            .iter()
+            .map(|(name, rc)| {
+                let primary_instance = rc
+                    .sources
+                    .first()
+                    .and_then(|raw| secretenv_core::BackendUri::parse(raw).ok())
+                    .map(|u| u.scheme);
+
+                let (status, hint) = primary_instance.as_deref().map_or_else(
+                    || {
+                        (
+                            AuthStatus::Unknown,
+                            format!(
+                                "registry `{name}` has no source URIs or the primary URI \
+                                 failed to parse"
+                            ),
+                        )
+                    },
+                    |inst| match status_by_instance.get(inst) {
+                        Some(AuthStatus::Authenticated) => (
+                            AuthStatus::Authenticated,
+                            format!("registry `{name}` resolvable: backend `{inst}` ok"),
+                        ),
+                        Some(s) => (
+                            s.clone(),
+                            format!(
+                                "registry `{name}` not resolvable: backend `{inst}` status \
+                                 `{s:?}` — call `doctor` for remediation hints"
+                            ),
+                        ),
+                        None => (
+                            AuthStatus::Unknown,
+                            format!(
+                                "registry `{name}` references backend instance `{inst}` \
+                                 which is not configured under `[backends.{inst}]`"
+                            ),
+                        ),
+                    },
+                );
+
+                ResolveStatusRegistryProbe {
+                    registry_name: name.clone(),
+                    source_count: rc.sources.len(),
+                    primary_source_backend_instance: primary_instance,
+                    primary_source_status: status,
+                    status_hint: hint,
+                }
+            })
+            .collect();
+        registries.sort_by(|a, b| a.registry_name.cmp(&b.registry_name));
+
+        let total_registries = registries.len();
+        let resolvable_registries = registries
+            .iter()
+            .filter(|r| r.primary_source_status == AuthStatus::Authenticated)
+            .count();
+
+        Json(ResolveStatusResponse {
+            registries,
+            total_registries,
+            resolvable_registries,
+            note: "Per-registry probe only — checks the primary source backend's auth state. \
+                   Per-alias resolution requires reading the registry document and lands with \
+                   `list_aliases`."
+                .to_owned(),
+        })
     }
 
     /// Installed + authenticated secret backend CLIs on this machine.
@@ -302,10 +396,20 @@ impl Server {
     /// Three-level health check: CLI installed, authenticated, registry reachable.
     #[tool(
         name = "doctor",
-        description = "Three-level health check: CLI installed, authenticated, registry reachable. Hint strings for remediation; no --fix."
+        description = "Three-level health check across every configured `[backends.*]` \
+                       instance: CLI installed, authenticated, reachable. Returns \
+                       remediation hints; no --fix flag — the agent + operator decide \
+                       whether to act on the hints."
     )]
-    pub async fn doctor(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("doctor", 3)
+    pub async fn doctor(&self, _args: Parameters<DoctorArgs>) -> Json<DoctorResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.doctor");
+
+        let backends = doctor::probe_all_backends(&self.config).await;
+        let total = backends.len();
+        let ok = backends.iter().filter(|b| b.status == AuthStatus::Authenticated).count();
+        let failures = total.saturating_sub(ok);
+
+        Json(DoctorResponse { backends, total, ok, failures })
     }
 
     /// Whether runtime redaction is active; count of values that would be masked.

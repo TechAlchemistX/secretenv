@@ -69,6 +69,86 @@ pub struct ListBackendsResponse {
     pub total: usize,
 }
 
+/// One entry in [`DoctorResponse::backends`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DoctorBackendStatus {
+    /// `[backends.<name>]` instance name from `config.toml`.
+    pub instance_name: String,
+    /// `type = "..."` field from the backend block.
+    pub backend_type: String,
+    /// Three-bucket status (always one of `Authenticated`,
+    /// `NotAuthenticated`, `CliNotInstalled`; `Unknown` is reserved
+    /// for tools that don't probe live state, so it never appears
+    /// here).
+    pub status: AuthStatus,
+    /// `cli_version` when the backend's `check()` returned `Ok`.
+    pub cli_version: Option<String>,
+    /// Backend's CLI-reported identity string (e.g. `profile=dev
+    /// account=123 region=us-east-1`) when `check()` returned `Ok`.
+    /// Mirrors `secretenv doctor --json`; never a secret value.
+    pub identity_hint: Option<String>,
+    /// Short remediation hint (e.g. `op signin`, `aws sso login`)
+    /// when the status is not `Authenticated`.
+    pub remediation_hint: Option<String>,
+    /// Error message when `check()` returned `Error` — typically a
+    /// network failure, permission denied, or a wedged backend.
+    pub error_message: Option<String>,
+}
+
+/// Response payload for the `doctor` tool.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DoctorResponse {
+    /// Per-backend status, sorted by `instance_name`.
+    pub backends: Vec<DoctorBackendStatus>,
+    /// `backends.len()`.
+    pub total: usize,
+    /// Count of `status == Authenticated`.
+    pub ok: usize,
+    /// Count of `status != Authenticated`.
+    pub failures: usize,
+}
+
+/// One entry in [`ResolveStatusResponse::registries`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveStatusRegistryProbe {
+    /// `[registries.<name>]` registry name.
+    pub registry_name: String,
+    /// Number of source URIs listed under this registry.
+    pub source_count: usize,
+    /// Backend instance name backing the primary source URI
+    /// (`sources[0]`'s scheme), if it parses + resolves to a
+    /// configured backend instance.
+    pub primary_source_backend_instance: Option<String>,
+    /// Status of the primary backend's `check()` — `Authenticated`
+    /// means alias lookups against this registry should succeed.
+    pub primary_source_status: AuthStatus,
+    /// Human-readable summary of the probe outcome.
+    pub status_hint: String,
+}
+
+/// Response payload for the `resolve_status` tool.
+///
+/// Per-registry probe (not per-alias). Per-alias resolution requires
+/// enumerating aliases from the registry document, which lives behind
+/// a separate value-free helper coming in Phase 3g (`list_aliases`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveStatusResponse {
+    /// Per-registry probe results, sorted by `registry_name`.
+    pub registries: Vec<ResolveStatusRegistryProbe>,
+    /// `registries.len()`.
+    pub total_registries: usize,
+    /// Count of registries whose primary source backend is
+    /// `Authenticated`.
+    pub resolvable_registries: usize,
+    /// Note clarifying that this is a registry-level probe — per-alias
+    /// resolution lands with `list_aliases` in Phase 3g.
+    pub note: String,
+}
+
 /// One detection in [`DetectPasswordManagersResponse::detections`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

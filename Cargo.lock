@@ -895,6 +895,7 @@ dependencies = [
  "secretenv-backend-local",
  "secretenv-backend-openbao",
  "secretenv-backend-vault",
+ "secretenv-backends-init",
  "secretenv-core",
  "secretenv-mcp",
  "secretenv-migrate",
@@ -1138,6 +1139,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretenv-backends-init"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "secretenv-backend-1password",
+ "secretenv-backend-aws-secrets",
+ "secretenv-backend-aws-ssm",
+ "secretenv-backend-azure",
+ "secretenv-backend-bitwarden-sm",
+ "secretenv-backend-cf-kv",
+ "secretenv-backend-conjur",
+ "secretenv-backend-doppler",
+ "secretenv-backend-gcp",
+ "secretenv-backend-infisical",
+ "secretenv-backend-keeper",
+ "secretenv-backend-keychain",
+ "secretenv-backend-local",
+ "secretenv-backend-openbao",
+ "secretenv-backend-vault",
+ "secretenv-core",
+]
+
+[[package]]
 name = "secretenv-core"
 version = "0.15.0"
 dependencies = [
@@ -1168,6 +1192,7 @@ dependencies = [
  "futures",
  "rmcp",
  "schemars",
+ "secretenv-backends-init",
  "secretenv-core",
  "secretenv-telemetry",
  "serde",

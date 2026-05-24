@@ -133,8 +133,8 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         config_path: "~/.cursor/mcp.json",
         format: FileFormat::Json,
         shape: ConfigShape::JsonMcpServers,
-        note: "Per-project override: `.cursor/mcp.json` at the repo root.",
-        extra_args: &[],
+        note: "Per-project override: `.cursor/mcp.json` at the repo root. **Phase 8b empirical default**: 5 of 6 tested non-Claude IDEs in v0.16 needed `--allow-mutations=always` because they don't fully support MCP elicitation; Cursor was UNTESTED but ships with the same override speculatively. If your Cursor install does support MCP elicitation (test by removing the flag + restarting), remove the override and the safer per-mutation confirmation modal will fire instead.",
+        extra_args: &["--allow-mutations", "always"],
     },
     IdeProfile {
         key: "codex",
@@ -160,8 +160,8 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         config_path: "~/.continue/config.json",
         format: FileFormat::Json,
         shape: ConfigShape::JsonContinueExperimental,
-        note: "Continue nests MCP servers under `experimental.modelContextProtocolServers` (array).",
-        extra_args: &[],
+        note: "Continue nests MCP servers under `experimental.modelContextProtocolServers` (array). **Phase 8b empirical default**: 5 of 6 tested non-Claude IDEs in v0.16 needed `--allow-mutations=always` because they don't fully support MCP elicitation; Continue was UNTESTED but ships with the same override speculatively. If your Continue install does support MCP elicitation (test by removing the flag + restarting), remove the override and the safer per-mutation confirmation modal will fire instead.",
+        extra_args: &["--allow-mutations", "always"],
     },
     IdeProfile {
         key: "cline",
@@ -184,11 +184,11 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
     IdeProfile {
         key: "opencode",
         display_name: "OpenCode",
-        config_path: "~/.config/opencode/opencode.json",
+        config_path: "~/.config/opencode/opencode.jsonc",
         format: FileFormat::Json,
         shape: ConfigShape::JsonOpenCode,
-        note: "OpenCode uses a `command`-as-list form; safe to merge under an existing `mcp` block.",
-        extra_args: &[],
+        note: "OpenCode uses a `command`-as-list form. Config file is JSONC (JSON with comments) at `opencode.jsonc` — NOT `opencode.json` (FINDING-14 fix). **Phase 8b FINDING-16**: OpenCode does NOT advertise MCP elicitation capability — the `--allow-mutations=always` flag below bypasses the per-mutation confirmation gate (mutations still audit-logged). Note: OpenCode AND the agent running inside it BOTH provide their own confirmation surfaces (operator-typed `confirm` in chat per Phase 8b POSITIVE OBSERVATION #3) — defense-in-depth at the IDE + model layer even when MCP-protocol elicitation is silenced.",
+        extra_args: &["--allow-mutations", "always"],
     },
     IdeProfile {
         key: "generic",
@@ -361,7 +361,11 @@ mod tests {
         let body = render_config(profile, "secretenv");
         assert!(body.contains("\"mcp\""));
         assert!(body.contains("\"type\": \"local\""));
-        assert!(body.contains("\"command\": [\"secretenv\", \"mcp\", \"serve\"]"));
+        // OpenCode profile ships with the Phase 7f --allow-mutations
+        // override per FINDING-16 (no elicitation support).
+        assert!(body.contains(
+            "\"command\": [\"secretenv\", \"mcp\", \"serve\", \"--allow-mutations\", \"always\"]"
+        ));
     }
 
     #[test]
@@ -399,17 +403,39 @@ mod tests {
     }
 
     #[test]
-    fn most_profiles_have_no_extra_args() {
-        for key in [
-            "claude-code",
-            "cursor",
-            "codex",
-            "vscode-copilot",
-            "continue",
-            "cline",
-            "opencode",
-            "generic",
-        ] {
+    fn no_elicitation_ides_ship_with_override() {
+        // Phase 8b empirical pattern: Gemini (FINDING-9) + OpenCode
+        // (FINDING-16) confirmed to need `--allow-mutations=always`
+        // because they don't advertise MCP elicitation. Cursor +
+        // Continue (untested in v0.16) ship with the same override
+        // speculatively per Phase 7g — 5 of 5 same-bucket IDEs failed
+        // so the safer default for untested IDEs is "needs override".
+        // If a future Cursor / Continue install actually supports
+        // elicitation, the operator removes the flag and the safer
+        // per-mutation confirmation modal fires instead.
+        for key in ["gemini", "cursor", "continue", "opencode"] {
+            let profile = find_profile(key).expect("profile present");
+            assert_eq!(
+                profile.extra_args,
+                &["--allow-mutations", "always"],
+                "{key} should ship with --allow-mutations=always per Phase 7f/7g defaults",
+            );
+        }
+    }
+
+    #[test]
+    fn elicitation_supporting_or_passthrough_ides_have_no_extra_args() {
+        // - claude-code: elicitation works (Phase 8b IDE #1 sign-off).
+        // - codex + cline + vscode-copilot: also need the override,
+        //   but their config-edit mechanisms (`claude mcp add`, jq
+        //   merge into globalStorage settings.json, `.vscode/mcp.json`
+        //   paste) are operator-driven; helper print mode is
+        //   informational + operator pastes the override per Phase 8b
+        //   per-IDE notes. Keeping these profiles with empty
+        //   `extra_args` means a future IDE-side elicitation fix is
+        //   automatically picked up.
+        // - generic: not an IDE — pure paste-target.
+        for key in ["claude-code", "codex", "cline", "vscode-copilot", "generic"] {
             let profile = find_profile(key).expect("profile present");
             assert!(profile.extra_args.is_empty(), "{key} should not have extra_args");
         }
@@ -417,30 +443,28 @@ mod tests {
 
     #[test]
     fn generic_profile_matches_other_claude_shape_ides() {
-        // After Phase 7c FINDING-1, claude-code emits a shell command
-        // instead of JSON. Cursor / Cline still use the de-facto
-        // `mcpServers` shape with no extra args — `generic` should
-        // be byte-identical to those. (Gemini also uses the
-        // `mcpServers` SHAPE but appends `--allow-mutations=always`
-        // per Phase 7f FINDING-9, so its rendered body differs even
-        // though the shape matches.)
+        // Post-Phase-7g, the only `JsonMcpServers` IDE that ships
+        // byte-identical to `generic` is `cline` (no extra_args).
+        // Gemini + Cursor get `--allow-mutations=always` extra_args
+        // per FINDING-9 (confirmed) + Phase 7g speculative default
+        // for untested IDEs.
         let generic = find_profile("generic").unwrap();
-        for sibling in ["cursor", "cline"] {
-            let other = find_profile(sibling).unwrap();
-            assert_eq!(generic.shape, other.shape, "shape mismatch with {sibling}");
-            assert_eq!(
+        let cline = find_profile("cline").unwrap();
+        assert_eq!(generic.shape, cline.shape, "shape match expected");
+        assert_eq!(
+            render_config(generic, "secretenv"),
+            render_config(cline, "secretenv"),
+            "rendering should match cline byte-for-byte",
+        );
+        // Gemini + Cursor share SHAPE but rendering differs (extra_args).
+        for divergent in ["gemini", "cursor"] {
+            assert_eq!(generic.shape, find_profile(divergent).unwrap().shape);
+            assert_ne!(
                 render_config(generic, "secretenv"),
-                render_config(other, "secretenv"),
-                "rendering differs from {sibling}",
+                render_config(find_profile(divergent).unwrap(), "secretenv"),
+                "{divergent} should render differently due to extra_args",
             );
         }
-        // Gemini shares SHAPE but rendering differs (extra_args).
-        assert_eq!(generic.shape, find_profile("gemini").unwrap().shape);
-        assert_ne!(
-            render_config(generic, "secretenv"),
-            render_config(find_profile("gemini").unwrap(), "secretenv"),
-            "gemini should render differently due to extra_args",
-        );
     }
 
     #[test]

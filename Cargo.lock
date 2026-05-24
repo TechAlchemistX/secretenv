@@ -1165,6 +1165,7 @@ version = "0.15.0"
 dependencies = [
  "anyhow",
  "directories",
+ "futures",
  "rmcp",
  "schemars",
  "secretenv-core",

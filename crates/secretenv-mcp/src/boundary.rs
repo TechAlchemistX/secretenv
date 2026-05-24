@@ -69,6 +69,46 @@ pub struct ListBackendsResponse {
     pub total: usize,
 }
 
+/// One detection in [`DetectPasswordManagersResponse::detections`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordManagerDetection {
+    /// Backend type label matching the `type = "..."` value in
+    /// `[backends.*]` (e.g., `"1password"`, `"vault"`, `"aws-ssm"`).
+    pub backend_type: String,
+    /// The CLI binary probed (e.g., `"op"`, `"vault"`, `"aws"`).
+    pub cli_binary: String,
+    /// Result bucket. Reuses the shared [`AuthStatus`] enum so
+    /// `list_backends` / `doctor` can mix detections + listings into
+    /// the same enum-keyed UI.
+    pub auth_status: AuthStatus,
+    /// The argv that was executed to probe authentication. Exposed so
+    /// an operator can re-run it manually for diagnosis. Output of
+    /// the probe is intentionally NOT captured — could leak data.
+    pub auth_probe_argv: Vec<String>,
+}
+
+/// Response payload for the `detect_password_managers` tool.
+///
+/// Probes every backend CLI this build supports — not just the ones
+/// in `[backends.*]` — so an agent can suggest "you have `doppler`
+/// installed but no `[backends.<name>] type = "doppler"` block" or
+/// vice versa. Each probe runs concurrently with a short timeout
+/// bound; probe output bytes are never returned, only exit status.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DetectPasswordManagersResponse {
+    /// One entry per supported backend type.
+    pub detections: Vec<PasswordManagerDetection>,
+    /// Total supported backend types this build knows about.
+    pub total_supported: usize,
+    /// Count of detections with [`AuthStatus`] in
+    /// `{Authenticated, NotAuthenticated}` — i.e. the CLI was found.
+    pub installed: usize,
+    /// Count of detections with [`AuthStatus::Authenticated`].
+    pub authenticated: usize,
+}
+
 /// One entry in [`VersionInfoResponse::tools`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

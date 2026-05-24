@@ -23,6 +23,8 @@
 //! intentionally do NOT yet open spans (no logic to attribute); the
 //! pattern lands in Phase 3 with the first real handler.
 
+pub mod password_managers;
+
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -35,8 +37,8 @@ use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
 
 use crate::boundary::{
-    AuthStatus, BackendListing, GettingStartedResponse, ListBackendsResponse, RedactStatusResponse,
-    ToolListing, VersionInfoResponse,
+    AuthStatus, BackendListing, DetectPasswordManagersResponse, GettingStartedResponse,
+    ListBackendsResponse, RedactStatusResponse, ToolListing, VersionInfoResponse,
 };
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
@@ -77,6 +79,10 @@ pub struct RedactStatusArgs {}
 /// Argument record for `list_backends` — no inputs.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct ListBackendsArgs {}
+
+/// Argument record for `detect_password_managers` — no inputs.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct DetectPasswordManagersArgs {}
 
 /// Pick a deterministic next-tool suggestion from current config shape.
 /// Pure function — exposed for unit tests.
@@ -264,10 +270,33 @@ impl Server {
     /// Installed + authenticated secret backend CLIs on this machine.
     #[tool(
         name = "detect_password_managers",
-        description = "Installed + authenticated secret backend CLIs on this machine."
+        description = "Installed + authenticated secret backend CLIs on this machine. Probes \
+                       every backend type this build supports — not just configured ones — so \
+                       an agent can suggest CLIs to install or `[backends.*]` blocks to add."
     )]
-    pub async fn detect_password_managers(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("detect_password_managers", 3)
+    pub async fn detect_password_managers(
+        &self,
+        _args: Parameters<DetectPasswordManagersArgs>,
+    ) -> Json<DetectPasswordManagersResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.detect_password_managers");
+
+        let detections = password_managers::run_all_probes().await;
+        let total_supported = detections.len();
+        let installed = detections
+            .iter()
+            .filter(|d| {
+                matches!(d.auth_status, AuthStatus::Authenticated | AuthStatus::NotAuthenticated)
+            })
+            .count();
+        let authenticated =
+            detections.iter().filter(|d| d.auth_status == AuthStatus::Authenticated).count();
+
+        Json(DetectPasswordManagersResponse {
+            detections,
+            total_supported,
+            installed,
+            authenticated,
+        })
     }
 
     /// Three-level health check: CLI installed, authenticated, registry reachable.

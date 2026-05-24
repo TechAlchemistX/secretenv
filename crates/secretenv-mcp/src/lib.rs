@@ -53,4 +53,7 @@ pub mod server;
 pub mod setup;
 pub mod tools;
 
-pub use server::{disable, disable_sentinel_path, enable, serve};
+pub use config::{AllowMutations, ConfirmVia};
+pub use server::{
+    disable, disable_sentinel_path, enable, serve, serve_with_overrides, PolicyOverrides,
+};

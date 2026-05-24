@@ -170,7 +170,48 @@ fn load_config(config_path: Option<&Path>) -> Result<Config> {
 /// if the config cannot be loaded, if the `rmcp` `serve` call fails to
 /// perform the initialize handshake, or if the underlying transport
 /// errors during the service lifetime.
+/// Per-launch policy overrides applied AFTER the `[mcp]` section is
+/// loaded from `config.toml`. Used by per-IDE setup blocks (e.g.
+/// `secretenv mcp setup --ide gemini` emits `--allow-mutations always`
+/// in its `args[]` because Gemini CLI 0.43.0 does not advertise the
+/// MCP elicitation capability).
+///
+/// `None` means "use the config value (or default if absent)". `Some`
+/// overrides it.
+#[derive(Debug, Clone, Default)]
+pub struct PolicyOverrides {
+    /// Override for `[mcp].allow_mutations`.
+    pub allow_mutations: Option<crate::config::AllowMutations>,
+    /// Override for `[mcp].confirm_via`.
+    pub confirm_via: Option<crate::config::ConfirmVia>,
+}
+
+/// Run the `MCP` server with no per-launch policy overrides. Thin
+/// wrapper around [`serve_with_overrides`] for callers that don't
+/// need to override `[mcp]` values from the CLI.
+///
+/// # Errors
+///
+/// Same as [`serve_with_overrides`].
 pub async fn serve(config_path: Option<PathBuf>) -> Result<()> {
+    serve_with_overrides(config_path, PolicyOverrides::default()).await
+}
+
+/// As [`serve`] but accepts per-launch [`PolicyOverrides`] from
+/// command-line flags.
+///
+/// The overrides are applied after the `[mcp]` section is loaded
+/// from `config.toml` and BEFORE the audit log is opened — so the
+/// mutation-log file used by the lifetime of this server is the one
+/// selected by the (possibly overridden) config.
+///
+/// # Errors
+///
+/// Same as [`serve`].
+pub async fn serve_with_overrides(
+    config_path: Option<PathBuf>,
+    overrides: PolicyOverrides,
+) -> Result<()> {
     match read_disable_state()? {
         DisableState::NotPresent => {}
         DisableState::Indefinite => {
@@ -192,10 +233,26 @@ pub async fn serve(config_path: Option<PathBuf>) -> Result<()> {
     }
 
     let config = Arc::new(load_config(config_path.as_deref())?);
-    let mcp_config = Arc::new(
-        McpConfig::from_core_value(config.mcp.as_ref())
-            .context("parsing [mcp] section from loaded config")?,
-    );
+    let mut mcp_config = McpConfig::from_core_value(config.mcp.as_ref())
+        .context("parsing [mcp] section from loaded config")?;
+    // Apply CLI-flag overrides (Phase 7f). `None` means "keep config
+    // value"; `Some(value)` overrides. Logged via tracing so the
+    // override is observable in the audit / debug trail.
+    if let Some(am) = overrides.allow_mutations {
+        tracing::info!(
+            "policy override from CLI flag: allow_mutations = {am:?} (was {:?} in config)",
+            mcp_config.allow_mutations,
+        );
+        mcp_config.allow_mutations = am;
+    }
+    if let Some(cv) = overrides.confirm_via {
+        tracing::info!(
+            "policy override from CLI flag: confirm_via = {cv:?} (was {:?} in config)",
+            mcp_config.confirm_via,
+        );
+        mcp_config.confirm_via = cv;
+    }
+    let mcp_config = Arc::new(mcp_config);
     let mutation_log = Arc::new(
         MutationLog::open_with_default(mcp_config.mutation_log.as_deref())
             .context("opening MCP mutation audit log")?,

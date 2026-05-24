@@ -33,7 +33,12 @@ use std::path::PathBuf;
 /// same server name everywhere.
 const SERVER_KEY: &str = "secretenv";
 
-/// Argv used by every IDE config: `secretenv mcp serve`.
+/// Base argv used by every IDE config: `secretenv mcp serve`. Per-IDE
+/// profiles may APPEND extra args via [`IdeProfile::extra_args`] —
+/// e.g. Gemini CLI 0.43.0 doesn't advertise MCP elicitation capability
+/// so its profile appends `--allow-mutations=always` to bypass the
+/// confirmation gate (mutations still audit-logged) without weakening
+/// the operator's global `[mcp]` config (v0.16 Phase 7f addition).
 const SERVE_ARGV: &[&str] = &["mcp", "serve"];
 
 /// On-disk file format the IDE expects.
@@ -98,6 +103,11 @@ pub struct IdeProfile {
     /// One-line note shown alongside the rendered block (e.g. "VS
     /// Code: place under `.vscode/` in the workspace, not `$HOME`").
     pub note: &'static str,
+    /// Per-IDE extra args APPENDED after [`SERVE_ARGV`]. Used to
+    /// scope CLI-flag policy overrides to specific IDEs without
+    /// touching the operator's global `[mcp]` config. Default empty
+    /// for IDEs that work with the default policy stack.
+    pub extra_args: &'static [&'static str],
 }
 
 /// All 8 IDEs supported by v0.16's setup helper.
@@ -115,6 +125,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::ShellClaudeMcpAdd,
         note: "User-scope config is `~/.claude.json` — never edit by hand (1000+ lines of Claude Code state). Per-project alternative: paste an `mcpServers` block into `.mcp.json` at the repo root, or use `--ide generic` for the JSON shape.",
+        extra_args: &[],
     },
     IdeProfile {
         key: "cursor",
@@ -123,6 +134,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonMcpServers,
         note: "Per-project override: `.cursor/mcp.json` at the repo root.",
+        extra_args: &[],
     },
     IdeProfile {
         key: "codex",
@@ -131,6 +143,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Toml,
         shape: ConfigShape::TomlMcpServersTable,
         note: "Codex CLI config is TOML; merge under existing tables if present.",
+        extra_args: &[],
     },
     IdeProfile {
         key: "vscode-copilot",
@@ -139,6 +152,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonVsCodeServers,
         note: "Workspace-scoped: place at `.vscode/mcp.json` in the repo, not $HOME.",
+        extra_args: &[],
     },
     IdeProfile {
         key: "continue",
@@ -147,6 +161,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonContinueExperimental,
         note: "Continue nests MCP servers under `experimental.modelContextProtocolServers` (array).",
+        extra_args: &[],
     },
     IdeProfile {
         key: "cline",
@@ -155,6 +170,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonMcpServers,
         note: "macOS path. Linux: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`.",
+        extra_args: &[],
     },
     IdeProfile {
         key: "gemini",
@@ -162,7 +178,8 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         config_path: "~/.gemini/settings.json",
         format: FileFormat::Json,
         shape: ConfigShape::JsonMcpServers,
-        note: "Single config covers both the standalone Gemini CLI and the Gemini Code Assist IDE extension. Restart the editor/CLI after editing for the re-scan.",
+        note: "FINDING-9 (Phase 8b): Gemini CLI 0.43.0 does NOT advertise MCP elicitation capability — the `--allow-mutations=always` flag below bypasses the per-mutation confirmation gate (mutations still appear in the audit log). REMOVE that flag once Gemini ships elicitation support (track via `gemini --version` against their release notes). Config covers both standalone CLI and Gemini Code Assist IDE extension; restart the editor/CLI to pick up changes.",
+        extra_args: &["--allow-mutations", "always"],
     },
     IdeProfile {
         key: "opencode",
@@ -171,6 +188,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonOpenCode,
         note: "OpenCode uses a `command`-as-list form; safe to merge under an existing `mcp` block.",
+        extra_args: &[],
     },
     IdeProfile {
         key: "generic",
@@ -179,6 +197,7 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
         format: FileFormat::Json,
         shape: ConfigShape::JsonMcpServers,
         note: "Drop-in for ANY IDE that adopts the de-facto Claude `mcpServers` shape: Claude Code, Cursor, Cline, Gemini CLI / Code Assist, and emerging clients. NOT compatible with VS Code Copilot (needs `\"type\": \"stdio\"`), Continue (`experimental.modelContextProtocolServers`), OpenCode (`command`-as-list), or Codex (TOML).",
+        extra_args: &[],
     },
 ];
 
@@ -224,7 +243,13 @@ pub fn expand_home(p: &str) -> Result<PathBuf, std::io::Error> {
 /// works regardless of shell init.
 #[must_use]
 pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
-    let args_json = SERVE_ARGV.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ");
+    // `extra_args` (Phase 7f) appends per-IDE CLI overrides like
+    // `--allow-mutations=always` for IDEs that don't advertise MCP
+    // elicitation capability (e.g. Gemini CLI 0.43.0). Renders into
+    // the JSON / TOML `args` array right after `mcp serve`.
+    let full_argv: Vec<&str> =
+        SERVE_ARGV.iter().chain(profile.extra_args.iter()).copied().collect();
+    let args_json = full_argv.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ");
 
     match profile.shape {
         ConfigShape::JsonMcpServers => format!(
@@ -239,6 +264,7 @@ pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
         ConfigShape::JsonOpenCode => {
             let argv_with_bin = std::iter::once(binary_path)
                 .chain(SERVE_ARGV.iter().copied())
+                .chain(profile.extra_args.iter().copied())
                 .map(|a| format!("\"{a}\""))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -255,8 +281,9 @@ pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
             // through as the spawned subprocess argv. Print the
             // command + the verify step so the operator gets a
             // copy-paste-ready snippet.
+            let argv_tail = full_argv.join(" ");
             format!(
-                "# Run this command in your shell to register secretenv with Claude Code:\nclaude mcp add -s user {SERVER_KEY} -- {binary_path} mcp serve\n\n# Verify the registration (should report `Status: ✓ Connected`):\nclaude mcp get {SERVER_KEY}\n",
+                "# Run this command in your shell to register secretenv with Claude Code:\nclaude mcp add -s user {SERVER_KEY} -- {binary_path} {argv_tail}\n\n# Verify the registration (should report `Status: ✓ Connected`):\nclaude mcp get {SERVER_KEY}\n",
             )
         }
     }
@@ -354,13 +381,51 @@ mod tests {
     }
 
     #[test]
+    fn gemini_profile_includes_allow_mutations_override() {
+        // v0.16 Phase 7f FINDING-9: Gemini CLI 0.43.0 doesn't
+        // advertise MCP elicitation. The setup helper auto-emits
+        // `--allow-mutations=always` in the args[] to bypass the
+        // confirmation gate WITHOUT weakening the operator's global
+        // `[mcp]` config. Remove this when Gemini ships elicitation.
+        let profile = find_profile("gemini").unwrap();
+        assert_eq!(profile.extra_args, &["--allow-mutations", "always"]);
+        let body = render_config(profile, "secretenv");
+        assert!(body.contains("\"--allow-mutations\""));
+        assert!(body.contains("\"always\""));
+        // Should appear in the rendered args array AFTER `serve`.
+        let serve_idx = body.find("\"serve\"").expect("serve in args");
+        let flag_idx = body.find("\"--allow-mutations\"").expect("flag in args");
+        assert!(serve_idx < flag_idx, "extra_args must come after SERVE_ARGV");
+    }
+
+    #[test]
+    fn most_profiles_have_no_extra_args() {
+        for key in [
+            "claude-code",
+            "cursor",
+            "codex",
+            "vscode-copilot",
+            "continue",
+            "cline",
+            "opencode",
+            "generic",
+        ] {
+            let profile = find_profile(key).expect("profile present");
+            assert!(profile.extra_args.is_empty(), "{key} should not have extra_args");
+        }
+    }
+
+    #[test]
     fn generic_profile_matches_other_claude_shape_ides() {
         // After Phase 7c FINDING-1, claude-code emits a shell command
-        // instead of JSON. Cursor / Cline / Gemini still use the
-        // de-facto `mcpServers` shape — `generic` should be
-        // byte-identical to those.
+        // instead of JSON. Cursor / Cline still use the de-facto
+        // `mcpServers` shape with no extra args — `generic` should
+        // be byte-identical to those. (Gemini also uses the
+        // `mcpServers` SHAPE but appends `--allow-mutations=always`
+        // per Phase 7f FINDING-9, so its rendered body differs even
+        // though the shape matches.)
         let generic = find_profile("generic").unwrap();
-        for sibling in ["cursor", "cline", "gemini"] {
+        for sibling in ["cursor", "cline"] {
             let other = find_profile(sibling).unwrap();
             assert_eq!(generic.shape, other.shape, "shape mismatch with {sibling}");
             assert_eq!(
@@ -369,6 +434,13 @@ mod tests {
                 "rendering differs from {sibling}",
             );
         }
+        // Gemini shares SHAPE but rendering differs (extra_args).
+        assert_eq!(generic.shape, find_profile("gemini").unwrap().shape);
+        assert_ne!(
+            render_config(generic, "secretenv"),
+            render_config(find_profile("gemini").unwrap(), "secretenv"),
+            "gemini should render differently due to extra_args",
+        );
     }
 
     #[test]

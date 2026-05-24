@@ -103,6 +103,50 @@ See `docs/security.md` for the full Limits matrix.
     Mcp(McpCommand),
 }
 
+/// Clap-friendly mirror of `secretenv_mcp::AllowMutations`. Kept here
+/// rather than `clap::ValueEnum`-deriving the upstream enum so that
+/// the MCP crate's public surface doesn't gain a clap dependency.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum AllowMutationsCli {
+    Never,
+    Confirm,
+    Always,
+}
+
+impl AllowMutationsCli {
+    const fn to_mcp(self) -> secretenv_mcp::AllowMutations {
+        match self {
+            Self::Never => secretenv_mcp::AllowMutations::Never,
+            Self::Confirm => secretenv_mcp::AllowMutations::Confirm,
+            Self::Always => secretenv_mcp::AllowMutations::Always,
+        }
+    }
+}
+
+/// Clap-friendly mirror of `secretenv_mcp::ConfirmVia`.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum ConfirmViaCli {
+    Auto,
+    Elicitation,
+    Tty,
+    Notification,
+    None,
+}
+
+impl ConfirmViaCli {
+    const fn to_mcp(self) -> secretenv_mcp::ConfirmVia {
+        match self {
+            Self::Auto => secretenv_mcp::ConfirmVia::Auto,
+            Self::Elicitation => secretenv_mcp::ConfirmVia::Elicitation,
+            Self::Tty => secretenv_mcp::ConfirmVia::Tty,
+            Self::Notification => secretenv_mcp::ConfirmVia::Notification,
+            Self::None => secretenv_mcp::ConfirmVia::None,
+        }
+    }
+}
+
 /// `secretenv mcp <subcommand>` — `MCP` server operations.
 ///
 /// The disable sentinel lives at `$XDG_CONFIG_HOME/secretenv/mcp-disabled`
@@ -114,7 +158,22 @@ pub enum McpCommand {
     /// Run the `MCP` server over stdio until the transport closes.
     /// Honors the disable sentinel — if present and unexpired, exits
     /// with a clear stderr message before binding.
-    Serve,
+    Serve {
+        /// Per-launch override for `[mcp].allow_mutations`. Takes
+        /// precedence over the value in `config.toml`. v0.16 Phase 7f
+        /// addition for per-IDE config scoping: IDEs that don't
+        /// advertise MCP elicitation (e.g. Gemini CLI 0.43.0) can
+        /// register secretenv with `args: ["mcp", "serve",
+        /// "--allow-mutations", "always"]` to bypass the gate
+        /// (mutations still audit-logged) without globally weakening
+        /// `[mcp].allow_mutations` in the user's config.
+        #[arg(long, value_name = "MODE")]
+        allow_mutations: Option<AllowMutationsCli>,
+        /// Per-launch override for `[mcp].confirm_via`. Same precedence
+        /// + scoping rationale as `--allow-mutations`.
+        #[arg(long, value_name = "SURFACE")]
+        confirm_via: Option<ConfirmViaCli>,
+    },
     /// Disable the `MCP` server by writing the sentinel file.
     /// Subsequent `mcp serve` invocations exit immediately until
     /// either the sentinel is removed (`mcp enable`) or, when
@@ -619,7 +678,13 @@ fn parse_duration(s: &str) -> Result<std::time::Duration> {
 /// sentinel-file operations and ignore `config_path`.
 async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
     match mc {
-        McpCommand::Serve => secretenv_mcp::serve(config_path).await,
+        McpCommand::Serve { allow_mutations, confirm_via } => {
+            let overrides = secretenv_mcp::PolicyOverrides {
+                allow_mutations: allow_mutations.map(AllowMutationsCli::to_mcp),
+                confirm_via: confirm_via.map(ConfirmViaCli::to_mcp),
+            };
+            secretenv_mcp::serve_with_overrides(config_path, overrides).await
+        }
         McpCommand::Disable { duration } => {
             let d = duration.as_deref().map(parse_duration).transpose()?;
             let path = secretenv_mcp::disable(d)?;

@@ -44,10 +44,10 @@ use serde::{Deserialize, Serialize};
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
     AuthStatus, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
-    DoctorResponse, GettingStartedResponse, InitProjectResponse, ListAliasesResponse,
-    ListBackendsResponse, MutationOutcome, OperatorDecisionEcho, RedactFileResponse,
-    RedactStatusResponse, ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse,
-    ToolListing, VersionInfoResponse,
+    DoctorResponse, GenPasswordResponse, GettingStartedResponse, InitProjectResponse,
+    ListAliasesResponse, ListBackendsResponse, MutationOutcome, OperatorDecisionEcho,
+    RedactFileResponse, RedactStatusResponse, ResolveStatusRegistryProbe, ResolveStatusResponse,
+    SetAliasResponse, ToolListing, VersionInfoResponse,
 };
 use crate::config::McpConfig;
 use crate::policy::{enforce_mutation_policy, MutationRequest};
@@ -162,6 +162,47 @@ pub struct RedactFileArgs {
     pub allow_foreign_owner: bool,
     /// The agent's stated reason. Audit-log only; never echoed.
     pub reason: String,
+}
+
+/// Argument record for `gen_password`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GenPasswordArgs {
+    /// Alias name to register for the generated value.
+    pub alias: String,
+    /// Backend URI where the value will be written (e.g.
+    /// `"vault-prod:///secret/stripe/api-key"`). Must be a direct
+    /// backend URI; `secretenv://` chains are rejected.
+    pub target_uri: String,
+    /// Charset for the generated value. One of: `"alphanumeric"`,
+    /// `"alphanumeric_symbols"`, `"hex"`, `"base64_url_safe"`.
+    /// Defaults to `"alphanumeric_symbols"`.
+    #[serde(default = "default_charset")]
+    pub charset: String,
+    /// Number of characters / bytes in the generated value. Must be
+    /// between 16 and 1024 (the engine's `MIN_PASSWORD_LEN` and
+    /// `MAX_PASSWORD_LEN`). Defaults to 32.
+    #[serde(default = "default_length")]
+    pub length: usize,
+    /// Optional registry name to register the alias under. Defaults
+    /// to `"default"`.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// Force the universal fallback even if the backend supports
+    /// native generation (Phase 5b). Phase 5a always uses the
+    /// fallback regardless of this flag.
+    #[serde(default)]
+    pub use_native_generator: Option<bool>,
+    /// The agent's stated reason. Audit-log only; never echoed.
+    pub reason: String,
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn default_charset() -> String {
+    "alphanumeric_symbols".to_owned()
+}
+
+const fn default_length() -> usize {
+    32
 }
 
 /// Argument record for `init_project`.
@@ -1146,10 +1187,225 @@ impl Server {
     /// Generate secret, store in backend, register alias. Value NEVER returned.
     #[tool(
         name = "gen_password",
-        description = "Generate secret, store in backend, register alias. Value NEVER returned. Wrapper-first (native gen preferred). CONFIRM backend + path + length before calling."
+        description = "Generate a high-entropy value via the OS CSPRNG, write it to a backend \
+                       URI, and register an alias for it. The generated value NEVER crosses \
+                       the MCP boundary. Phase 5a uses the universal fallback for all backends; \
+                       Phase 5b will dispatch to backend-native generators when available. \
+                       CONFIRM backend + path + length before calling. Subject to \
+                       [mcp].allow_mutations + audit-logged."
     )]
-    pub async fn gen_password(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("gen_password", 5)
+    pub async fn gen_password(
+        &self,
+        args: Parameters<GenPasswordArgs>,
+    ) -> Json<GenPasswordResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.gen_password");
+        let args = args.0;
+        let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
+        let backend_instance = secretenv_core::BackendUri::parse(&args.target_uri)
+            .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme);
+
+        let mut response = GenPasswordResponse {
+            alias_name: args.alias.clone(),
+            backend_instance: backend_instance.clone(),
+            registry_name: registry_name.clone(),
+            charset: args.charset.clone(),
+            requested_length: args.length,
+            used_native_generator: false,
+            resolves: false,
+            outcome: MutationOutcome::Refused,
+            decision: OperatorDecisionEcho::AutoApproved,
+            error_message: None,
+        };
+
+        let policy_request = MutationRequest {
+            tool_name: "gen_password",
+            action_summary: &format!(
+                "generate {}-char `{}` value, write to `{}`, register alias `{}` in registry `{}`",
+                args.length, args.charset, args.target_uri, args.alias, registry_name
+            ),
+            agent_reason: &args.reason,
+        };
+
+        let decision = match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+            Err(e) => {
+                let entry = MutationLogEntry {
+                    ts_unix_secs: now_secs(),
+                    tool_name: "gen_password".to_owned(),
+                    alias_name: Some(args.alias.clone()),
+                    backend_instance: Some(backend_instance.clone()),
+                    agent_reason: args.reason.clone(),
+                    operator_decision: OperatorDecision::Denied,
+                    mcp_client_id: "unknown".to_owned(),
+                };
+                let _ = self.mutation_log.append(&entry);
+                response.outcome = MutationOutcome::Refused;
+                response.decision = OperatorDecisionEcho::PolicyRefusal;
+                response.error_message = Some(format!("{e:#}"));
+                return Json(response);
+            }
+            Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                let entry = MutationLogEntry {
+                    ts_unix_secs: now_secs(),
+                    tool_name: "gen_password".to_owned(),
+                    alias_name: Some(args.alias.clone()),
+                    backend_instance: Some(backend_instance.clone()),
+                    agent_reason: args.reason.clone(),
+                    operator_decision: d,
+                    mcp_client_id: "unknown".to_owned(),
+                };
+                let _ = self.mutation_log.append(&entry);
+                response.outcome = if d == OperatorDecision::Timeout {
+                    MutationOutcome::Timeout
+                } else {
+                    MutationOutcome::Refused
+                };
+                response.decision = echo_decision(d);
+                return Json(response);
+            }
+            Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+        };
+
+        // Approved — build registry + parse target URI + generate + set + register alias.
+        let backends = match secretenv_backends_init::build_registry(&self.config) {
+            Ok(r) => r,
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(decision);
+                response.error_message = Some(format!("building backend registry: {e:#}"));
+                let entry = MutationLogEntry {
+                    ts_unix_secs: now_secs(),
+                    tool_name: "gen_password".to_owned(),
+                    alias_name: Some(args.alias.clone()),
+                    backend_instance: Some(backend_instance.clone()),
+                    agent_reason: args.reason.clone(),
+                    operator_decision: decision,
+                    mcp_client_id: "unknown".to_owned(),
+                };
+                let _ = self.mutation_log.append(&entry);
+                return Json(response);
+            }
+        };
+
+        let target = match secretenv_core::BackendUri::parse(&args.target_uri) {
+            Ok(u) => u,
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(decision);
+                response.error_message = Some(format!("parsing target_uri: {e:#}"));
+                let entry = MutationLogEntry {
+                    ts_unix_secs: now_secs(),
+                    tool_name: "gen_password".to_owned(),
+                    alias_name: Some(args.alias.clone()),
+                    backend_instance: Some(backend_instance.clone()),
+                    agent_reason: args.reason.clone(),
+                    operator_decision: decision,
+                    mcp_client_id: "unknown".to_owned(),
+                };
+                let _ = self.mutation_log.append(&entry);
+                return Json(response);
+            }
+        };
+
+        let charset = match crate::internal::gen_engine::Charset::parse(&args.charset) {
+            Ok(c) => c,
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(decision);
+                response.error_message = Some(format!("{e:#}"));
+                let entry = MutationLogEntry {
+                    ts_unix_secs: now_secs(),
+                    tool_name: "gen_password".to_owned(),
+                    alias_name: Some(args.alias.clone()),
+                    backend_instance: Some(backend_instance.clone()),
+                    agent_reason: args.reason.clone(),
+                    operator_decision: decision,
+                    mcp_client_id: "unknown".to_owned(),
+                };
+                let _ = self.mutation_log.append(&entry);
+                return Json(response);
+            }
+        };
+
+        let Some(backend) = backends.get(&target.scheme) else {
+            response.outcome = MutationOutcome::WriteFailed;
+            response.decision = echo_decision(decision);
+            response.error_message = Some(format!(
+                "target_uri references backend instance `{}` which is not configured",
+                target.scheme
+            ));
+            let entry = MutationLogEntry {
+                ts_unix_secs: now_secs(),
+                tool_name: "gen_password".to_owned(),
+                alias_name: Some(args.alias.clone()),
+                backend_instance: Some(backend_instance.clone()),
+                agent_reason: args.reason.clone(),
+                operator_decision: decision,
+                mcp_client_id: "unknown".to_owned(),
+            };
+            let _ = self.mutation_log.append(&entry);
+            return Json(response);
+        };
+
+        // Generate + set. Value is born + dropped inside gen_engine.
+        let gen_result =
+            crate::internal::gen_engine::generate_and_set(backend, &target, charset, args.length)
+                .await;
+        if let Err(e) = gen_result {
+            response.outcome = MutationOutcome::WriteFailed;
+            response.decision = echo_decision(decision);
+            response.error_message = Some(format!("{e:#}"));
+            let entry = MutationLogEntry {
+                ts_unix_secs: now_secs(),
+                tool_name: "gen_password".to_owned(),
+                alias_name: Some(args.alias.clone()),
+                backend_instance: Some(backend_instance.clone()),
+                agent_reason: args.reason.clone(),
+                operator_decision: decision,
+                mcp_client_id: "unknown".to_owned(),
+            };
+            let _ = self.mutation_log.append(&entry);
+            return Json(response);
+        }
+
+        // Generation succeeded. Register the alias in the registry
+        // doc (mirrors set_alias's logic, reused).
+        let reg_result = registry_writer::set_alias_in_registry(
+            &args.alias,
+            &args.target_uri,
+            args.registry.as_deref(),
+            &self.config,
+            &backends,
+        )
+        .await;
+
+        let (outcome, err, resolves) = match reg_result {
+            Ok(()) => (MutationOutcome::Applied, None, true),
+            Err(e) => (
+                MutationOutcome::WriteFailed,
+                Some(format!(
+                    "value written to backend but registry-alias registration failed: {e:#}"
+                )),
+                false,
+            ),
+        };
+
+        response.outcome = outcome;
+        response.decision = echo_decision(decision);
+        response.error_message = err;
+        response.resolves = resolves;
+
+        let entry = MutationLogEntry {
+            ts_unix_secs: now_secs(),
+            tool_name: "gen_password".to_owned(),
+            alias_name: Some(args.alias.clone()),
+            backend_instance: Some(backend_instance.clone()),
+            agent_reason: args.reason.clone(),
+            operator_decision: decision,
+            mcp_client_id: "unknown".to_owned(),
+        };
+        let _ = self.mutation_log.append(&entry);
+
+        Json(response)
     }
 
     // ----- Phase 6: migrate (1) ------------------------------------

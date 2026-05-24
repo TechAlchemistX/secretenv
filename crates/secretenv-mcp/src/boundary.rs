@@ -281,6 +281,49 @@ pub struct RedactFileResponse {
     pub error_message: Option<String>,
 }
 
+/// Response payload for the `gen_password` tool.
+///
+/// **NEVER carries the generated value.** Reports only metadata
+/// about the generation: the alias name, the backing backend, the
+/// charset + length the operator requested, whether the native CLI
+/// generator was used, and the outcome bucket. The structural rule
+/// is enforced by [SEC-INV-02]: no `value` / `secret` / `password`
+/// / `token` / `raw` field appears here.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenPasswordResponse {
+    /// Alias name that was registered for the generated value (or
+    /// would have been, on a `Refused` outcome).
+    pub alias_name: String,
+    /// Backend instance the value was written to (or would have
+    /// been).
+    pub backend_instance: String,
+    /// Registry name the alias was registered under.
+    pub registry_name: String,
+    /// Charset the value was generated from (or would have been).
+    /// Echoed back unchanged from the request — surfacing it is
+    /// metadata, not the value.
+    pub charset: String,
+    /// Length parameter requested. NOT a length of the actual
+    /// generated value (which is identical, so the echo is fine).
+    pub requested_length: usize,
+    /// Whether the backend's native generator was used. v0.16
+    /// Phase 5a always reports `false` (universal fallback only);
+    /// Phase 5b adds `true` for backends that override
+    /// `Backend::supports_native_gen`.
+    pub used_native_generator: bool,
+    /// Whether `resolve_status` would succeed for `alias_name`
+    /// post-generation. `true` after `Applied` outcome; `false` on
+    /// `Refused` / `WriteFailed` (no alias was registered).
+    pub resolves: bool,
+    /// Outcome bucket.
+    pub outcome: MutationOutcome,
+    /// Decision recorded in the audit log.
+    pub decision: OperatorDecisionEcho,
+    /// Error message when `outcome = WriteFailed` / `Refused`.
+    pub error_message: Option<String>,
+}
+
 /// One entry in [`DoctorResponse::backends`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

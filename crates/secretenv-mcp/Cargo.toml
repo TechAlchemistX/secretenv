@@ -39,6 +39,14 @@ anyhow.workspace              = true
 directories.workspace         = true
 tokio.workspace               = true
 futures.workspace             = true
+# `getrandom` is the entropy source for the `gen_password` fallback
+# path in `src/internal/gen_engine.rs` (Phase 5a). Native-gen
+# overrides (Phase 5b) shell out to the backend's CLI and never
+# enter this module's getrandom path.
+getrandom.workspace           = true
+# `zeroize` for `Zeroizing<Vec<u8>>` wrapping the raw entropy bytes
+# before they're encoded into the value `Secret<String>`.
+zeroize.workspace             = true
 tracing.workspace             = true
 serde.workspace               = true
 serde_json.workspace          = true

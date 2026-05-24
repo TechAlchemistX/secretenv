@@ -34,6 +34,13 @@ secretenv-core      = { path = "../secretenv-core", version = "0.15.0", default-
 # would still need to land in `src/internal/` per the documented
 # escape-hatch rule in `clippy.toml`.
 secretenv-backends-init.workspace = true
+# `secretenv-migrate` is the Phase 1a-extracted library that
+# `migrate_alias` (Phase 6) wraps. Calling `build_migration_plan` +
+# `migrate_with_plan` from the mcp handler is the value-free path:
+# the migrate engine handles value handoff between backends entirely
+# server-side via its own `Secret`-naming, never surfacing the
+# bytes to the caller.
+secretenv-migrate.workspace = true
 secretenv-telemetry.workspace = true
 anyhow.workspace              = true
 directories.workspace         = true

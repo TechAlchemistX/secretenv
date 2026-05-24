@@ -1195,6 +1195,7 @@ dependencies = [
  "schemars",
  "secretenv-backends-init",
  "secretenv-core",
+ "secretenv-migrate",
  "secretenv-telemetry",
  "serde",
  "serde_json",

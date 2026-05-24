@@ -324,6 +324,69 @@ pub struct GenPasswordResponse {
     pub error_message: Option<String>,
 }
 
+/// Echoed sub-outcome from the migrate engine.
+///
+/// Maps 1:1 to `secretenv_migrate::MigrateReportOutcome` but lives
+/// here so the MCP boundary type doesn't transitively depend on the
+/// migrate crate from a non-feature-gated path.
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrateOutcomeEcho {
+    /// Migration committed: value written to destination AND
+    /// registry pointer flipped.
+    Success,
+    /// `dry_run = true` was requested — probe phase ran, no
+    /// read/write/commit attempted.
+    DryRun,
+    /// Destination write succeeded but the registry pointer flip
+    /// failed. Value exists in BOTH backends — operator action
+    /// required (see `error_message` for the recovery path).
+    /// SEC-INV-09 + SEC-INV-20.
+    PartialFailurePointerFlip,
+    /// Migration succeeded but the opt-in source-delete leg
+    /// failed. Migration is complete; cleanup is the operator's
+    /// call.
+    SourceDeleteFailedPostCommit,
+}
+
+/// Response payload for the `migrate_alias` tool.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MigrateAliasResponse {
+    /// Alias being migrated.
+    pub alias_name: String,
+    /// Source backend instance (extracted from the resolved source
+    /// URI's scheme). `None` when the migration couldn't even build
+    /// a plan (alias not found, invalid URI, etc.).
+    pub source_backend_instance: Option<String>,
+    /// Destination backend instance (extracted from `dest_uri`).
+    pub dest_backend_instance: String,
+    /// Registry name the alias's pointer lives under.
+    pub registry_name: String,
+    /// Per-invocation `transaction_id` from the migrate engine.
+    /// `Some` on Applied / partial-failure / dry-run; `None` on
+    /// early-fail (plan couldn't be built).
+    pub transaction_id: Option<String>,
+    /// Whether the source-delete leg was requested. Echoed back so
+    /// the operator can verify the call matched their intent.
+    pub delete_source: bool,
+    /// Whether the request was dry-run. Dry-run skips the policy
+    /// gate + audit log (matches `init_project` / `redact_file`'s
+    /// dry-run shape).
+    pub dry_run: bool,
+    /// Standard mutation outcome bucket.
+    pub outcome: MutationOutcome,
+    /// Decision recorded in the audit log.
+    pub decision: OperatorDecisionEcho,
+    /// Migrate-engine-specific sub-outcome. `None` when the
+    /// migration couldn't reach the engine (early-fail or refusal).
+    pub migrate_outcome: Option<MigrateOutcomeEcho>,
+    /// Error message when `outcome = WriteFailed` / `Refused`, or
+    /// the recovery context block when `migrate_outcome =
+    /// PartialFailurePointerFlip`.
+    pub error_message: Option<String>,
+}
+
 /// One entry in [`DoctorResponse::backends`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

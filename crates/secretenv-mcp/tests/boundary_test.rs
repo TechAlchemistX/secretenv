@@ -25,9 +25,10 @@ use schemars::schema_for;
 use secretenv_mcp::boundary::{
     AliasListing, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
     DoctorBackendStatus, DoctorResponse, GenPasswordResponse, GettingStartedResponse,
-    InitProjectResponse, ListAliasesResponse, ListBackendsResponse, PasswordManagerDetection,
-    RedactFileResponse, RedactStatusResponse, RegistryAliasesProbe, ResolveStatusRegistryProbe,
-    ResolveStatusResponse, SetAliasResponse, ToolListing, VersionInfoResponse,
+    InitProjectResponse, ListAliasesResponse, ListBackendsResponse, MigrateAliasResponse,
+    PasswordManagerDetection, RedactFileResponse, RedactStatusResponse, RegistryAliasesProbe,
+    ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse, ToolListing,
+    VersionInfoResponse,
 };
 
 /// Field identifiers that may not appear in any response struct
@@ -145,6 +146,11 @@ fn redact_file_response_has_no_banned_fields() {
 #[test]
 fn gen_password_response_has_no_banned_fields() {
     assert_no_banned_field_names::<GenPasswordResponse>("GenPasswordResponse");
+}
+
+#[test]
+fn migrate_alias_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<MigrateAliasResponse>("MigrateAliasResponse");
 }
 
 // Per-tool registration block — extend as Phase 3-6 handlers land.

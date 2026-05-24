@@ -45,9 +45,10 @@ use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
     AuthStatus, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
     DoctorResponse, GenPasswordResponse, GettingStartedResponse, InitProjectResponse,
-    ListAliasesResponse, ListBackendsResponse, MutationOutcome, OperatorDecisionEcho,
-    RedactFileResponse, RedactStatusResponse, ResolveStatusRegistryProbe, ResolveStatusResponse,
-    SetAliasResponse, ToolListing, VersionInfoResponse,
+    ListAliasesResponse, ListBackendsResponse, MigrateAliasResponse, MigrateOutcomeEcho,
+    MutationOutcome, OperatorDecisionEcho, RedactFileResponse, RedactStatusResponse,
+    ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse, ToolListing,
+    VersionInfoResponse,
 };
 use crate::config::McpConfig;
 use crate::policy::{enforce_mutation_policy, MutationRequest};
@@ -160,6 +161,39 @@ pub struct RedactFileArgs {
     /// file the operator does not own.
     #[serde(default)]
     pub allow_foreign_owner: bool,
+    /// The agent's stated reason. Audit-log only; never echoed.
+    pub reason: String,
+}
+
+/// Argument record for `migrate_alias`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MigrateAliasArgs {
+    /// Alias to migrate.
+    pub alias: String,
+    /// Destination backend URI (e.g.
+    /// `"vault-prod:///secret/stripe/api-key"`). Must be a direct
+    /// backend URI; `secretenv://` chains are rejected.
+    pub dest_uri: String,
+    /// Override the resolved source URI. When `None` (default), the
+    /// source is the alias's current registry pointer. Used by
+    /// recovery flows where the registry already points at the
+    /// destination but the value is still in the old backend.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Optional registry name; defaults to `"default"` when omitted.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// When `true`, probe destination + source liveness, render the
+    /// plan, exit without mutation. Skips policy gate + audit log
+    /// (read-only behavior).
+    #[serde(default)]
+    pub dry_run: bool,
+    /// When `true`, delete the source value after a successful
+    /// migration commit. Default `false` (Phase 4 mutation
+    /// philosophy: dual-control destructive ops). Per build-plan
+    /// §1: "Source NOT deleted by default."
+    #[serde(default)]
+    pub delete_source: bool,
     /// The agent's stated reason. Audit-log only; never echoed.
     pub reason: String,
 }
@@ -306,6 +340,25 @@ impl Server {
     }
 }
 
+/// Emit a `migrate_alias` audit-log entry. Pulled out into a helper
+/// because the handler has 6 return paths that each need to log on
+/// non-dry-run.
+fn audit_migrate(server: &Server, args: &MigrateAliasArgs, decision: OperatorDecision) {
+    let entry = MutationLogEntry {
+        ts_unix_secs: now_secs(),
+        tool_name: "migrate_alias".to_owned(),
+        alias_name: Some(args.alias.clone()),
+        backend_instance: Some(
+            secretenv_core::BackendUri::parse(&args.dest_uri)
+                .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme),
+        ),
+        agent_reason: args.reason.clone(),
+        operator_decision: decision,
+        mcp_client_id: "unknown".to_owned(),
+    };
+    let _ = server.mutation_log.append(&entry);
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -332,13 +385,9 @@ const fn should_audit(_outcome: MutationOutcome) -> bool {
     true
 }
 
-fn not_yet_implemented(tool: &str, phase: u8) -> String {
-    // Phase 2a stubs return a string marker rather than a typed
-    // `McpError::internal_error` so the `#[tool_router]` macro
-    // accepts the signature without per-stub `Result` wiring. Real
-    // handlers (Phases 3-6) replace these with typed responses.
-    format!("tool `{tool}` not yet implemented (lands in Phase {phase})")
-}
+// `not_yet_implemented` helper retired in Phase 6 — every tool now
+// has a real handler. The Phase 2a-shape stubs that returned
+// "tool ... not yet implemented (lands in Phase N)" are all gone.
 
 #[tool_router(router = tool_router)]
 impl Server {
@@ -1413,10 +1462,170 @@ impl Server {
     /// Move secret to new backend; atomically repoint alias.
     #[tool(
         name = "migrate_alias",
-        description = "Move secret to new backend; atomically repoint alias. Value transits server-side only. Source NOT deleted by default. CONFIRM before calling."
+        description = "Migrate an alias's value to a new backend URI and atomically repoint \
+                       the registry. The value transits server-side only — bytes never cross \
+                       the MCP boundary. Source NOT deleted by default (separate `delete_source` \
+                       flag). CONFIRM before calling. Subject to [mcp].allow_mutations + \
+                       audit-logged. `dry_run = true` skips the policy gate + audit (probe only)."
     )]
-    pub async fn migrate_alias(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("migrate_alias", 6)
+    pub async fn migrate_alias(
+        &self,
+        args: Parameters<MigrateAliasArgs>,
+    ) -> Json<MigrateAliasResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.migrate_alias");
+        let args = args.0;
+        let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
+        let dest_backend_instance = secretenv_core::BackendUri::parse(&args.dest_uri)
+            .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme);
+
+        let mut response = MigrateAliasResponse {
+            alias_name: args.alias.clone(),
+            source_backend_instance: None,
+            dest_backend_instance: dest_backend_instance.clone(),
+            registry_name: registry_name.clone(),
+            transaction_id: None,
+            delete_source: args.delete_source,
+            dry_run: args.dry_run,
+            outcome: MutationOutcome::Refused,
+            decision: OperatorDecisionEcho::AutoApproved,
+            migrate_outcome: None,
+            error_message: None,
+        };
+
+        // Build the registry once — the plan + the migration both
+        // need it. An early failure here short-circuits everything.
+        let backends = match secretenv_backends_init::build_registry(&self.config) {
+            Ok(r) => r,
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.error_message = Some(format!("building backend registry: {e:#}"));
+                if !args.dry_run {
+                    audit_migrate(self, &args, OperatorDecision::AutoApproved);
+                }
+                return Json(response);
+            }
+        };
+
+        // Build the migration plan. This is the value-free probe;
+        // failures here include "alias not found", "dest unreachable",
+        // "URI parse error" — none involve reading any secret value.
+        let migrate_args = secretenv_migrate::MigrateArgs {
+            alias: args.alias.clone(),
+            dest_uri: args.dest_uri.clone(),
+            source_uri: args.from.clone(),
+            registry: args.registry.clone(),
+            dry_run: args.dry_run,
+            delete_source: args.delete_source,
+        };
+        let plan =
+            match secretenv_migrate::build_migration_plan(&migrate_args, &self.config, &backends)
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    response.outcome = MutationOutcome::WriteFailed;
+                    response.error_message = Some(format!("building migration plan: {e:#}"));
+                    if !args.dry_run {
+                        audit_migrate(self, &args, OperatorDecision::AutoApproved);
+                    }
+                    return Json(response);
+                }
+            };
+        response.source_backend_instance = Some(plan.source_uri.scheme.clone());
+        response.transaction_id = Some(plan.transaction_id.clone());
+
+        // Policy gate (skipped for dry-run; dry-run is read-only).
+        let decision = if args.dry_run {
+            OperatorDecision::AutoApproved
+        } else {
+            let policy_request = MutationRequest {
+                tool_name: "migrate_alias",
+                action_summary: &format!(
+                    "migrate alias `{}` from `{}` → `{}` in registry `{}`{}",
+                    plan.alias,
+                    plan.source_uri.raw,
+                    plan.dest_uri.raw,
+                    registry_name,
+                    if args.delete_source { " (source WILL be deleted post-commit)" } else { "" }
+                ),
+                agent_reason: &args.reason,
+            };
+            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+                Err(e) => {
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(format!("{e:#}"));
+                    audit_migrate(self, &args, OperatorDecision::Denied);
+                    return Json(response);
+                }
+                Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                    response.outcome = if d == OperatorDecision::Timeout {
+                        MutationOutcome::Timeout
+                    } else {
+                        MutationOutcome::Refused
+                    };
+                    response.decision = echo_decision(d);
+                    audit_migrate(self, &args, d);
+                    return Json(response);
+                }
+                Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+            }
+        };
+
+        // Run the migration. The closure for post-commit
+        // source-delete consent fires only when delete_source = true
+        // AND the read/write/commit phases all succeeded; the
+        // operator already approved that flag in the top-level
+        // confirmation summary above (or this is dry-run, in which
+        // case the closure never fires).
+        let consent = |_plan: &secretenv_migrate::MigrationPlan| args.delete_source;
+        let migrate_result =
+            secretenv_migrate::migrate_with_plan(plan, &migrate_args, &backends, consent).await;
+
+        match migrate_result {
+            Ok(report) => {
+                let migrate_echo = match report.outcome {
+                    secretenv_migrate::MigrateReportOutcome::Success => MigrateOutcomeEcho::Success,
+                    secretenv_migrate::MigrateReportOutcome::DryRun => MigrateOutcomeEcho::DryRun,
+                    secretenv_migrate::MigrateReportOutcome::PartialFailurePointerFlip => {
+                        MigrateOutcomeEcho::PartialFailurePointerFlip
+                    }
+                    secretenv_migrate::MigrateReportOutcome::SourceDeleteFailedPostCommit => {
+                        MigrateOutcomeEcho::SourceDeleteFailedPostCommit
+                    }
+                };
+                response.outcome = MutationOutcome::Applied;
+                response.decision = echo_decision(decision);
+                response.migrate_outcome = Some(migrate_echo);
+                response.transaction_id = Some(report.transaction_id);
+            }
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(decision);
+                // The migrate engine bubbles `PointerFlipFailed` via
+                // `Err` to keep URI bodies out of `Display` (SEC-INV-20).
+                // We re-classify here and surface the URI bodies in the
+                // STRUCTURED response — the agent already has both URIs
+                // (they came from `args.dest_uri` + the resolved plan),
+                // so echoing them in `error_message` is not a leak.
+                if let Some(ptr) = e.downcast_ref::<secretenv_migrate::PointerFlipFailed>() {
+                    response.migrate_outcome = Some(MigrateOutcomeEcho::PartialFailurePointerFlip);
+                    response.error_message = Some(format!(
+                        "pointer flip failed for alias `{}` after destination write succeeded. \
+                         Value exists in BOTH backends — operator action required: delete the \
+                         destination value via `{}` (URI: `{}`).",
+                        ptr.alias, ptr.dest_delete_hint, ptr.dest_uri_raw
+                    ));
+                } else {
+                    response.error_message = Some(format!("{e:#}"));
+                }
+            }
+        }
+
+        if !args.dry_run {
+            audit_migrate(self, &args, decision);
+        }
+        Json(response)
     }
 }
 

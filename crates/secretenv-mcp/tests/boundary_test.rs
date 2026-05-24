@@ -23,8 +23,9 @@
 
 use schemars::schema_for;
 use secretenv_mcp::boundary::{
-    BackendListing, DetectPasswordManagersResponse, DoctorBackendStatus, DoctorResponse,
-    GettingStartedResponse, ListBackendsResponse, PasswordManagerDetection, RedactStatusResponse,
+    AliasListing, BackendListing, DetectPasswordManagersResponse, DoctorBackendStatus,
+    DoctorResponse, GettingStartedResponse, ListAliasesResponse, ListBackendsResponse,
+    PasswordManagerDetection, RedactStatusResponse, RegistryAliasesProbe,
     ResolveStatusRegistryProbe, ResolveStatusResponse, ToolListing, VersionInfoResponse,
 };
 
@@ -111,6 +112,13 @@ fn doctor_response_has_no_banned_fields() {
 fn resolve_status_response_has_no_banned_fields() {
     assert_no_banned_field_names::<ResolveStatusResponse>("ResolveStatusResponse");
     assert_no_banned_field_names::<ResolveStatusRegistryProbe>("ResolveStatusRegistryProbe");
+}
+
+#[test]
+fn list_aliases_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<ListAliasesResponse>("ListAliasesResponse");
+    assert_no_banned_field_names::<AliasListing>("AliasListing");
+    assert_no_banned_field_names::<RegistryAliasesProbe>("RegistryAliasesProbe");
 }
 
 // Per-tool registration block — extend as Phase 3-6 handlers land.

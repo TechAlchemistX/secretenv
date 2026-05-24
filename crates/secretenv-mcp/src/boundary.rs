@@ -69,6 +69,63 @@ pub struct ListBackendsResponse {
     pub total: usize,
 }
 
+/// One alias listing in [`ListAliasesResponse::aliases`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AliasListing {
+    /// Operator-chosen alias name (e.g. `STRIPE_API_KEY`).
+    pub alias_name: String,
+    /// `[backends.<name>]` instance name the alias resolves through.
+    pub backend_instance: String,
+    /// `type = "..."` field on that backend block (e.g.
+    /// `"1password"`, `"vault"`). Convenient so the agent does not
+    /// have to cross-reference `list_backends` to know how the alias
+    /// is stored.
+    pub backend_type: String,
+    /// Name of the `[registries.<name>]` block this alias was found
+    /// under. With cascade, the alias may also appear in lower-priority
+    /// layers; this field reports the *winning* layer.
+    pub registry_name: String,
+}
+
+/// One per-registry result block in [`ListAliasesResponse::registries`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryAliasesProbe {
+    /// `[registries.<name>]` registry name.
+    pub registry_name: String,
+    /// How many aliases were enumerated from this registry (after
+    /// cascade merge if multiple sources).
+    pub alias_count: usize,
+    /// Error message if alias enumeration failed for this registry
+    /// (typically because the backing backend was unreachable or
+    /// unauthenticated — see `doctor` for context).
+    pub error: Option<String>,
+}
+
+/// Response payload for the `list_aliases` tool.
+///
+/// Enumerates alias *names* and their backing backend instance from
+/// every `[registries.*]` block. The path portion of each alias's
+/// target URI is intentionally OMITTED — surfacing it would reveal
+/// secret naming conventions (e.g.
+/// `Production/Stripe/api-key`). Per build-plan §1: "Never URIs,
+/// never values."
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListAliasesResponse {
+    /// All aliases across all registries, sorted by alias name then
+    /// registry name (so deterministic ordering even with cascade
+    /// overrides).
+    pub aliases: Vec<AliasListing>,
+    /// Per-registry summary (counts + any enumeration error). Useful
+    /// for an agent that needs to know which registry contributed
+    /// which alias subset, or which registry failed to enumerate.
+    pub registries: Vec<RegistryAliasesProbe>,
+    /// `aliases.len()`.
+    pub total_aliases: usize,
+}
+
 /// One entry in [`DoctorResponse::backends`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

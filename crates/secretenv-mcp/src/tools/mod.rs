@@ -23,6 +23,7 @@
 //! intentionally do NOT yet open spans (no logic to attribute); the
 //! pattern lands in Phase 3 with the first real handler.
 
+pub mod aliases;
 pub mod doctor;
 pub mod password_managers;
 
@@ -39,8 +40,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::boundary::{
     AuthStatus, BackendListing, DetectPasswordManagersResponse, DoctorResponse,
-    GettingStartedResponse, ListBackendsResponse, RedactStatusResponse, ResolveStatusRegistryProbe,
-    ResolveStatusResponse, ToolListing, VersionInfoResponse,
+    GettingStartedResponse, ListAliasesResponse, ListBackendsResponse, RedactStatusResponse,
+    ResolveStatusRegistryProbe, ResolveStatusResponse, ToolListing, VersionInfoResponse,
 };
 
 /// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
@@ -95,6 +96,10 @@ pub struct DoctorArgs {}
 /// Argument record for `resolve_status` — no inputs.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct ResolveStatusArgs {}
+
+/// Argument record for `list_aliases` — no inputs.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct ListAliasesArgs {}
 
 /// Pick a deterministic next-tool suggestion from current config shape.
 /// Pure function — exposed for unit tests.
@@ -231,10 +236,24 @@ impl Server {
     /// All alias names + backend type/instance in the registry. Never URIs, never values.
     #[tool(
         name = "list_aliases",
-        description = "All alias names + backend type/instance in the registry. Never URIs, never values."
+        description = "All alias names + backing backend instance/type for every \
+                       `[registries.*]` block. URI paths and resolved values are NEVER \
+                       returned — only alias names + how to reach them."
     )]
-    pub async fn list_aliases(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("list_aliases", 3)
+    pub async fn list_aliases(
+        &self,
+        _args: Parameters<ListAliasesArgs>,
+    ) -> Json<ListAliasesResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.list_aliases");
+
+        let enumeration = aliases::enumerate_all(&self.config).await;
+        let total_aliases = enumeration.aliases.len();
+
+        Json(ListAliasesResponse {
+            aliases: enumeration.aliases,
+            registries: enumeration.registries,
+            total_aliases,
+        })
     }
 
     /// All configured backend instances. Config-only; auth probing

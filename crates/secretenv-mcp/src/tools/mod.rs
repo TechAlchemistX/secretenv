@@ -1618,7 +1618,8 @@ impl Server {
 
         match migrate_result {
             Ok(report) => {
-                #[allow(clippy::match_same_arms)] // wildcard fallback intentionally mirrors Success-arm shape; see comment on `_` arm
+                // wildcard fallback intentionally mirrors Success-arm shape; see `_` arm comment below
+                #[allow(clippy::match_same_arms)]
                 let migrate_echo = match report.outcome {
                     secretenv_migrate::MigrateReportOutcome::Success => MigrateOutcomeEcho::Success,
                     secretenv_migrate::MigrateReportOutcome::DryRun => MigrateOutcomeEcho::DryRun,

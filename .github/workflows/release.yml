@@ -88,6 +88,24 @@ jobs:
         if: runner.os == 'macOS'
         run: strip -x target/${{ matrix.target }}/release/secretenv || true
 
+      # FINDING-5 (v0.16 Phase 8b + Phase 9 audit): the released
+      # macOS binary needs an ad-hoc signature before being archived,
+      # otherwise the kernel SIGKILLs it on first execute on the
+      # operator's machine (post-`brew install` or post-`cp` from a
+      # release tarball). Without this step every Homebrew + manual
+      # tarball install on macOS would hit a SIGKILL surprise on the
+      # first `secretenv --version` invocation. The ad-hoc signature
+      # is sufficient for Gatekeeper's local-developer policy + does
+      # not require an Apple Developer ID (full notarization is a
+      # post-v0.16 release-engineering upgrade per Phase 9 carry-
+      # forward).
+      - name: Ad-hoc codesign (macOS — FINDING-5)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --remove-signature target/${{ matrix.target }}/release/secretenv 2>/dev/null || true
+          codesign --sign - target/${{ matrix.target }}/release/secretenv
+          codesign --verify --verbose target/${{ matrix.target }}/release/secretenv
+
       - name: Package tarball
         shell: bash
         run: |

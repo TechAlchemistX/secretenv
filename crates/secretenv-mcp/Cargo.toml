@@ -22,7 +22,7 @@ readme.workspace       = true
 # (`disallowed-types`) + `tests/boundary_test.rs`. See SEC-INV-02 +
 # build-plan §5.
 [dependencies]
-secretenv-core      = { path = "../secretenv-core", version = "0.15.0", default-features = false }
+secretenv-core      = { path = "../secretenv-core", version = "0.16.0", default-features = false }
 # `secretenv-backends-init` is the SHARED factory wiring used by both
 # the CLI and the MCP server. Pulled in for `doctor` + `resolve_status`
 # which need a live `BackendRegistry` at call time. Naming

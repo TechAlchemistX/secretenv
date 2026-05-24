@@ -34,7 +34,24 @@ use secretenv_core::Config;
 use secretenv_telemetry::span::SecretEnvSpan;
 use serde::{Deserialize, Serialize};
 
-use crate::boundary::GettingStartedResponse;
+use crate::boundary::{
+    GettingStartedResponse, RedactStatusResponse, ToolListing, VersionInfoResponse,
+};
+
+/// `rmcp` SDK version pinned in this crate's `Cargo.toml`. Surfaced by
+/// `version_info`; kept in sync manually with the `[dependencies]`
+/// `rmcp = { version = "X.Y", ... }` pin (single source of truth is
+/// `Cargo.toml`; no `cargo metadata` call at runtime).
+const RMCP_SDK_VERSION: &str = "1.7";
+
+/// All redaction modes `secretenv run` accepts — kept in sync with
+/// `secretenv_core::runner::RedactMode` (which lives behind the
+/// `value-access` feature so `secretenv-mcp` cannot name the enum
+/// directly per SEC-INV-02). String-list duplication is intentional.
+const AVAILABLE_REDACT_MODES: &[&str] = &["auto", "force_pipe", "force_exec"];
+
+/// Default redaction mode for `secretenv run` since v0.14 Phase 1.
+const DEFAULT_REDACT_MODE: &str = "auto";
 
 /// Empty argument record used by every Phase 2a stub. Real per-tool
 /// argument types land with the tool's Phase-3-6 handler — at which
@@ -47,6 +64,14 @@ pub struct StubArgs {}
 /// generated JSON Schema names a tool-specific input shape.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct GettingStartedArgs {}
+
+/// Argument record for `version_info` — no inputs.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct VersionInfoArgs {}
+
+/// Argument record for `redact_status` — no inputs.
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct RedactStatusArgs {}
 
 /// Pick a deterministic next-tool suggestion from current config shape.
 /// Pure function — exposed for unit tests.
@@ -156,8 +181,28 @@ impl Server {
         name = "version_info",
         description = "SecretEnv version, MCP protocol version, available tools."
     )]
-    pub async fn version_info(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("version_info", 3)
+    pub async fn version_info(
+        &self,
+        _args: Parameters<VersionInfoArgs>,
+    ) -> Json<VersionInfoResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.version_info");
+
+        let tools = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|t| ToolListing {
+                name: t.name.into_owned(),
+                description: t.description.map(std::borrow::Cow::into_owned),
+            })
+            .collect();
+
+        Json(VersionInfoResponse {
+            secretenv_version: env!("CARGO_PKG_VERSION").to_owned(),
+            mcp_protocol_version: rmcp::model::ProtocolVersion::LATEST.as_str().to_owned(),
+            rmcp_sdk_version: RMCP_SDK_VERSION.to_owned(),
+            tools,
+        })
     }
 
     /// All alias names + backend type/instance in the registry. Never URIs, never values.
@@ -210,8 +255,25 @@ impl Server {
         name = "redact_status",
         description = "Whether runtime redaction is active; count of values that would be masked. No alias names, no values."
     )]
-    pub async fn redact_status(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("redact_status", 3)
+    pub async fn redact_status(
+        &self,
+        _args: Parameters<RedactStatusArgs>,
+    ) -> Json<RedactStatusResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_status");
+
+        Json(RedactStatusResponse {
+            default_redact_mode: DEFAULT_REDACT_MODE.to_owned(),
+            available_redact_modes: AVAILABLE_REDACT_MODES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            registries_loaded: self.config.registries.len(),
+            note: "MCP tools structurally never return resolved secret values. Runtime \
+                   redaction is a `secretenv run` child-process concern, reported here so \
+                   an agent can suggest the right `--redact <mode>` flag to an operator \
+                   without invoking the CLI."
+                .to_owned(),
+        })
     }
 
     // ----- Phase 4: mutation (4) -----------------------------------

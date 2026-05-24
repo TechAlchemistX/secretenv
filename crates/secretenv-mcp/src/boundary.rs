@@ -15,6 +15,62 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
+/// One entry in [`VersionInfoResponse::tools`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolListing {
+    /// Tool name as registered with the MCP router.
+    pub name: String,
+    /// Short tool description from the `#[tool(description = "...")]`
+    /// attribute, if present.
+    pub description: Option<String>,
+}
+
+/// Response payload for the `version_info` tool.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VersionInfoResponse {
+    /// `SecretEnv` workspace version (`secretenv-mcp` shares the
+    /// workspace version so this is also the CLI release line).
+    pub secretenv_version: String,
+    /// `MCP` wire protocol version this server advertises.
+    pub mcp_protocol_version: String,
+    /// `rmcp` SDK version powering the transport + handler routing.
+    pub rmcp_sdk_version: String,
+    /// All `MCP` tools registered on this server, in router-iteration
+    /// order. Mirrors `tools/list` but adds nothing the client would
+    /// not already have after the handshake; provided as a convenience
+    /// for agents that did not retain the list.
+    pub tools: Vec<ToolListing>,
+}
+
+/// Response payload for the `redact_status` tool.
+///
+/// Reports configuration, not running-process state — the `MCP` server
+/// itself never has a child process to redact. Runtime redaction lives
+/// in the `secretenv run` pipeline. This tool exists so an agent can
+/// answer "if I ran the CLI now, would values be masked?" without
+/// invoking it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RedactStatusResponse {
+    /// `secretenv run`'s default redaction mode at this build. `"auto"`
+    /// in v0.14+ (Phase 1).
+    pub default_redact_mode: String,
+    /// Every redaction mode `secretenv run` accepts. Useful for an
+    /// agent suggesting a `--redact <mode>` flag to the operator.
+    pub available_redact_modes: Vec<String>,
+    /// Count of `[registries.*]` tables loaded — bounds the number of
+    /// alias sources that could potentially be masked. Exact alias
+    /// count requires `list_aliases` (which is the tool that touches
+    /// registry storage).
+    pub registries_loaded: usize,
+    /// Note clarifying that the `MCP` boundary itself never returns
+    /// values, so the redact concept is a CLI-runtime concern surfaced
+    /// here only for agent convenience.
+    pub note: String,
+}
+
 /// Response payload for the `getting_started` tool.
 ///
 /// Pure-static overview: ships counts (never names, never values) of

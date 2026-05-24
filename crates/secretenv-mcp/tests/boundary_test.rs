@@ -22,7 +22,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use schemars::schema_for;
-use secretenv_mcp::boundary::GettingStartedResponse;
+use secretenv_mcp::boundary::{
+    GettingStartedResponse, RedactStatusResponse, ToolListing, VersionInfoResponse,
+};
 
 /// Field identifiers that may not appear in any response struct
 /// reachable from a tool handler. Mirrors `src/boundary.rs`
@@ -70,6 +72,17 @@ fn assert_no_banned_field_names<T: schemars::JsonSchema>(struct_name: &str) {
 #[test]
 fn getting_started_response_has_no_banned_fields() {
     assert_no_banned_field_names::<GettingStartedResponse>("GettingStartedResponse");
+}
+
+#[test]
+fn version_info_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<VersionInfoResponse>("VersionInfoResponse");
+    assert_no_banned_field_names::<ToolListing>("ToolListing");
+}
+
+#[test]
+fn redact_status_response_has_no_banned_fields() {
+    assert_no_banned_field_names::<RedactStatusResponse>("RedactStatusResponse");
 }
 
 // Per-tool registration block — extend as Phase 3-6 handlers land.

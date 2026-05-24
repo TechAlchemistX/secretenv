@@ -249,6 +249,38 @@ pub struct InitProjectResponse {
     pub error_message: Option<String>,
 }
 
+/// Response payload for the `redact_file` tool.
+///
+/// Reports match COUNTS, never matched bytes — the redacted-portion
+/// content would by definition be secret values. `bytes_replaced` is
+/// the total size of all matches (a count, not the bytes themselves).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RedactFileResponse {
+    /// File path the tool scanned (canonicalized form when possible).
+    pub file_path: String,
+    /// Whether the tool wrote the redacted output back to disk
+    /// (`apply = true` + policy approved) or just counted matches
+    /// (`apply = false`, the default).
+    pub applied: bool,
+    /// Registry name used to source alias values.
+    pub registry_name: String,
+    /// How many aliases were enrolled into the redaction set (one
+    /// per resolvable alias in the registry).
+    pub aliases_loaded: usize,
+    /// Number of distinct match locations found in the file.
+    pub matches_found: u64,
+    /// Total bytes that were (or would be) replaced — sum of all
+    /// match lengths. NEVER the actual matched bytes.
+    pub bytes_replaced: u64,
+    /// Outcome bucket.
+    pub outcome: MutationOutcome,
+    /// Decision recorded in the audit log.
+    pub decision: OperatorDecisionEcho,
+    /// Error message when `outcome = WriteFailed` / `Refused`.
+    pub error_message: Option<String>,
+}
+
 /// One entry in [`DoctorResponse::backends`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

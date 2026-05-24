@@ -45,9 +45,9 @@ use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
     AuthStatus, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
     DoctorResponse, GettingStartedResponse, InitProjectResponse, ListAliasesResponse,
-    ListBackendsResponse, MutationOutcome, OperatorDecisionEcho, RedactStatusResponse,
-    ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse, ToolListing,
-    VersionInfoResponse,
+    ListBackendsResponse, MutationOutcome, OperatorDecisionEcho, RedactFileResponse,
+    RedactStatusResponse, ResolveStatusRegistryProbe, ResolveStatusResponse, SetAliasResponse,
+    ToolListing, VersionInfoResponse,
 };
 use crate::config::McpConfig;
 use crate::policy::{enforce_mutation_policy, MutationRequest};
@@ -135,6 +135,31 @@ pub struct DeleteAliasArgs {
     /// Optional registry name; defaults to `"default"` when omitted.
     #[serde(default)]
     pub registry: Option<String>,
+    /// The agent's stated reason. Audit-log only; never echoed.
+    pub reason: String,
+}
+
+/// Argument record for `redact_file`.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct RedactFileArgs {
+    /// Path of the file to scan + (optionally) rewrite in-place.
+    pub file_path: String,
+    /// Optional registry name; defaults to `"default"` when omitted.
+    /// Every resolvable alias in this registry contributes one
+    /// pattern to the redaction set.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// When `true`, rewrite the file in-place with matches replaced
+    /// by the redaction token. When `false` (default), only count
+    /// matches — the file is not modified. Apply mode is gated by
+    /// `[mcp].allow_mutations`.
+    #[serde(default)]
+    pub apply: bool,
+    /// When `true`, accept files owned by a UID other than the
+    /// caller. Off by default — defense against scrubbing a
+    /// file the operator does not own.
+    #[serde(default)]
+    pub allow_foreign_owner: bool,
     /// The agent's stated reason. Audit-log only; never echoed.
     pub reason: String,
 }
@@ -928,10 +953,192 @@ impl Server {
     /// Scan file for resolvable secret values and redact.
     #[tool(
         name = "redact_file",
-        description = "Scan file for resolvable secret values and redact. Writes count, not matched bytes. CONFIRM before writing."
+        description = "Scan a file for resolved secret values from a registry's aliases \
+                       and (optionally) rewrite in-place with each match replaced by an \
+                       alias-aware token. Returns COUNTS only — never the matched bytes. \
+                       Apply mode (`apply = true`) is gated by [mcp].allow_mutations + \
+                       audit-logged. Default `apply = false` only counts."
     )]
-    pub async fn redact_file(&self, _args: Parameters<StubArgs>) -> String {
-        not_yet_implemented("redact_file", 4)
+    pub async fn redact_file(&self, args: Parameters<RedactFileArgs>) -> Json<RedactFileResponse> {
+        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_file");
+        let args = args.0;
+        let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
+        let file_path = std::path::PathBuf::from(&args.file_path);
+
+        let mut response = RedactFileResponse {
+            file_path: file_path.display().to_string(),
+            applied: false,
+            registry_name: registry_name.clone(),
+            aliases_loaded: 0,
+            matches_found: 0,
+            bytes_replaced: 0,
+            outcome: MutationOutcome::Refused,
+            decision: OperatorDecisionEcho::AutoApproved,
+            error_message: None,
+        };
+
+        // Apply mode → policy gate + audit log. Dry-run mode → no
+        // policy gate (counting matches doesn't mutate state) and no
+        // audit log (read-only).
+        let (allowed_decision, allowed_outcome_on_success) = if args.apply {
+            match enforce_mutation_policy(
+                &self.mcp_config,
+                &MutationRequest {
+                    tool_name: "redact_file",
+                    action_summary: &format!(
+                        "scrub `{}` in-place using registry `{}` aliases",
+                        args.file_path, registry_name
+                    ),
+                    agent_reason: &args.reason,
+                },
+            )
+            .await
+            {
+                Err(e) => {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "redact_file".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(format!("{e:#}"));
+                    return Json(response);
+                }
+                Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                    let outcome = if decision == OperatorDecision::Timeout {
+                        MutationOutcome::Timeout
+                    } else {
+                        MutationOutcome::Refused
+                    };
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "redact_file".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    response.outcome = outcome;
+                    response.decision = echo_decision(decision);
+                    return Json(response);
+                }
+                Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
+                    (decision, MutationOutcome::Applied)
+                }
+            }
+        } else {
+            // Dry-run: pretend AutoApproved so the decision-echo
+            // surfaces consistently in the response (no audit log
+            // entry written below in this branch).
+            (OperatorDecision::AutoApproved, MutationOutcome::Applied)
+        };
+
+        // Both branches converge here: build the tainted set + run
+        // either the in-place scrub or the dry-run scan. All
+        // value-handling lives inside `crate::internal::redact_file`.
+        let backends = match secretenv_backends_init::build_registry(&self.config) {
+            Ok(r) => r,
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(allowed_decision);
+                response.error_message =
+                    Some(format!("building backend registry for redact_file: {e:#}"));
+                if args.apply {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "redact_file".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: allowed_decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                }
+                return Json(response);
+            }
+        };
+
+        let tainted = match crate::internal::redact_file::build_tainted_set(
+            &self.config,
+            &backends,
+            args.registry.as_deref(),
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(allowed_decision);
+                response.error_message = Some(format!("loading tainted set: {e:#}"));
+                if args.apply {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "redact_file".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: allowed_decision,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                }
+                return Json(response);
+            }
+        };
+        response.aliases_loaded = tainted.len();
+
+        let scrub_result = if args.apply {
+            crate::internal::redact_file::scrub_to_file(
+                &tainted,
+                &file_path,
+                args.allow_foreign_owner,
+            )
+        } else {
+            crate::internal::redact_file::scrub_dry_run(
+                &tainted,
+                &file_path,
+                args.allow_foreign_owner,
+            )
+        };
+
+        match scrub_result {
+            Ok(report) => {
+                response.outcome = allowed_outcome_on_success;
+                response.decision = echo_decision(allowed_decision);
+                response.matches_found = report.match_count;
+                response.bytes_replaced = report.byte_count;
+                response.applied = args.apply;
+            }
+            Err(e) => {
+                response.outcome = MutationOutcome::WriteFailed;
+                response.decision = echo_decision(allowed_decision);
+                response.error_message = Some(format!("{e:#}"));
+            }
+        }
+
+        if args.apply {
+            let entry = MutationLogEntry {
+                ts_unix_secs: now_secs(),
+                tool_name: "redact_file".to_owned(),
+                alias_name: None,
+                backend_instance: None,
+                agent_reason: args.reason.clone(),
+                operator_decision: allowed_decision,
+                mcp_client_id: "unknown".to_owned(),
+            };
+            let _ = self.mutation_log.append(&entry);
+        }
+
+        Json(response)
     }
 
     // ----- Phase 5: password generation (1) ------------------------

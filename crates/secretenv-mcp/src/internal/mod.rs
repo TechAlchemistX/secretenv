@@ -14,5 +14,11 @@
 //! Phase 1b: scaffold only. [`gen_engine`] (Phase 5) is the wrapper-
 //! first password generation engine and the first concrete consumer
 //! of this escape hatch.
+//!
+//! Phase 4e: [`redact_file`] is the second consumer — `Backend::get`
+//! returns `Secret<String>` which is consumed inline via
+//! `expose_secret()` at the single point where the bytes cross into
+//! the v0.14 `TaintedSet` scrubber (which owns + zeroes its bytes).
 
 pub mod gen_engine;
+pub mod redact_file;

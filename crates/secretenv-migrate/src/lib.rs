@@ -142,7 +142,13 @@ pub struct PhaseDurations {
 
 /// Final outcome — maps 1:1 to
 /// [`secretenv_telemetry::span::MigrateOutcome`].
+///
+/// `#[non_exhaustive]` added in v0.16 Phase 7h release-prep per the
+/// Phase 9 architecture audit's R-4 recommendation — keeps the
+/// freedom to add variants in v0.16.x patches without breaking
+/// downstream `match` arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MigrateReportOutcome {
     /// Migration committed successfully.
     Success,

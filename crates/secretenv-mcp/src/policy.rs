@@ -77,9 +77,23 @@ pub fn sanitize_for_tty(s: &str) -> String {
 /// Description of a pending mutation passed to [`enforce_mutation_policy`].
 ///
 /// Field set is the minimum needed for a useful TTY prompt + a
-/// complete audit-log entry. The `agent_reason` field is recorded
-/// verbatim in the audit log but NEVER echoed back to the agent in
-/// the response payload and NEVER set as an `OTel` attribute (SEC-INV-12).
+/// complete audit-log entry.
+///
+/// # SEC-INV-12 wording (refined by Phase 9 audit FINDING-F-4)
+///
+/// `agent_reason` is **never** included in:
+/// - the JSON-RPC tool-result payload returned to the agent
+/// - an `OTel` span attribute (`SecretEnvSpan` never records it)
+///
+/// Operator-facing surfaces MAY render it:
+/// - the `/dev/tty` confirmation prompt body
+/// - the MCP elicitation modal body (rendered by the IDE per
+///   [`crate::config::ConfirmVia::Elicitation`])
+///
+/// Both surfaces are local to the operator. The protocol-level
+/// boundary (server → agent's tool-result) holds; the operator-facing
+/// boundary (server → operator-facing IDE chrome) intentionally
+/// surfaces the reason so the operator can evaluate intent.
 #[derive(Debug, Clone)]
 pub struct MutationRequest<'a> {
     /// Tool name (e.g. `"set_alias"`). Used in the prompt and the
@@ -220,11 +234,35 @@ pub async fn enforce_mutation_policy(
 
 /// Resolve the configured [`ConfirmVia`] value to a concrete surface
 /// at request time. The [`ConfirmVia::Auto`] variant is the v0.16
-/// Phase 7c default and picks based on runtime context:
+/// Phase 7c default and picks based on runtime context.
 ///
-/// - Client declared MCP elicitation capability → [`ConfirmVia::Elicitation`]
-/// - Else `stdin` is a TTY (standalone shell) → [`ConfirmVia::Tty`]
-/// - Else refuse with a clear error
+/// # Resolution order is LOAD-BEARING (Phase 9 audit R-5)
+///
+/// The priority is deliberate and SHOULD NOT be reordered without a
+/// new security audit. The chain encodes a defense-in-depth posture:
+///
+/// 1. **Elicitation** (client declares MCP elicitation capability at
+///    the initialize handshake): the IDE-rendered modal is the
+///    safest surface — operator sees the action description, agent
+///    reason, and tool name in the native IDE UI; the protocol-level
+///    boundary keeps the prompt out of the agent's tool-result path.
+/// 2. **TTY** (`stdin` is a terminal): the operator launched the
+///    server directly from a shell. The `/dev/tty`-based prompt is
+///    visible because no IDE is interposing. Phase 7c FINDING-4
+///    confirmed: this path DEADLOCKS when the parent process owns
+///    the controlling TTY in raw mode (TUI host IDEs); the
+///    `is_terminal()` check at this layer ensures we only fall
+///    through to TTY when no such parent exists.
+/// 3. **Refuse with helpful error**: if neither surface is
+///    available, the mutation is denied with a clear pointer at
+///    remediation — operator picks either an elicitation-capable
+///    client OR explicitly opts into `allow_mutations = "always"`
+///    (audit-log-only mode) by editing config or passing
+///    `--allow-mutations always` on the IDE's mcpServers args.
+///
+/// **Reordering risk**: swapping 1↔2 would re-introduce the Phase 7
+/// FINDING-4 deadlock for IDE-hosted servers. Demoting 3 to "silent
+/// auto-approve" would defeat the entire confirmation gate.
 ///
 /// Explicit (non-Auto) values pass through unchanged so operators can
 /// pin a specific surface for testing or to opt out of capability

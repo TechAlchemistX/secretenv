@@ -1692,6 +1692,12 @@ fn print_migrate_human(report: &secretenv_migrate::MigrateReport) {
             // structured partial-failure reports instead of Err.
             eprintln!("Migration partially failed.");
         }
+        // `MigrateReportOutcome` is `#[non_exhaustive]` (Phase 7h
+        // R-4); future variants render as a generic "unknown
+        // outcome" message rather than breaking the CLI at build
+        // time. Operator upgrades secretenv-cli to get the new
+        // variant rendered precisely.
+        _ => eprintln!("Migration completed with an unknown outcome variant — upgrade secretenv to render details."),
     }
 }
 
@@ -1702,6 +1708,8 @@ fn render_migrate_json(report: &secretenv_migrate::MigrateReport) -> Result<Stri
         MigrateReportOutcome::DryRun => "dry-run",
         MigrateReportOutcome::SourceDeleteFailedPostCommit => "source-delete-failed-post-commit",
         MigrateReportOutcome::PartialFailurePointerFlip => "partial-failure-pointer-flip",
+        // `MigrateReportOutcome` is `#[non_exhaustive]` (Phase 7h R-4).
+        _ => "unknown",
     };
     let mut durations = serde_json::json!({
         "probe_ms": report.phase_durations.probe_ms,

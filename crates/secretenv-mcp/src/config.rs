@@ -68,6 +68,7 @@ pub enum AllowMutations {
 /// capability at the initialize handshake.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ConfirmVia {
     /// Default since v0.16 Phase 7c. Resolved at runtime per request:
     /// - If the client declared the MCP elicitation capability at the

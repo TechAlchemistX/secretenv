@@ -266,7 +266,31 @@ fn default_config_path() -> Result<PathBuf> {
     let fallback = candidates.last().cloned().ok_or_else(|| {
         anyhow!("internal: candidate_config_paths returned empty list — should be unreachable")
     })?;
-    Ok(candidates.iter().find(|p| p.exists()).cloned().unwrap_or(fallback))
+    let resolved =
+        candidates.iter().find(|p| p.exists()).cloned().unwrap_or_else(|| fallback.clone());
+
+    // Phase 9 audit FINDING-F-1: if the resolved config came from
+    // `$XDG_CONFIG_HOME` AND that path differs from the platform-native
+    // default, emit a one-line stderr warning. Defends against the
+    // hostile-`.envrc` silent-redirect threat (a per-project direnv
+    // block setting `XDG_CONFIG_HOME=$PWD/.attacker-config` would
+    // otherwise silently swap the operator's `[mcp]` policy + audit-log
+    // destination with no UI feedback). The warning costs nothing in
+    // the legitimate stow / chezmoi case (operator sees the line + can
+    // verify it points where they expect).
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        let xdg_candidate = PathBuf::from(&xdg).join("secretenv").join("config.toml");
+        if resolved == xdg_candidate && resolved != fallback {
+            eprintln!(
+                "secretenv: loading config from $XDG_CONFIG_HOME ({}). \
+                 Platform default is {}. \
+                 If unexpected, unset XDG_CONFIG_HOME.",
+                resolved.display(),
+                fallback.display(),
+            );
+        }
+    }
+    Ok(resolved)
 }
 
 /// Build the candidate-list used by [`default_config_path`]. Exposed

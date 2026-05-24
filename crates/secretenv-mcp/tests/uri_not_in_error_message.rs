@@ -219,6 +219,45 @@ fn init_project_response_serializes_clean() {
     assert_no_uri(&json);
 }
 
+/// Phase 9 audit FINDING-P-1 regression guard.
+///
+/// Phase 7b shipped `safe_error_message()` as the SEC-INV-20 URI-leak
+/// backstop, and the existing tests above verify the scrubber itself.
+/// But Phase 9 audit found 6 raw `format!("...{e:#}")` sites in
+/// `tools/mod.rs` that BYPASS the scrubber — the prior tests couldn't
+/// catch them because every test exercises pre-scrubbed payloads
+/// directly. This guard scans the actual source for the
+/// `format!("...{e:#}")` anti-pattern and fails if any new site is
+/// introduced.
+///
+/// To fix a failure: replace `format!("prefix: {e:#}")` with
+/// `format!("prefix: {}", safe_error_message(&e))`.
+#[test]
+#[allow(clippy::literal_string_with_formatting_args)] // needle is intentionally a format-arg-shaped literal — we're grepping source for this exact pattern
+fn no_raw_anyhow_format_in_tool_module() {
+    let source = include_str!("../src/tools/mod.rs");
+    // The anti-pattern: `{e:#}` interpolation in a `format!` macro
+    // that flows into a tool response's `error_message` field. The
+    // approved replacement is `safe_error_message(&e)` (already in
+    // scope via `use crate::error::safe_error_message;` at the top
+    // of the file).
+    let mut violations: Vec<(usize, &str)> = Vec::new();
+    let needle = "{e:#}";
+    for (i, line) in source.lines().enumerate() {
+        if line.contains(needle) && !line.trim_start().starts_with("//") {
+            violations.push((i + 1, line.trim()));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "raw `format!(...{{e:#}})` interpolation found in tools/mod.rs — \
+         these bypass the SEC-INV-20 `safe_error_message` scrubber. \
+         Replace with `format!(\"prefix: {{}}\", safe_error_message(&e))`. \
+         Violating lines:\n{}",
+        violations.iter().map(|(n, l)| format!("  line {n}: {l}")).collect::<Vec<_>>().join("\n"),
+    );
+}
+
 #[test]
 fn cleaned_registry_writer_error_has_no_uri() {
     // Sanity: prove the source-side cleanup of registry_writer.rs

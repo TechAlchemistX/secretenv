@@ -42,15 +42,47 @@
 //!
 //! Phase 2 adds the `rmcp` SDK dep + transport scaffold; Phase 6 adds
 //! the `secretenv-migrate` dep for the `migrate_alias` tool.
+//!
+//! # Public-API stability (v0.16.0, Phase 9 audit R-1)
+//!
+//! The stable public surface that external embedders SHOULD depend on:
+//!
+//! - [`serve`], [`serve_with_overrides`] — entry points for the stdio
+//!   MCP server lifecycle.
+//! - [`disable`], [`enable`], [`disable_sentinel_path`] — operator
+//!   toggles for the persistent disable sentinel.
+//! - [`PolicyOverrides`] — per-launch override knobs for
+//!   `[mcp].allow_mutations` + `[mcp].confirm_via`. Surfaced via the
+//!   `secretenv mcp serve --allow-mutations <mode>` + `--confirm-via
+//!   <surface>` CLI flags.
+//! - [`AllowMutations`], [`ConfirmVia`] — config-section enums; both
+//!   are `#[non_exhaustive]` so variant additions in v0.16.x patches
+//!   are not breaking changes.
+//!
+//! The `pub mod` modules below (`tools`, `boundary`, `policy`,
+//! `internal`, `setup`, `audit_log`, `config`, `error`) are
+//! **`#[doc(hidden)]` from the public API perspective** — they exist
+//! `pub` so the CLI crate and integration tests can reach them, but
+//! their shapes are NOT covered by semver guarantees for external
+//! embedders. Treat them as internal implementation detail and use
+//! the re-exports above instead.
 
+#[doc(hidden)]
 pub mod audit_log;
+#[doc(hidden)]
 pub mod boundary;
+#[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
 pub mod error;
+#[doc(hidden)]
 pub mod internal;
+#[doc(hidden)]
 pub mod policy;
 pub mod server;
+#[doc(hidden)]
 pub mod setup;
+#[doc(hidden)]
 pub mod tools;
 
 pub use config::{AllowMutations, ConfirmVia};

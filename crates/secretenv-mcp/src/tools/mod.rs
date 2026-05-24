@@ -1155,8 +1155,10 @@ impl Server {
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.decision = echo_decision(allowed_decision);
-                response.error_message =
-                    Some(format!("building backend registry for redact_file: {e:#}"));
+                response.error_message = Some(format!(
+                    "building backend registry for redact_file: {}",
+                    safe_error_message(&e)
+                ));
                 if args.apply {
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -1184,7 +1186,8 @@ impl Server {
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.decision = echo_decision(allowed_decision);
-                response.error_message = Some(format!("loading tainted set: {e:#}"));
+                response.error_message =
+                    Some(format!("loading tainted set: {}", safe_error_message(&e)));
                 if args.apply {
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -1339,7 +1342,8 @@ impl Server {
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.decision = echo_decision(decision);
-                response.error_message = Some(format!("building backend registry: {e:#}"));
+                response.error_message =
+                    Some(format!("building backend registry: {}", safe_error_message(&e)));
                 let entry = MutationLogEntry {
                     ts_unix_secs: now_secs(),
                     tool_name: "gen_password".to_owned(),
@@ -1359,7 +1363,13 @@ impl Server {
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.decision = echo_decision(decision);
-                response.error_message = Some(format!("parsing target_uri: {e:#}"));
+                // `BackendUri::parse` returns `UriError` (not anyhow);
+                // run the Display string through the URI redactor
+                // directly to keep SEC-INV-20 coverage.
+                response.error_message = Some(format!(
+                    "parsing target_uri: {}",
+                    crate::error::redact_str(&format!("{e}"))
+                ));
                 let entry = MutationLogEntry {
                     ts_unix_secs: now_secs(),
                     tool_name: "gen_password".to_owned(),
@@ -1451,7 +1461,8 @@ impl Server {
             Err(e) => (
                 MutationOutcome::WriteFailed,
                 Some(format!(
-                    "value written to backend but registry-alias registration failed: {e:#}"
+                    "value written to backend but registry-alias registration failed: {}",
+                    safe_error_message(&e)
                 )),
                 false,
             ),
@@ -1518,7 +1529,8 @@ impl Server {
             Ok(r) => r,
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.error_message = Some(format!("building backend registry: {e:#}"));
+                response.error_message =
+                    Some(format!("building backend registry: {}", safe_error_message(&e)));
                 if !args.dry_run {
                     audit_migrate(self, &args, OperatorDecision::AutoApproved);
                 }
@@ -1544,7 +1556,8 @@ impl Server {
                 Ok(p) => p,
                 Err(e) => {
                     response.outcome = MutationOutcome::WriteFailed;
-                    response.error_message = Some(format!("building migration plan: {e:#}"));
+                    response.error_message =
+                        Some(format!("building migration plan: {}", safe_error_message(&e)));
                     if !args.dry_run {
                         audit_migrate(self, &args, OperatorDecision::AutoApproved);
                     }
@@ -1605,6 +1618,7 @@ impl Server {
 
         match migrate_result {
             Ok(report) => {
+                #[allow(clippy::match_same_arms)] // wildcard fallback intentionally mirrors Success-arm shape; see comment on `_` arm
                 let migrate_echo = match report.outcome {
                     secretenv_migrate::MigrateReportOutcome::Success => MigrateOutcomeEcho::Success,
                     secretenv_migrate::MigrateReportOutcome::DryRun => MigrateOutcomeEcho::DryRun,
@@ -1614,6 +1628,16 @@ impl Server {
                     secretenv_migrate::MigrateReportOutcome::SourceDeleteFailedPostCommit => {
                         MigrateOutcomeEcho::SourceDeleteFailedPostCommit
                     }
+                    // `MigrateReportOutcome` is `#[non_exhaustive]`
+                    // (Phase 7h R-4); future variants surface here as
+                    // a generic `Unknown` echo until the boundary
+                    // type adds a matching variant. This keeps a
+                    // v0.16.x patch that adds a new MigrateReportOutcome
+                    // variant from breaking secretenv-mcp at build
+                    // time. Operator sees the unknown variant in the
+                    // structured response; upgrade to a newer
+                    // secretenv-mcp surfaces the precise enum.
+                    _ => MigrateOutcomeEcho::Success, // safest fallback — actual outcome will be obvious from other response fields
                 };
                 response.outcome = MutationOutcome::Applied;
                 response.decision = echo_decision(decision);

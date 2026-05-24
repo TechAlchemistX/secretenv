@@ -23,11 +23,14 @@
 //! intentionally do NOT yet open spans (no logic to attribute); the
 //! pattern lands in Phase 3 with the first real handler.
 
+use std::sync::Arc;
+
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
+use secretenv_core::Config;
 use serde::{Deserialize, Serialize};
 
 /// Empty argument record used by every Phase 2a stub. Real per-tool
@@ -39,20 +42,26 @@ pub struct StubArgs {}
 /// The `SecretEnv` `MCP` server handler.
 ///
 /// Owns a [`ToolRouter`] populated by the `#[tool_router]` macro
-/// expansion below. Stateless in Phase 2a; future phases will add
-/// shared `Config` / `BackendRegistry` / `AuditLog` handles.
-#[derive(Debug, Clone, Default)]
+/// expansion below, plus the loaded [`Config`] read at startup.
+/// Phase 4 will add the `[mcp]` typed config + `BackendRegistry` +
+/// `AuditLog` handles; Phase 3 only needs the core config for the
+/// backend-touching read-only tools.
+#[derive(Debug, Clone)]
 pub struct Server {
     /// Tool dispatch table — populated by the `#[tool_router]` macro.
     pub tool_router: ToolRouter<Self>,
+    /// Machine-level config loaded at startup. `Arc` so handlers can
+    /// cheaply borrow without cloning the underlying `HashMap` tables.
+    pub config: Arc<Config>,
 }
 
 impl Server {
     /// Build a server with the tool router materialized from the
-    /// `#[tool_router]`-annotated impl block below.
+    /// `#[tool_router]`-annotated impl block below and the supplied
+    /// [`Config`].
     #[must_use]
-    pub fn new() -> Self {
-        Self { tool_router: Self::tool_router() }
+    pub fn new(config: Arc<Config>) -> Self {
+        Self { tool_router: Self::tool_router(), config }
     }
 }
 

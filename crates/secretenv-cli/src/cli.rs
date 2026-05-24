@@ -538,7 +538,7 @@ impl Cli {
                 let _: crate::reports::RedactReport = cmd_redact(args, config, backends).await?;
                 Ok(())
             }
-            Command::Mcp(mc) => cmd_mcp(mc).await,
+            Command::Mcp(mc) => cmd_mcp(mc, self.config.clone()).await,
         }
     }
 }
@@ -566,13 +566,14 @@ fn parse_duration(s: &str) -> Result<std::time::Duration> {
     Ok(std::time::Duration::from_secs(secs))
 }
 
-/// Dispatch for `secretenv mcp <subcommand>`. Does NOT take `config`
-/// / `backends` — `mcp serve` bootstraps its own state inside
-/// `secretenv_mcp::serve`, and `mcp disable` / `mcp enable` are pure
-/// sentinel-file operations.
-async fn cmd_mcp(mc: &McpCommand) -> Result<()> {
+/// Dispatch for `secretenv mcp <subcommand>`. `config_path` is the
+/// global `--config <path>` flag (resolved to `None` for the XDG
+/// default); `secretenv_mcp::serve` loads the [`Config`] itself so it
+/// can `Arc`-wrap and own it. `mcp disable` / `mcp enable` are pure
+/// sentinel-file operations and ignore `config_path`.
+async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
     match mc {
-        McpCommand::Serve => secretenv_mcp::serve().await,
+        McpCommand::Serve => secretenv_mcp::serve(config_path).await,
         McpCommand::Disable { duration } => {
             let d = duration.as_deref().map(parse_duration).transpose()?;
             let path = secretenv_mcp::disable(d)?;

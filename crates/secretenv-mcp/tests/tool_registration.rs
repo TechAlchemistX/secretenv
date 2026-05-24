@@ -8,11 +8,18 @@
 //! (`mcp-tools-inventory`) — the file count and the registration
 //! count must agree.
 
+use std::sync::Arc;
+
+use secretenv_core::Config;
 use secretenv_mcp::tools::Server;
+
+fn test_server() -> Server {
+    Server::new(Arc::new(Config::default()))
+}
 
 #[test]
 fn server_registers_14_tools() {
-    let server = Server::new();
+    let server = test_server();
     let tools = server.tool_router.list_all();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     assert_eq!(tools.len(), 14, "expected 14 tools registered; got {}: {:?}", tools.len(), names);
@@ -45,7 +52,7 @@ fn all_inventory_tools_are_registered() {
         "migrate_alias",
     ];
 
-    let server = Server::new();
+    let server = test_server();
     let registered: std::collections::BTreeSet<String> =
         server.tool_router.list_all().into_iter().map(|t| t.name.into_owned()).collect();
 

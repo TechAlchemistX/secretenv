@@ -158,13 +158,31 @@ impl Server {
     /// Build a server with the tool router materialized from the
     /// `#[tool_router]`-annotated impl block below, plus the loaded
     /// [`Config`] / [`McpConfig`] / [`MutationLog`] handles.
+    ///
+    /// `mcp_config.disabled_tools` is applied to the router at
+    /// construction time — any name listed there is removed from the
+    /// dispatch table AND therefore from `tools/list`. Disabling a
+    /// non-existent name is a no-op (logs a warning via `tracing`).
     #[must_use]
     pub fn new(
         config: Arc<Config>,
         mcp_config: Arc<McpConfig>,
         mutation_log: Arc<MutationLog>,
     ) -> Self {
-        Self { tool_router: Self::tool_router(), config, mcp_config, mutation_log }
+        let mut tool_router = Self::tool_router();
+        let known: std::collections::BTreeSet<String> =
+            tool_router.list_all().into_iter().map(|t| t.name.into_owned()).collect();
+        for name in &mcp_config.disabled_tools {
+            if known.contains(name) {
+                tool_router.remove_route(name);
+            } else {
+                tracing::warn!(
+                    "[mcp].disabled_tools includes `{name}` which is not a registered tool — \
+                     ignoring (typo? renamed? this list is operator-maintained)"
+                );
+            }
+        }
+        Self { tool_router, config, mcp_config, mutation_log }
     }
 }
 

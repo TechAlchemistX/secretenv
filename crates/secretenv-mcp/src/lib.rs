@@ -47,6 +47,7 @@ pub mod audit_log;
 pub mod boundary;
 pub mod config;
 pub mod internal;
+pub mod policy;
 pub mod server;
 pub mod tools;
 

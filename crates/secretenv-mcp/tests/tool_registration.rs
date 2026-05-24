@@ -19,6 +19,10 @@ use secretenv_mcp::tools::Server;
 use tempfile::tempdir;
 
 fn test_server() -> Server {
+    test_server_with_config(McpConfig::default())
+}
+
+fn test_server_with_config(mcp_config: McpConfig) -> Server {
     // Per-test ephemeral audit-log path keeps the test suite from
     // touching the user's real $XDG_STATE_HOME.
     let dir = tempdir().unwrap();
@@ -27,7 +31,7 @@ fn test_server() -> Server {
     // because every test process is short-lived); avoid by passing
     // a dir-owning struct if these tests grow.
     std::mem::forget(dir);
-    Server::new(Arc::new(Config::default()), Arc::new(McpConfig::default()), Arc::new(log))
+    Server::new(Arc::new(Config::default()), Arc::new(mcp_config), Arc::new(log))
 }
 
 #[test]
@@ -82,4 +86,30 @@ fn all_inventory_tools_are_registered() {
         "registered set size differs from expected; \
          registered = {registered:?}, expected = {expected:?}"
     );
+}
+
+#[test]
+fn disabled_tools_are_removed_from_router() {
+    let mcp_config = McpConfig {
+        disabled_tools: vec!["gen_password".into(), "delete_alias".into()],
+        ..McpConfig::default()
+    };
+    let server = test_server_with_config(mcp_config);
+    let registered: std::collections::BTreeSet<String> =
+        server.tool_router.list_all().into_iter().map(|t| t.name.into_owned()).collect();
+    assert_eq!(registered.len(), 12, "two disabled tools should remove from 14 → 12");
+    assert!(!registered.contains("gen_password"));
+    assert!(!registered.contains("delete_alias"));
+    // Non-disabled tools still present
+    assert!(registered.contains("set_alias"));
+    assert!(registered.contains("doctor"));
+}
+
+#[test]
+fn disabling_unknown_tool_is_no_op() {
+    let mcp_config =
+        McpConfig { disabled_tools: vec!["nonexistent_tool".into()], ..McpConfig::default() };
+    let server = test_server_with_config(mcp_config);
+    // Still 14 — the unknown name is logged + ignored, not an error.
+    assert_eq!(server.tool_router.list_all().len(), 14);
 }

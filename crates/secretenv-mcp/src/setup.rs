@@ -65,6 +65,13 @@ pub enum ConfigShape {
     /// `[mcp_servers.secretenv]` with `command = "secretenv"` + `args = ["mcp","serve"]`.
     /// — Codex CLI's `~/.codex/config.toml` form.
     TomlMcpServersTable,
+    /// Shell command form: `claude mcp add -s user secretenv -- secretenv mcp serve`.
+    /// Claude Code's official CLI mechanism — safely merges into the
+    /// large `~/.claude.json` config without overwriting other keys
+    /// (which a `JsonMcpServers` write would risk). Print-only;
+    /// `--write` is refused for this shape (the operator runs the
+    /// command themselves).
+    ShellClaudeMcpAdd,
 }
 
 /// IDE profile — metadata for one supported IDE.
@@ -98,10 +105,16 @@ pub const IDE_PROFILES: &[IdeProfile] = &[
     IdeProfile {
         key: "claude-code",
         display_name: "Claude Code (Anthropic)",
-        config_path: "~/.config/claude-code/mcp.json",
+        // The actual user-scope config lives at `~/.claude.json` (a
+        // large file with many other Claude Code state keys). v0.16
+        // Phase 7c FINDING-1: the official safe mechanism is
+        // `claude mcp add` which merges in-place. Per-project
+        // alternative: `.mcp.json` at the repo root (smaller scope,
+        // safer to write).
+        config_path: "(run the shell command below — no file to edit by hand)",
         format: FileFormat::Json,
-        shape: ConfigShape::JsonMcpServers,
-        note: "Per-project override: `.claude/mcp.json` at the repo root.",
+        shape: ConfigShape::ShellClaudeMcpAdd,
+        note: "User-scope config is `~/.claude.json` — never edit by hand (1000+ lines of Claude Code state). Per-project alternative: paste an `mcpServers` block into `.mcp.json` at the repo root, or use `--ide generic` for the JSON shape.",
     },
     IdeProfile {
         key: "cursor",
@@ -236,6 +249,16 @@ pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
         ConfigShape::TomlMcpServersTable => format!(
             "[mcp_servers.{SERVER_KEY}]\ncommand = \"{binary_path}\"\nargs = [{args_json}]\n"
         ),
+        ConfigShape::ShellClaudeMcpAdd => {
+            // `-s user` makes the registration user-scope (available
+            // in every project). The `--` separator passes the rest
+            // through as the spawned subprocess argv. Print the
+            // command + the verify step so the operator gets a
+            // copy-paste-ready snippet.
+            format!(
+                "# Run this command in your shell to register secretenv with Claude Code:\nclaude mcp add -s user {SERVER_KEY} -- {binary_path} mcp serve\n\n# Verify the registration (should report `Status: ✓ Connected`):\nclaude mcp get {SERVER_KEY}\n",
+            )
+        }
     }
 }
 
@@ -261,14 +284,21 @@ mod tests {
     }
 
     #[test]
-    fn renders_claude_code_block() {
+    fn renders_claude_code_as_shell_command() {
+        // v0.16 Phase 7c FINDING-1: claude-code emits the official
+        // `claude mcp add` shell command rather than a JSON block —
+        // because the actual user config is `~/.claude.json` which
+        // is a 1000+ line shared file. The CLI's built-in add
+        // command handles the safe merge.
         let profile = find_profile("claude-code").unwrap();
         let body = render_config(profile, "secretenv");
-        assert!(body.contains("\"mcpServers\""));
-        assert!(body.contains("\"secretenv\""));
-        assert!(body.contains("\"command\": \"secretenv\""));
-        assert!(body.contains("\"mcp\""));
-        assert!(body.contains("\"serve\""));
+        assert!(body.contains("claude mcp add"));
+        assert!(body.contains("-s user"));
+        assert!(body.contains("secretenv"));
+        assert!(body.contains("mcp serve"));
+        assert!(body.contains("claude mcp get secretenv"));
+        // Should NOT be a JSON block (that's `generic`'s job).
+        assert!(!body.contains("\"mcpServers\""));
     }
 
     #[test]
@@ -324,13 +354,21 @@ mod tests {
     }
 
     #[test]
-    fn generic_profile_matches_claude_shape() {
+    fn generic_profile_matches_other_claude_shape_ides() {
+        // After Phase 7c FINDING-1, claude-code emits a shell command
+        // instead of JSON. Cursor / Cline / Gemini still use the
+        // de-facto `mcpServers` shape — `generic` should be
+        // byte-identical to those.
         let generic = find_profile("generic").unwrap();
-        let claude = find_profile("claude-code").unwrap();
-        assert_eq!(generic.shape, claude.shape);
-        // Generic rendered body is byte-identical to claude-code's
-        // rendering — they share the de-facto `mcpServers` block.
-        assert_eq!(render_config(generic, "secretenv"), render_config(claude, "secretenv"),);
+        for sibling in ["cursor", "cline", "gemini"] {
+            let other = find_profile(sibling).unwrap();
+            assert_eq!(generic.shape, other.shape, "shape mismatch with {sibling}");
+            assert_eq!(
+                render_config(generic, "secretenv"),
+                render_config(other, "secretenv"),
+                "rendering differs from {sibling}",
+            );
+        }
     }
 
     #[test]
@@ -351,9 +389,21 @@ mod tests {
 
     #[test]
     fn render_honors_absolute_binary_path() {
-        let profile = find_profile("claude-code").unwrap();
+        // Use a JSON-shape IDE — claude-code now emits the shell
+        // command form per Phase 7c FINDING-1.
+        let profile = find_profile("cursor").unwrap();
         let body = render_config(profile, "/usr/local/bin/secretenv");
         assert!(body.contains("\"command\": \"/usr/local/bin/secretenv\""));
+    }
+
+    #[test]
+    fn shell_claude_mcp_add_honors_absolute_binary_path() {
+        // claude-code's shell-command shape interpolates the binary
+        // path directly into the command line after the `--`
+        // separator.
+        let profile = find_profile("claude-code").unwrap();
+        let body = render_config(profile, "/opt/homebrew/bin/secretenv");
+        assert!(body.contains("-- /opt/homebrew/bin/secretenv mcp serve"));
     }
 
     #[test]

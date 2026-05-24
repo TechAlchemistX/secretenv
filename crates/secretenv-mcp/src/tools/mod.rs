@@ -35,7 +35,8 @@ use anyhow::Context;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use schemars::JsonSchema;
 use secretenv_core::Config;
 use secretenv_telemetry::span::SecretEnvSpan;
@@ -697,7 +698,11 @@ impl Server {
                        backend secret itself — only the registry pointer. Subject to \
                        [mcp].allow_mutations policy + recorded in the mutation audit log."
     )]
-    pub async fn set_alias(&self, args: Parameters<SetAliasArgs>) -> Json<SetAliasResponse> {
+    pub async fn set_alias(
+        &self,
+        args: Parameters<SetAliasArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Json<SetAliasResponse> {
         let (_span, _guard) = SecretEnvSpan::start("mcp.tool.set_alias");
         let args = args.0;
 
@@ -718,7 +723,8 @@ impl Server {
         };
 
         let (decision_echo, outcome, error_message) =
-            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+            match enforce_mutation_policy(&self.mcp_config, &policy_request, Some(&ctx.peer)).await
+            {
                 Err(e) => {
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -809,6 +815,7 @@ impl Server {
     pub async fn delete_alias(
         &self,
         args: Parameters<DeleteAliasArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<DeleteAliasResponse> {
         let (_span, _guard) = SecretEnvSpan::start("mcp.tool.delete_alias");
         let args = args.0;
@@ -824,7 +831,8 @@ impl Server {
         };
 
         let (decision_echo, outcome, error_message) =
-            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+            match enforce_mutation_policy(&self.mcp_config, &policy_request, Some(&ctx.peer)).await
+            {
                 Err(e) => {
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -911,6 +919,7 @@ impl Server {
     pub async fn init_project(
         &self,
         args: Parameters<InitProjectArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<InitProjectResponse> {
         let (_span, _guard) = SecretEnvSpan::start("mcp.tool.init_project");
         let args = args.0;
@@ -967,7 +976,8 @@ impl Server {
         };
 
         let (decision_echo, outcome, error_message) =
-            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+            match enforce_mutation_policy(&self.mcp_config, &policy_request, Some(&ctx.peer)).await
+            {
                 Err(e) => {
                     let entry = MutationLogEntry {
                         ts_unix_secs: now_secs(),
@@ -1050,7 +1060,11 @@ impl Server {
                        Apply mode (`apply = true`) is gated by [mcp].allow_mutations + \
                        audit-logged. Default `apply = false` only counts."
     )]
-    pub async fn redact_file(&self, args: Parameters<RedactFileArgs>) -> Json<RedactFileResponse> {
+    pub async fn redact_file(
+        &self,
+        args: Parameters<RedactFileArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Json<RedactFileResponse> {
         let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_file");
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
@@ -1082,6 +1096,7 @@ impl Server {
                     ),
                     agent_reason: &args.reason,
                 },
+                Some(&ctx.peer),
             )
             .await
             {
@@ -1247,6 +1262,7 @@ impl Server {
     pub async fn gen_password(
         &self,
         args: Parameters<GenPasswordArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<GenPasswordResponse> {
         let (_span, _guard) = SecretEnvSpan::start("mcp.tool.gen_password");
         let args = args.0;
@@ -1276,44 +1292,46 @@ impl Server {
             agent_reason: &args.reason,
         };
 
-        let decision = match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
-            Err(e) => {
-                let entry = MutationLogEntry {
-                    ts_unix_secs: now_secs(),
-                    tool_name: "gen_password".to_owned(),
-                    alias_name: Some(args.alias.clone()),
-                    backend_instance: Some(backend_instance.clone()),
-                    agent_reason: args.reason.clone(),
-                    operator_decision: OperatorDecision::Denied,
-                    mcp_client_id: "unknown".to_owned(),
-                };
-                let _ = self.mutation_log.append(&entry);
-                response.outcome = MutationOutcome::Refused;
-                response.decision = OperatorDecisionEcho::PolicyRefusal;
-                response.error_message = Some(safe_error_message(&e));
-                return Json(response);
-            }
-            Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
-                let entry = MutationLogEntry {
-                    ts_unix_secs: now_secs(),
-                    tool_name: "gen_password".to_owned(),
-                    alias_name: Some(args.alias.clone()),
-                    backend_instance: Some(backend_instance.clone()),
-                    agent_reason: args.reason.clone(),
-                    operator_decision: d,
-                    mcp_client_id: "unknown".to_owned(),
-                };
-                let _ = self.mutation_log.append(&entry);
-                response.outcome = if d == OperatorDecision::Timeout {
-                    MutationOutcome::Timeout
-                } else {
-                    MutationOutcome::Refused
-                };
-                response.decision = echo_decision(d);
-                return Json(response);
-            }
-            Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
-        };
+        let decision =
+            match enforce_mutation_policy(&self.mcp_config, &policy_request, Some(&ctx.peer)).await
+            {
+                Err(e) => {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "gen_password".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(safe_error_message(&e));
+                    return Json(response);
+                }
+                Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: now_secs(),
+                        tool_name: "gen_password".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: d,
+                        mcp_client_id: "unknown".to_owned(),
+                    };
+                    let _ = self.mutation_log.append(&entry);
+                    response.outcome = if d == OperatorDecision::Timeout {
+                        MutationOutcome::Timeout
+                    } else {
+                        MutationOutcome::Refused
+                    };
+                    response.decision = echo_decision(d);
+                    return Json(response);
+                }
+                Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+            };
 
         // Approved — build registry + parse target URI + generate + set + register alias.
         let backends = match secretenv_backends_init::build_registry(&self.config) {
@@ -1472,6 +1490,7 @@ impl Server {
     pub async fn migrate_alias(
         &self,
         args: Parameters<MigrateAliasArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<MigrateAliasResponse> {
         let (_span, _guard) = SecretEnvSpan::start("mcp.tool.migrate_alias");
         let args = args.0;
@@ -1551,7 +1570,8 @@ impl Server {
                 ),
                 agent_reason: &args.reason,
             };
-            match enforce_mutation_policy(&self.mcp_config, &policy_request).await {
+            match enforce_mutation_policy(&self.mcp_config, &policy_request, Some(&ctx.peer)).await
+            {
                 Err(e) => {
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;

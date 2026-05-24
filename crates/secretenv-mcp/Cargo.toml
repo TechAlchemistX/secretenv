@@ -66,8 +66,11 @@ toml.workspace                = true
 # + `Stdout` pair) into a usable transport for `ServiceExt::serve`.
 # `schemars` is required by the `#[tool]` macro for JSON Schema
 # generation; `macros` provides the `#[tool]` / `#[tool_router]` /
-# `#[tool_handler]` attribute macros themselves.
-rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
+# `#[tool_handler]` attribute macros themselves. `elicitation` is the
+# MCP server→client elicit RPC primitive (v0.16 Phase 7c FINDING-4 fix:
+# replaces the broken `/dev/tty` confirmation surface for IDE-driven
+# MCP hosts; surfaces approval prompts through the IDE's own UI).
+rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "schemars", "transport-io", "elicitation"] }
 schemars = "1.0"
 
 # secretenv-migrate is deferred to Phase 6 (`migrate_alias` tool).

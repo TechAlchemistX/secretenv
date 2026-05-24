@@ -16,10 +16,14 @@
 //! this session" gate — the operator gets a real prompt at their
 //! terminal regardless of how the MCP server was launched.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use rmcp::service::{ElicitationError, Peer};
+use rmcp::RoleServer;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use tokio::time::timeout;
 
 use crate::audit_log::OperatorDecision;
@@ -91,9 +95,26 @@ pub struct MutationRequest<'a> {
     pub agent_reason: &'a str,
 }
 
+/// Approval response shape elicited from the MCP client via the
+/// `elicitation/create` RPC. Surfaced through the IDE's native UI as a
+/// single-question dialog ("Approve?" boolean).
+#[derive(Debug, Deserialize, JsonSchema)]
+struct MutationApproval {
+    /// Whether the user approved the requested mutation.
+    approved: bool,
+}
+
+rmcp::elicit_safe!(MutationApproval);
+
 /// Apply the [`McpConfig::allow_mutations`] policy to one mutation
 /// request. Returns the [`OperatorDecision`] the handler should write
 /// to the audit log, or an error if the policy refuses outright.
+///
+/// The `peer` argument is the MCP server's link to the client and is
+/// used by [`ConfirmVia::Elicitation`] / [`ConfirmVia::Auto`] to surface
+/// approval dialogs through the IDE. Pass `None` only in code paths
+/// that cannot reach a peer (the `Auto` resolver will then degrade
+/// elicitation → tty).
 ///
 /// # Errors
 ///
@@ -105,19 +126,23 @@ pub struct MutationRequest<'a> {
 /// - [`ConfirmVia::Notification`] — currently a stub (deferred to a
 ///   later phase); returns an error so a config setting it doesn't
 ///   silently auto-approve.
-/// - TTY open / read failure when policy is `Confirm` + surface is
-///   `Tty` — returns an error so the mutation does not proceed.
+/// - [`ConfirmVia::Elicitation`] without a peer that advertises the
+///   elicitation capability — returns an error pointing the operator
+///   at `allow_mutations = "always"` or a client that supports MCP
+///   elicitation.
+/// - [`ConfirmVia::Auto`] in a context with neither an
+///   elicitation-capable client nor a TTY on `stdin` — same kind of
+///   refusal error.
+/// - TTY open / read failure when policy is `Confirm` + surface
+///   resolves to `Tty` — returns an error so the mutation does not
+///   proceed.
 ///
 /// On `AllowMutations::Always` returns `Ok(AutoApproved)` without
 /// any I/O.
-///
-/// On `Confirm` + `Tty` opens `/dev/tty`, writes a y/N prompt to it
-/// (NOT stderr — stderr is consumed by the MCP transport), reads one
-/// line with a 30s timeout, and returns `Approved` / `Denied` /
-/// `Timeout` accordingly.
 pub async fn enforce_mutation_policy(
     mcp_config: &McpConfig,
     request: &MutationRequest<'_>,
+    peer: Option<&Peer<RoleServer>>,
 ) -> Result<OperatorDecision> {
     match mcp_config.allow_mutations {
         AllowMutations::Never => {
@@ -128,18 +153,118 @@ pub async fn enforce_mutation_policy(
             );
         }
         AllowMutations::Always => Ok(OperatorDecision::AutoApproved),
-        AllowMutations::Confirm => match mcp_config.confirm_via {
-            ConfirmVia::Tty => prompt_via_tty(request).await,
-            ConfirmVia::Notification => bail!(
-                "MCP server policy is `confirm` with `confirm_via = \"notification\"`, \
-                 which is not yet implemented. Set `confirm_via = \"tty\"` for now."
-            ),
-            ConfirmVia::None => bail!(
-                "MCP server policy is `confirm` with `confirm_via = \"none\"` — no \
-                 confirmation surface is configured, so the mutation cannot proceed. \
-                 Set `confirm_via = \"tty\"` or `allow_mutations = \"always\"`."
-            ),
-        },
+        AllowMutations::Confirm => {
+            let resolved = resolve_confirm_via(mcp_config.confirm_via, peer)?;
+            match resolved {
+                ConfirmVia::Elicitation => {
+                    let peer = peer.ok_or_else(|| {
+                        anyhow!(
+                            "elicitation requested but no MCP peer is available — \
+                             this is a wiring bug; the tool handler must pass \
+                             RequestContext.peer through",
+                        )
+                    })?;
+                    prompt_via_elicitation(request, peer).await
+                }
+                ConfirmVia::Tty => prompt_via_tty(request).await,
+                ConfirmVia::Notification => bail!(
+                    "MCP server policy is `confirm` with `confirm_via = \"notification\"`, \
+                     which is not yet implemented. Set `confirm_via = \"elicitation\"` \
+                     (preferred for IDE-driven hosts) or `\"tty\"` (standalone shell)."
+                ),
+                ConfirmVia::None => bail!(
+                    "MCP server policy is `confirm` with `confirm_via = \"none\"` — no \
+                     confirmation surface is configured, so the mutation cannot proceed. \
+                     Set `confirm_via = \"elicitation\"`/`\"tty\"`/`\"auto\"` or \
+                     `allow_mutations = \"always\"`."
+                ),
+                ConfirmVia::Auto => {
+                    // resolve_confirm_via never returns Auto — unreachable.
+                    unreachable!("Auto should have been resolved to a concrete surface")
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the configured [`ConfirmVia`] value to a concrete surface
+/// at request time. The [`ConfirmVia::Auto`] variant is the v0.16
+/// Phase 7c default and picks based on runtime context:
+///
+/// - Client declared MCP elicitation capability → [`ConfirmVia::Elicitation`]
+/// - Else `stdin` is a TTY (standalone shell) → [`ConfirmVia::Tty`]
+/// - Else refuse with a clear error
+///
+/// Explicit (non-Auto) values pass through unchanged so operators can
+/// pin a specific surface for testing or to opt out of capability
+/// detection.
+fn resolve_confirm_via(
+    configured: ConfirmVia,
+    peer: Option<&Peer<RoleServer>>,
+) -> Result<ConfirmVia> {
+    if configured != ConfirmVia::Auto {
+        return Ok(configured);
+    }
+    if let Some(peer) = peer {
+        if !peer.supported_elicitation_modes().is_empty() {
+            return Ok(ConfirmVia::Elicitation);
+        }
+    }
+    if std::io::stdin().is_terminal() {
+        return Ok(ConfirmVia::Tty);
+    }
+    bail!(
+        "MCP server policy is `confirm` with `confirm_via = \"auto\"` but the \
+         current runtime offers no usable confirmation surface: the client did \
+         not declare MCP elicitation capability AND stdin is not a TTY. Either \
+         (a) use an MCP client that supports elicitation (Claude Code, Cursor, \
+         Cline, Gemini, recent VS Code Copilot — see `secretenv mcp setup \
+         --list-ides`), or (b) set `[mcp].allow_mutations = \"always\"` if the \
+         agent runtime is trusted and the audit log is sufficient gating."
+    )
+}
+
+/// Surface the approval prompt through the MCP client's elicitation
+/// UI. Used by IDE-driven hosts where `/dev/tty` would deadlock
+/// (FINDING-4 in v0.16 Phase 7 security audit + Phase 8b).
+async fn prompt_via_elicitation(
+    request: &MutationRequest<'_>,
+    peer: &Peer<RoleServer>,
+) -> Result<OperatorDecision> {
+    // The full message is the dialog body the IDE renders. Sanitize
+    // the same way we do for the TTY prompt — agent-controlled
+    // fragments (alias names, target URIs) flow through here too.
+    let safe_tool = sanitize_for_tty(request.tool_name);
+    let safe_summary = sanitize_for_tty(request.action_summary);
+    let safe_reason = sanitize_for_tty(request.agent_reason);
+    let message = format!(
+        "Approve secretenv mutation?\n\n\
+         Tool: {safe_tool}\n\
+         Action: {safe_summary}\n\
+         Agent reason: {safe_reason}",
+    );
+
+    // rmcp 1.7's typed `elicit_with_timeout` auto-generates the JSON
+    // schema from `MutationApproval` (via the `elicit_safe!` macro)
+    // and parses the client's response back into the struct. Maps
+    // every documented `ElicitationError` variant onto an
+    // `OperatorDecision` per Phase 7c task #2 design.
+    match peer.elicit_with_timeout::<MutationApproval>(message, Some(TTY_PROMPT_TIMEOUT)).await {
+        Ok(Some(MutationApproval { approved: true })) => Ok(OperatorDecision::Approved),
+        Ok(Some(MutationApproval { approved: false }) | None)
+        | Err(ElicitationError::UserDeclined | ElicitationError::UserCancelled) => {
+            Ok(OperatorDecision::Denied)
+        }
+        Err(ElicitationError::Service(rmcp::ServiceError::Timeout { .. })) => {
+            Ok(OperatorDecision::Timeout)
+        }
+        Err(ElicitationError::CapabilityNotSupported) => bail!(
+            "MCP client did not declare elicitation capability at the initialize \
+             handshake, but `confirm_via = \"elicitation\"` was selected. Use \
+             `confirm_via = \"auto\"` to fall through to TTY when supported, or \
+             set `allow_mutations = \"always\"` for trusted agent runtimes."
+        ),
+        Err(e) => Err(anyhow!("elicitation request failed: {e}")),
     }
 }
 
@@ -211,14 +336,14 @@ mod tests {
     #[tokio::test]
     async fn never_refuses() {
         let cfg = McpConfig { allow_mutations: AllowMutations::Never, ..McpConfig::default() };
-        let err = enforce_mutation_policy(&cfg, &req()).await.unwrap_err();
+        let err = enforce_mutation_policy(&cfg, &req(), None).await.unwrap_err();
         assert!(format!("{err:#}").contains("refuses tool"));
     }
 
     #[tokio::test]
     async fn always_auto_approves_without_io() {
         let cfg = McpConfig { allow_mutations: AllowMutations::Always, ..McpConfig::default() };
-        let decision = enforce_mutation_policy(&cfg, &req()).await.unwrap();
+        let decision = enforce_mutation_policy(&cfg, &req(), None).await.unwrap();
         assert_eq!(decision, OperatorDecision::AutoApproved);
     }
 
@@ -229,8 +354,59 @@ mod tests {
             confirm_via: ConfirmVia::Notification,
             ..McpConfig::default()
         };
-        let err = enforce_mutation_policy(&cfg, &req()).await.unwrap_err();
+        let err = enforce_mutation_policy(&cfg, &req(), None).await.unwrap_err();
         assert!(format!("{err:#}").contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn confirm_auto_without_peer_or_tty_refuses() {
+        // Phase 7c FINDING-4 fix: when `confirm_via = "auto"` and neither
+        // an elicitation-capable peer nor a TTY-attached stdin is
+        // available, the policy MUST refuse rather than fall through
+        // to a deadlocking surface. In the test harness stdin is
+        // typically a pipe (cargo test), not a TTY — making this the
+        // "no usable surface" path.
+        let cfg = McpConfig {
+            allow_mutations: AllowMutations::Confirm,
+            confirm_via: ConfirmVia::Auto,
+            ..McpConfig::default()
+        };
+        // Skip on platforms where stdin happens to be a TTY (rare in
+        // CI / `cargo test`, but possible in an interactive `cargo
+        // test ... -- --nocapture` session).
+        if std::io::stdin().is_terminal() {
+            return;
+        }
+        let err = enforce_mutation_policy(&cfg, &req(), None).await.unwrap_err();
+        assert!(format!("{err:#}").contains("no usable confirmation surface"));
+    }
+
+    #[tokio::test]
+    async fn confirm_elicitation_without_peer_is_wiring_bug() {
+        // Explicit `Elicitation` without a peer should surface the
+        // "wiring bug" error rather than silently accept/refuse — the
+        // tool handler forgot to thread RequestContext.peer through.
+        let cfg = McpConfig {
+            allow_mutations: AllowMutations::Confirm,
+            confirm_via: ConfirmVia::Elicitation,
+            ..McpConfig::default()
+        };
+        let err = enforce_mutation_policy(&cfg, &req(), None).await.unwrap_err();
+        assert!(format!("{err:#}").contains("no MCP peer is available"));
+    }
+
+    #[test]
+    fn resolve_explicit_value_passes_through() {
+        assert_eq!(resolve_confirm_via(ConfirmVia::Tty, None).unwrap(), ConfirmVia::Tty);
+        assert_eq!(
+            resolve_confirm_via(ConfirmVia::Notification, None).unwrap(),
+            ConfirmVia::Notification,
+        );
+        assert_eq!(
+            resolve_confirm_via(ConfirmVia::Elicitation, None).unwrap(),
+            ConfirmVia::Elicitation,
+        );
+        assert_eq!(resolve_confirm_via(ConfirmVia::None, None).unwrap(), ConfirmVia::None);
     }
 
     #[test]
@@ -295,7 +471,7 @@ mod tests {
             confirm_via: ConfirmVia::None,
             ..McpConfig::default()
         };
-        let err = enforce_mutation_policy(&cfg, &req()).await.unwrap_err();
+        let err = enforce_mutation_policy(&cfg, &req(), None).await.unwrap_err();
         assert!(format!("{err:#}").contains("no confirmation surface"));
     }
 }

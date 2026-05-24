@@ -28,8 +28,11 @@ use secretenv_core::{
     about = "Run commands with secrets injected from any backend"
 )]
 pub struct Cli {
-    /// Path to `config.toml`. Defaults to the XDG-standard location
-    /// (`$XDG_CONFIG_HOME/secretenv/config.toml`).
+    /// Path to `config.toml`. Defaults to the platform's standard
+    /// config directory: `$XDG_CONFIG_HOME/secretenv/config.toml` on
+    /// Linux (XDG fallback `~/.config/secretenv/config.toml`),
+    /// `~/Library/Application Support/secretenv/config.toml` on
+    /// macOS, `%APPDATA%\secretenv\config.toml` on Windows.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -685,12 +688,24 @@ fn cmd_mcp_setup(
         return Ok(());
     }
 
-    // The `generic` profile has no real target path; refuse --write.
+    // The `generic` and `claude-code` profiles are print-only:
+    // - `generic` doesn't target a specific config file
+    // - `claude-code` emits a `claude mcp add` shell command (the
+    //   official safe mechanism; `~/.claude.json` is a 1000+ line
+    //   shared config that must not be overwritten)
     if profile.key == "generic" {
         anyhow::bail!(
             "`--ide generic` is print-only — it doesn't target a specific config file. \
              Re-run without `--write`, then paste the block into the IDE's MCP config \
              (compatible with Claude Code, Cursor, Cline, Gemini CLI / Code Assist).",
+        );
+    }
+    if profile.key == "claude-code" {
+        anyhow::bail!(
+            "`--ide claude-code` is print-only — it emits the official `claude mcp add` \
+             shell command rather than overwriting `~/.claude.json` (which carries \
+             unrelated Claude Code state). Re-run without `--write` and run the \
+             printed command in your shell.",
         );
     }
 

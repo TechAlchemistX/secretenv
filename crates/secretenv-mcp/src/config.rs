@@ -50,19 +50,53 @@ pub enum AllowMutations {
 /// Where the per-call confirmation prompt is surfaced when
 /// [`AllowMutations::Confirm`] is active.
 ///
-/// Default: [`ConfirmVia::Tty`] — the operator's own terminal handles
-/// the prompt, bypassing the IDE's batch-approval gates (which some
-/// IDEs surface as "approve all this session").
+/// **Default since v0.16 Phase 7c: [`ConfirmVia::Auto`]** — runtime
+/// detection picks the right surface based on client capabilities. This
+/// replaces the previous v0.16-pre-Phase-7c default of [`ConfirmVia::Tty`]
+/// which deadlocked inside TUI host IDEs (Claude Code, Cline, etc.) that
+/// own the controlling terminal.
+///
+/// Phase 7c FINDING-4: a stdio child process opening `/dev/tty` while the
+/// parent IDE owns the same TTY in raw mode causes the parent's UI to
+/// freeze (the child's blocking read contends with the parent's raw-mode
+/// read; the kernel only delivers input to the foreground process group;
+/// neither process can make progress). [`ConfirmVia::Elicitation`] uses
+/// MCP's server→client elicit RPC to surface the prompt through the
+/// IDE's own approval UI — same dialog mechanism the IDE uses to gate
+/// arbitrary tool calls. The variant is gated by the rmcp `elicitation`
+/// feature and only works against clients that declare the elicitation
+/// capability at the initialize handshake.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfirmVia {
-    /// Default. Prompt on the controlling TTY's stderr with a 30s
-    /// timeout. If no TTY is available, the mutation tool returns a
-    /// `PermissionDenied` error with a hint string.
+    /// Default since v0.16 Phase 7c. Resolved at runtime per request:
+    /// - If the client declared the MCP elicitation capability at the
+    ///   initialize handshake, use [`ConfirmVia::Elicitation`].
+    /// - Else if `stdin` is a TTY (the server is running standalone in
+    ///   an interactive shell, not as an IDE-spawned subprocess), use
+    ///   [`ConfirmVia::Tty`].
+    /// - Else refuse the mutation with a clear error pointing at
+    ///   `allow_mutations = "always"` or installing an IDE that
+    ///   supports MCP elicitation.
     #[default]
+    Auto,
+    /// MCP server→client elicit RPC. Surfaces an approval prompt in the
+    /// host IDE's native UI (the same dialog the IDE uses to gate tool
+    /// calls). The client must declare the elicitation capability at
+    /// the initialize handshake; otherwise the mutation is refused with
+    /// a clear error message. **Preferred for any IDE-driven MCP host
+    /// since v0.16 Phase 7c.**
+    Elicitation,
+    /// Prompt on the controlling TTY's stderr with a 30s timeout.
+    /// **DEADLOCKS inside TUI host IDEs that own the controlling
+    /// terminal in raw mode** (Claude Code, Cline, `OpenCode` TUI, Codex
+    /// REPL, etc.); only safe for standalone `secretenv mcp serve`
+    /// from an interactive shell. [`ConfirmVia::Auto`] picks this when
+    /// the client doesn't advertise elicitation AND `stdin` is a TTY.
     Tty,
     /// Desktop notification (via the host OS); the operator approves
-    /// in the notification UI. Implementation lands in Phase 4.
+    /// in the notification UI. Implementation lands in a follow-up
+    /// cycle; currently returns an error if selected.
     Notification,
     /// No confirmation surface — equivalent to
     /// [`AllowMutations::Always`] but emitted as a distinct flag so
@@ -161,9 +195,43 @@ mod tests {
     fn empty_body_gives_default() {
         let cfg = McpConfig::from_toml_str("").unwrap();
         assert_eq!(cfg.allow_mutations, AllowMutations::Confirm);
-        assert_eq!(cfg.confirm_via, ConfirmVia::Tty);
+        // Default flipped from Tty → Auto in v0.16 Phase 7c (FINDING-4).
+        assert_eq!(cfg.confirm_via, ConfirmVia::Auto);
         assert!(cfg.disabled_tools.is_empty());
         assert!(cfg.mutation_log.is_none());
+    }
+
+    #[test]
+    fn elicitation_value_parses() {
+        let body = r#"
+            [mcp]
+            confirm_via = "elicitation"
+        "#;
+        let cfg = McpConfig::from_toml_str(body).unwrap();
+        assert_eq!(cfg.confirm_via, ConfirmVia::Elicitation);
+    }
+
+    #[test]
+    fn auto_value_parses() {
+        let body = r#"
+            [mcp]
+            confirm_via = "auto"
+        "#;
+        let cfg = McpConfig::from_toml_str(body).unwrap();
+        assert_eq!(cfg.confirm_via, ConfirmVia::Auto);
+    }
+
+    #[test]
+    fn tty_value_still_parses_for_explicit_optin() {
+        // `tty` remains a valid explicit choice for standalone shell
+        // use; `Auto` will also pick it when no elicitation capability
+        // is advertised and stdin is a TTY.
+        let body = r#"
+            [mcp]
+            confirm_via = "tty"
+        "#;
+        let cfg = McpConfig::from_toml_str(body).unwrap();
+        assert_eq!(cfg.confirm_via, ConfirmVia::Tty);
     }
 
     #[test]
@@ -200,7 +268,8 @@ mod tests {
         "#;
         let cfg = McpConfig::from_toml_str(body).unwrap();
         assert_eq!(cfg.allow_mutations, AllowMutations::Always);
-        assert_eq!(cfg.confirm_via, ConfirmVia::Tty); // default
+        // Default since Phase 7c: Auto (was Tty before FINDING-4).
+        assert_eq!(cfg.confirm_via, ConfirmVia::Auto);
         assert!(cfg.disabled_tools.is_empty());
     }
 

@@ -245,6 +245,33 @@ jobs:
       - name: Wait for crates.io to index backend crates
         run: sleep 45
 
+      # ---------------------------------------------------------------
+      # NEW in v0.16 hygiene: secretenv-migrate (added v0.15) +
+      # secretenv-backends-init + secretenv-mcp (both v0.16) live
+      # between the backend layer and the CLI in the dep graph. The
+      # v0.16.0 tag publish missed them — recovered by hand. Order
+      # below mirrors the dep graph: migrate → backends-init → mcp →
+      # CLI. When adding a new workspace crate the CLI (or MCP) depends
+      # on, INSERT IT HERE in the correct topological slot.
+      # ---------------------------------------------------------------
+      - name: Publish secretenv-migrate
+        run: cargo publish -p secretenv-migrate --locked
+
+      - name: Wait for crates.io to index secretenv-migrate
+        run: sleep 30
+
+      - name: Publish secretenv-backends-init
+        run: cargo publish -p secretenv-backends-init --locked
+
+      - name: Wait for crates.io to index secretenv-backends-init
+        run: sleep 30
+
+      - name: Publish secretenv-mcp
+        run: cargo publish -p secretenv-mcp --locked
+
+      - name: Wait for crates.io to index secretenv-mcp
+        run: sleep 45
+
       - name: Publish secretenv (CLI)
         run: cargo publish -p secretenv --locked
 

@@ -78,6 +78,8 @@ pub mod error;
 #[doc(hidden)]
 pub mod internal;
 #[doc(hidden)]
+pub mod mutation_runner;
+#[doc(hidden)]
 pub mod policy;
 pub mod server;
 #[doc(hidden)]

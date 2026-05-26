@@ -24,10 +24,24 @@
 //! pattern lands in Phase 3 with the first real handler.
 
 pub mod aliases;
+pub mod args;
 pub mod doctor;
+pub(crate) mod helpers;
 pub mod init_project;
 pub mod password_managers;
 pub mod registry_writer;
+
+// Re-export every per-tool argument struct + `suggest_next_tool`
+// helper at `tools::*` so the `#[tool_router]` impl block below and
+// any external consumer (`secretenv_mcp::tools::SetAliasArgs`, etc.)
+// keep the v0.16 public surface unchanged after the Phase D.1
+// extraction.
+pub use args::{
+    DeleteAliasArgs, DetectPasswordManagersArgs, DoctorArgs, GenPasswordArgs,
+    GettingStartedArgs, InitProjectArgs, ListAliasesArgs, ListBackendsArgs,
+    MigrateAliasArgs, RedactFileArgs, RedactStatusArgs, ResolveStatusArgs, SetAliasArgs,
+    StubArgs, VersionInfoArgs, suggest_next_tool,
+};
 
 use std::sync::Arc;
 
@@ -37,10 +51,8 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
-use schemars::JsonSchema;
 use secretenv_core::Config;
 use secretenv_telemetry::span::SecretEnvSpan;
-use serde::{Deserialize, Serialize};
 
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
@@ -69,242 +81,6 @@ const AVAILABLE_REDACT_MODES: &[&str] = &["auto", "force_pipe", "force_exec"];
 
 /// Default redaction mode for `secretenv run` since v0.14 Phase 1.
 const DEFAULT_REDACT_MODE: &str = "auto";
-
-/// Empty argument record used by every Phase 2a stub. Real per-tool
-/// argument types land with the tool's Phase-3-6 handler — at which
-/// point the stub's parameterless signature is replaced.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct StubArgs {}
-
-/// Argument record for `getting_started` — the tool takes no inputs.
-/// Defined as its own type (rather than reusing [`StubArgs`]) so the
-/// generated JSON Schema names a tool-specific input shape.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct GettingStartedArgs {}
-
-/// Argument record for `version_info` — no inputs.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct VersionInfoArgs {}
-
-/// Argument record for `redact_status` — no inputs.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct RedactStatusArgs {}
-
-/// Argument record for `list_backends` — no inputs.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct ListBackendsArgs {}
-
-/// Argument record for `detect_password_managers` — no inputs.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct DetectPasswordManagersArgs {}
-
-/// Argument record for `doctor` — no inputs (the MCP boundary
-/// intentionally drops `--fix` from the CLI equivalent; remediation
-/// is the agent + operator's joint decision).
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct DoctorArgs {}
-
-/// Argument record for `resolve_status` — no inputs.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct ResolveStatusArgs {}
-
-/// Argument record for `list_aliases` — no inputs.
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct ListAliasesArgs {}
-
-/// Argument record for `set_alias`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct SetAliasArgs {
-    /// Alias name to create or update (e.g. `"STRIPE_API_KEY"`).
-    pub alias: String,
-    /// Target URI the alias should resolve to (e.g.
-    /// `"vault-prod:///secret/stripe/api-key"`). Must be a direct
-    /// backend URI; `secretenv://` chains are rejected.
-    pub target_uri: String,
-    /// Optional registry name; defaults to `"default"` when omitted.
-    #[serde(default)]
-    pub registry: Option<String>,
-    /// The agent's stated reason. Recorded verbatim in the mutation
-    /// audit log. NEVER echoed back in the response. NEVER set as an
-    /// `OTel` attribute. Per SEC-INV-12.
-    pub reason: String,
-}
-
-/// Argument record for `delete_alias`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct DeleteAliasArgs {
-    /// Alias name to remove from the registry.
-    pub alias: String,
-    /// Optional registry name; defaults to `"default"` when omitted.
-    #[serde(default)]
-    pub registry: Option<String>,
-    /// The agent's stated reason. Audit-log only; never echoed.
-    pub reason: String,
-}
-
-/// Argument record for `redact_file`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct RedactFileArgs {
-    /// Path of the file to scan + (optionally) rewrite in-place.
-    pub file_path: String,
-    /// Optional registry name; defaults to `"default"` when omitted.
-    /// Every resolvable alias in this registry contributes one
-    /// pattern to the redaction set.
-    #[serde(default)]
-    pub registry: Option<String>,
-    /// When `true`, rewrite the file in-place with matches replaced
-    /// by the redaction token. When `false` (default), only count
-    /// matches — the file is not modified. Apply mode is gated by
-    /// `[mcp].allow_mutations`.
-    #[serde(default)]
-    pub apply: bool,
-    /// When `true`, accept files owned by a UID other than the
-    /// caller. Off by default — defense against scrubbing a
-    /// file the operator does not own.
-    #[serde(default)]
-    pub allow_foreign_owner: bool,
-    /// The agent's stated reason. Audit-log only; never echoed.
-    pub reason: String,
-}
-
-/// Argument record for `migrate_alias`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct MigrateAliasArgs {
-    /// Alias to migrate.
-    pub alias: String,
-    /// Destination backend URI (e.g.
-    /// `"vault-prod:///secret/stripe/api-key"`). Must be a direct
-    /// backend URI; `secretenv://` chains are rejected.
-    pub dest_uri: String,
-    /// Override the resolved source URI. When `None` (default), the
-    /// source is the alias's current registry pointer. Used by
-    /// recovery flows where the registry already points at the
-    /// destination but the value is still in the old backend.
-    #[serde(default)]
-    pub from: Option<String>,
-    /// Optional registry name; defaults to `"default"` when omitted.
-    #[serde(default)]
-    pub registry: Option<String>,
-    /// When `true`, probe destination + source liveness, render the
-    /// plan, exit without mutation. Skips policy gate + audit log
-    /// (read-only behavior).
-    #[serde(default)]
-    pub dry_run: bool,
-    /// When `true`, delete the source value after a successful
-    /// migration commit. Default `false` (Phase 4 mutation
-    /// philosophy: dual-control destructive ops). Per build-plan
-    /// §1: "Source NOT deleted by default."
-    #[serde(default)]
-    pub delete_source: bool,
-    /// The agent's stated reason. Audit-log only; never echoed.
-    pub reason: String,
-}
-
-/// Argument record for `gen_password`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct GenPasswordArgs {
-    /// Alias name to register for the generated value.
-    pub alias: String,
-    /// Backend URI where the value will be written (e.g.
-    /// `"vault-prod:///secret/stripe/api-key"`). Must be a direct
-    /// backend URI; `secretenv://` chains are rejected.
-    pub target_uri: String,
-    /// Charset for the generated value. One of: `"alphanumeric"`,
-    /// `"alphanumeric_symbols"`, `"hex"`, `"base64_url_safe"`.
-    /// Defaults to `"alphanumeric_symbols"`.
-    #[serde(default = "default_charset")]
-    pub charset: String,
-    /// Number of characters / bytes in the generated value. Must be
-    /// between 16 and 1024 (the engine's `MIN_PASSWORD_LEN` and
-    /// `MAX_PASSWORD_LEN`). Defaults to 32.
-    ///
-    /// The schema override below drops schemars' default
-    /// `"format": "uint"` annotation (a schemars-specific JSON
-    /// Schema extension) — OpenCode's stricter validator rejects
-    /// the `uint` format (Phase 8b FINDING-15). All other tested
-    /// MCP clients accept the plain `integer` schema with explicit
-    /// `minimum`/`maximum` bounds.
-    #[serde(default = "default_length")]
-    #[schemars(schema_with = "schema_for_length")]
-    pub length: usize,
-    /// Optional registry name to register the alias under. Defaults
-    /// to `"default"`.
-    #[serde(default)]
-    pub registry: Option<String>,
-    /// Force the universal fallback even if the backend supports
-    /// native generation (Phase 5b). Phase 5a always uses the
-    /// fallback regardless of this flag.
-    #[serde(default)]
-    pub use_native_generator: Option<bool>,
-    /// The agent's stated reason. Audit-log only; never echoed.
-    pub reason: String,
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn default_charset() -> String {
-    "alphanumeric_symbols".to_owned()
-}
-
-const fn default_length() -> usize {
-    32
-}
-
-/// Custom JSON Schema for `GenPasswordArgs::length`. Emits a plain
-/// `integer` schema with explicit `minimum`/`maximum` bounds and NO
-/// `format` keyword — schemars' default for `usize` is
-/// `{"type": "integer", "format": "uint", "minimum": 0}` and the
-/// non-standard `"uint"` format trips OpenCode's stricter validator
-/// (Phase 8b FINDING-15).
-fn schema_for_length(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "integer",
-        "minimum": 16,
-        "maximum": 1024,
-    })
-}
-
-/// Argument record for `init_project`.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InitProjectArgs {
-    /// Working directory to scaffold under (absolute or relative to
-    /// the server process's CWD). When omitted, uses the server's
-    /// own CWD.
-    #[serde(default)]
-    pub cwd: Option<String>,
-    /// When `true`, actually writes `secretenv.toml`. When `false`
-    /// (default), returns the proposed body without writing — the
-    /// proposal IS the deliverable. Apply mode is gated by
-    /// `[mcp].allow_mutations`.
-    #[serde(default)]
-    pub apply: bool,
-    /// The agent's stated reason. Audit-log only; never echoed.
-    pub reason: String,
-}
-
-/// Pick a deterministic next-tool suggestion from current config shape.
-/// Pure function — exposed for unit tests.
-#[must_use]
-pub const fn suggest_next_tool(registries: usize, backends: usize) -> (&'static str, &'static str) {
-    if backends == 0 {
-        (
-            "doctor",
-            "No backend instances are configured. Run `doctor` to see which secret-backend \
-             CLIs are installed and authenticated on this machine.",
-        )
-    } else if registries == 0 {
-        (
-            "list_backends",
-            "Backend instances are configured but no registries point at them yet. \
-             `list_backends` shows which backends are reachable for alias storage.",
-        )
-    } else {
-        (
-            "list_aliases",
-            "Registries and backends are configured. `list_aliases` enumerates the \
-             alias → backend mappings without ever returning a resolved value.",
-        )
-    }
-}
 
 /// The `SecretEnv` `MCP` server handler.
 ///
@@ -364,50 +140,8 @@ impl Server {
     }
 }
 
-/// Emit a `migrate_alias` audit-log entry. Pulled out into a helper
-/// because the handler has 6 return paths that each need to log on
-/// non-dry-run.
-fn audit_migrate(server: &Server, args: &MigrateAliasArgs, decision: OperatorDecision) {
-    let entry = MutationLogEntry {
-        ts_unix_secs: now_secs(),
-        tool_name: "migrate_alias".to_owned(),
-        alias_name: Some(args.alias.clone()),
-        backend_instance: Some(
-            secretenv_core::BackendUri::parse(&args.dest_uri)
-                .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme),
-        ),
-        agent_reason: args.reason.clone(),
-        operator_decision: decision,
-        mcp_client_id: "unknown".to_owned(),
-    };
-    let _ = server.mutation_log.append(&entry);
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-/// Map [`OperatorDecision`] (audit-log enum) to its agent-facing
-/// [`OperatorDecisionEcho`] twin in `boundary.rs`. Two enums because
-/// the audit-log set is shared with future non-tool surfaces, and
-/// adding `PolicyRefusal` to it would force every audit-log writer
-/// to handle a never-emitted variant.
-const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
-    match decision {
-        OperatorDecision::Approved => OperatorDecisionEcho::Approved,
-        OperatorDecision::Denied => OperatorDecisionEcho::Denied,
-        OperatorDecision::Timeout => OperatorDecisionEcho::Timeout,
-        OperatorDecision::AutoApproved => OperatorDecisionEcho::AutoApproved,
-    }
-}
-
-/// Map a [`MutationOutcome`] to whether the audit log should record
-/// the call. Every outcome lands in the audit log (even refusals);
-/// the function exists so the call site reads as an explicit policy
-/// rather than an unconditional write.
-const fn should_audit(_outcome: MutationOutcome) -> bool {
-    true
-}
+// `audit_migrate`, `now_secs`, `echo_decision`, `should_audit` lifted
+// to `tools::helpers` in v0.16.1 Phase D.1.
 
 // `not_yet_implemented` helper retired in Phase 6 — every tool now
 // has a real handler. The Phase 2a-shape stubs that returned
@@ -749,7 +483,7 @@ impl Server {
             {
                 Err(e) => {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "set_alias".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: Some(backend_instance.clone()),
@@ -757,7 +491,7 @@ impl Server {
                         operator_decision: OperatorDecision::Denied,
                         mcp_client_id: "unknown".to_owned(),
                     };
-                    if should_audit(MutationOutcome::Refused) {
+                    if helpers::should_audit(MutationOutcome::Refused) {
                         let _ = self.mutation_log.append(&entry);
                     }
                     (
@@ -773,7 +507,7 @@ impl Server {
                         MutationOutcome::Refused
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "set_alias".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: Some(backend_instance.clone()),
@@ -782,7 +516,7 @@ impl Server {
                         mcp_client_id: "unknown".to_owned(),
                     };
                     let _ = self.mutation_log.append(&entry);
-                    (echo_decision(decision), outcome, None)
+                    (helpers::echo_decision(decision), outcome, None)
                 }
                 Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
                     let write_result = match secretenv_backends_init::build_registry(&self.config) {
@@ -803,7 +537,7 @@ impl Server {
                         Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "set_alias".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: Some(backend_instance.clone()),
@@ -812,7 +546,7 @@ impl Server {
                         mcp_client_id: "unknown".to_owned(),
                     };
                     let _ = self.mutation_log.append(&entry);
-                    (echo_decision(decision), outcome, err)
+                    (helpers::echo_decision(decision), outcome, err)
                 }
             };
 
@@ -857,7 +591,7 @@ impl Server {
             {
                 Err(e) => {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "delete_alias".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: None,
@@ -879,7 +613,7 @@ impl Server {
                         MutationOutcome::Refused
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "delete_alias".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: None,
@@ -888,7 +622,7 @@ impl Server {
                         mcp_client_id: "unknown".to_owned(),
                     };
                     let _ = self.mutation_log.append(&entry);
-                    (echo_decision(decision), outcome, None)
+                    (helpers::echo_decision(decision), outcome, None)
                 }
                 Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
                     let write_result = match secretenv_backends_init::build_registry(&self.config) {
@@ -908,7 +642,7 @@ impl Server {
                         Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "delete_alias".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: None,
@@ -917,7 +651,7 @@ impl Server {
                         mcp_client_id: "unknown".to_owned(),
                     };
                     let _ = self.mutation_log.append(&entry);
-                    (echo_decision(decision), outcome, err)
+                    (helpers::echo_decision(decision), outcome, err)
                 }
             };
 
@@ -1002,7 +736,7 @@ impl Server {
             {
                 Err(e) => {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "init_project".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1024,7 +758,7 @@ impl Server {
                         MutationOutcome::Refused
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "init_project".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1033,7 +767,7 @@ impl Server {
                         mcp_client_id: "unknown".to_owned(),
                     };
                     let _ = self.mutation_log.append(&entry);
-                    (echo_decision(decision), outcome, None)
+                    (helpers::echo_decision(decision), outcome, None)
                 }
                 Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
                     let write_result =
@@ -1046,7 +780,7 @@ impl Server {
                         Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "init_project".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1055,7 +789,7 @@ impl Server {
                         mcp_client_id: "unknown".to_owned(),
                     };
                     let _ = self.mutation_log.append(&entry);
-                    (echo_decision(decision), outcome, err)
+                    (helpers::echo_decision(decision), outcome, err)
                 }
             };
 
@@ -1124,7 +858,7 @@ impl Server {
             {
                 Err(e) => {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "redact_file".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1145,7 +879,7 @@ impl Server {
                         MutationOutcome::Refused
                     };
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "redact_file".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1155,7 +889,7 @@ impl Server {
                     };
                     let _ = self.mutation_log.append(&entry);
                     response.outcome = outcome;
-                    response.decision = echo_decision(decision);
+                    response.decision = helpers::echo_decision(decision);
                     return Json(response);
                 }
                 Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
@@ -1176,14 +910,14 @@ impl Server {
             Ok(r) => r,
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(allowed_decision);
+                response.decision = helpers::echo_decision(allowed_decision);
                 response.error_message = Some(format!(
                     "building backend registry for redact_file: {}",
                     safe_error_message(&e)
                 ));
                 if args.apply {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "redact_file".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1207,12 +941,12 @@ impl Server {
             Ok(t) => t,
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(allowed_decision);
+                response.decision = helpers::echo_decision(allowed_decision);
                 response.error_message =
                     Some(format!("loading tainted set: {}", safe_error_message(&e)));
                 if args.apply {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "redact_file".to_owned(),
                         alias_name: None,
                         backend_instance: None,
@@ -1244,21 +978,21 @@ impl Server {
         match scrub_result {
             Ok(report) => {
                 response.outcome = allowed_outcome_on_success;
-                response.decision = echo_decision(allowed_decision);
+                response.decision = helpers::echo_decision(allowed_decision);
                 response.matches_found = report.match_count;
                 response.bytes_replaced = report.byte_count;
                 response.applied = args.apply;
             }
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(allowed_decision);
+                response.decision = helpers::echo_decision(allowed_decision);
                 response.error_message = Some(safe_error_message(&e));
             }
         }
 
         if args.apply {
             let entry = MutationLogEntry {
-                ts_unix_secs: now_secs(),
+                ts_unix_secs: helpers::now_secs(),
                 tool_name: "redact_file".to_owned(),
                 alias_name: None,
                 backend_instance: None,
@@ -1322,7 +1056,7 @@ impl Server {
             {
                 Err(e) => {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "gen_password".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: Some(backend_instance.clone()),
@@ -1338,7 +1072,7 @@ impl Server {
                 }
                 Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
                     let entry = MutationLogEntry {
-                        ts_unix_secs: now_secs(),
+                        ts_unix_secs: helpers::now_secs(),
                         tool_name: "gen_password".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: Some(backend_instance.clone()),
@@ -1352,7 +1086,7 @@ impl Server {
                     } else {
                         MutationOutcome::Refused
                     };
-                    response.decision = echo_decision(d);
+                    response.decision = helpers::echo_decision(d);
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
@@ -1363,11 +1097,11 @@ impl Server {
             Ok(r) => r,
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(decision);
+                response.decision = helpers::echo_decision(decision);
                 response.error_message =
                     Some(format!("building backend registry: {}", safe_error_message(&e)));
                 let entry = MutationLogEntry {
-                    ts_unix_secs: now_secs(),
+                    ts_unix_secs: helpers::now_secs(),
                     tool_name: "gen_password".to_owned(),
                     alias_name: Some(args.alias.clone()),
                     backend_instance: Some(backend_instance.clone()),
@@ -1384,7 +1118,7 @@ impl Server {
             Ok(u) => u,
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(decision);
+                response.decision = helpers::echo_decision(decision);
                 // `BackendUri::parse` returns `UriError` (not anyhow);
                 // run the Display string through the URI redactor
                 // directly to keep SEC-INV-20 coverage.
@@ -1393,7 +1127,7 @@ impl Server {
                     crate::error::redact_str(&format!("{e}"))
                 ));
                 let entry = MutationLogEntry {
-                    ts_unix_secs: now_secs(),
+                    ts_unix_secs: helpers::now_secs(),
                     tool_name: "gen_password".to_owned(),
                     alias_name: Some(args.alias.clone()),
                     backend_instance: Some(backend_instance.clone()),
@@ -1410,10 +1144,10 @@ impl Server {
             Ok(c) => c,
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(decision);
+                response.decision = helpers::echo_decision(decision);
                 response.error_message = Some(safe_error_message(&e));
                 let entry = MutationLogEntry {
-                    ts_unix_secs: now_secs(),
+                    ts_unix_secs: helpers::now_secs(),
                     tool_name: "gen_password".to_owned(),
                     alias_name: Some(args.alias.clone()),
                     backend_instance: Some(backend_instance.clone()),
@@ -1428,13 +1162,13 @@ impl Server {
 
         let Some(backend) = backends.get(&target.scheme) else {
             response.outcome = MutationOutcome::WriteFailed;
-            response.decision = echo_decision(decision);
+            response.decision = helpers::echo_decision(decision);
             response.error_message = Some(format!(
                 "target_uri references backend instance `{}` which is not configured",
                 target.scheme
             ));
             let entry = MutationLogEntry {
-                ts_unix_secs: now_secs(),
+                ts_unix_secs: helpers::now_secs(),
                 tool_name: "gen_password".to_owned(),
                 alias_name: Some(args.alias.clone()),
                 backend_instance: Some(backend_instance.clone()),
@@ -1452,10 +1186,10 @@ impl Server {
                 .await;
         if let Err(e) = gen_result {
             response.outcome = MutationOutcome::WriteFailed;
-            response.decision = echo_decision(decision);
+            response.decision = helpers::echo_decision(decision);
             response.error_message = Some(safe_error_message(&e));
             let entry = MutationLogEntry {
-                ts_unix_secs: now_secs(),
+                ts_unix_secs: helpers::now_secs(),
                 tool_name: "gen_password".to_owned(),
                 alias_name: Some(args.alias.clone()),
                 backend_instance: Some(backend_instance.clone()),
@@ -1491,12 +1225,12 @@ impl Server {
         };
 
         response.outcome = outcome;
-        response.decision = echo_decision(decision);
+        response.decision = helpers::echo_decision(decision);
         response.error_message = err;
         response.resolves = resolves;
 
         let entry = MutationLogEntry {
-            ts_unix_secs: now_secs(),
+            ts_unix_secs: helpers::now_secs(),
             tool_name: "gen_password".to_owned(),
             alias_name: Some(args.alias.clone()),
             backend_instance: Some(backend_instance.clone()),
@@ -1554,7 +1288,7 @@ impl Server {
                 response.error_message =
                     Some(format!("building backend registry: {}", safe_error_message(&e)));
                 if !args.dry_run {
-                    audit_migrate(self, &args, OperatorDecision::AutoApproved);
+                    helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::AutoApproved);
                 }
                 return Json(response);
             }
@@ -1581,7 +1315,7 @@ impl Server {
                     response.error_message =
                         Some(format!("building migration plan: {}", safe_error_message(&e)));
                     if !args.dry_run {
-                        audit_migrate(self, &args, OperatorDecision::AutoApproved);
+                        helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::AutoApproved);
                     }
                     return Json(response);
                 }
@@ -1611,7 +1345,7 @@ impl Server {
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
-                    audit_migrate(self, &args, OperatorDecision::Denied);
+                    helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::Denied);
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -1620,8 +1354,8 @@ impl Server {
                     } else {
                         MutationOutcome::Refused
                     };
-                    response.decision = echo_decision(d);
-                    audit_migrate(self, &args, d);
+                    response.decision = helpers::echo_decision(d);
+                    helpers::audit_migrate(&self.mutation_log, &args, d);
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
@@ -1663,13 +1397,13 @@ impl Server {
                     _ => MigrateOutcomeEcho::Success, // safest fallback — actual outcome will be obvious from other response fields
                 };
                 response.outcome = MutationOutcome::Applied;
-                response.decision = echo_decision(decision);
+                response.decision = helpers::echo_decision(decision);
                 response.migrate_outcome = Some(migrate_echo);
                 response.transaction_id = Some(report.transaction_id);
             }
             Err(e) => {
                 response.outcome = MutationOutcome::WriteFailed;
-                response.decision = echo_decision(decision);
+                response.decision = helpers::echo_decision(decision);
                 // The migrate engine bubbles `PointerFlipFailed` via
                 // `Err` to keep URI bodies out of `Display` (SEC-INV-20).
                 // We re-classify here and surface the URI bodies in the
@@ -1691,7 +1425,7 @@ impl Server {
         }
 
         if !args.dry_run {
-            audit_migrate(self, &args, decision);
+            helpers::audit_migrate(&self.mutation_log, &args, decision);
         }
         Json(response)
     }

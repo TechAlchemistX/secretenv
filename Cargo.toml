@@ -86,7 +86,7 @@ futures            = "0.3"
 getrandom          = "0.2"
 tempfile           = "3"
 aho-corasick       = "1"
-rustix             = { version = "1", features = ["fs", "process"] }
+rustix             = { version = "1", features = ["fs", "process", "termios"] }
 assert_cmd         = "2"
 predicates         = "3"
 

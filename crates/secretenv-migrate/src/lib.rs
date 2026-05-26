@@ -79,6 +79,8 @@ use secretenv_core::{
 };
 use secretenv_telemetry::span::{MigrateOutcome, MigratePhase, SecretEnvSpan};
 
+pub mod mcp_safe;
+
 /// Arguments accepted by [`migrate`]. Built by the CLI layer from
 /// clap parsing.
 #[derive(Debug, Clone)]
@@ -147,7 +149,8 @@ pub struct PhaseDurations {
 /// Phase 9 architecture audit's R-4 recommendation — keeps the
 /// freedom to add variants in v0.16.x patches without breaking
 /// downstream `match` arms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum MigrateReportOutcome {
     /// Migration committed successfully.
@@ -192,8 +195,17 @@ impl MigrateReportOutcome {
 }
 
 /// Returned by [`migrate`]. Stable surface for the CLI's text-mode
-/// rendering + `--json` formatter; v0.16 MCP `migrate_alias` tool
-/// re-exports this verbatim.
+/// rendering + `--json` formatter.
+///
+/// # Do not serialize directly — go through [`mcp_safe::McpSafeReport`]
+///
+/// This type intentionally does NOT derive `serde::Serialize`. The
+/// MCP boundary (and any future wire-format consumer) MUST go
+/// through [`mcp_safe::McpSafeReport::from`] which projects out the
+/// fields that may carry backend stderr (`probe_results`) or CLI
+/// recovery commands embedding URI bodies (`delete_hint`). v0.16.1
+/// D.4 lifted that projection out of `secretenv-mcp` so the "what's
+/// safe to publish" decision lives next to the source type.
 #[derive(Debug, Clone)]
 pub struct MigrateReport {
     /// Registry alias that was migrated.

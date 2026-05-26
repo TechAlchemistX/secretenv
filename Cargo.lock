@@ -1337,6 +1337,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "rmcp",
+ "rustix",
  "schemars",
  "secretenv-backends-init",
  "secretenv-core",
@@ -1359,6 +1360,8 @@ dependencies = [
  "anyhow",
  "secretenv-core",
  "secretenv-telemetry",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

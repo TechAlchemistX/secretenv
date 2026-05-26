@@ -75,6 +75,13 @@ schemars = "1.0"
 
 # secretenv-migrate is deferred to Phase 6 (`migrate_alias` tool).
 
+# `rustix` (with the `termios` feature) is the portable POSIX
+# wrapper used by [`policy::read_tty_line`] for the F-6 TTY TOCTOU
+# fix: a single `O_RDWR` open of `/dev/tty` + `tcflush(TCIFLUSH)`
+# to drop racy pre-buffered input before reading the y/N response.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 # `trybuild` powers the SEC-INV-02 compile-fail guard at

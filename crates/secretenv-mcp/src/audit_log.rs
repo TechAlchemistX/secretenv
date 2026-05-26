@@ -109,6 +109,51 @@ fn default_audit_log_path() -> Result<PathBuf> {
     Ok(dir.join("secretenv").join("mcp-mutations.log"))
 }
 
+/// Create `parent` and every missing ancestor with mode `0o700` on
+/// Unix. Existing directories are left as-is (we don't tighten the
+/// operator's existing layout — only freshly-created components get
+/// the restrictive mode).
+///
+/// v0.16.1 item 13: closes a disclosure gap where
+/// `std::fs::create_dir_all` would let the freshly-created
+/// `~/.local/state/secretenv` inherit the process umask and possibly
+/// land world-readable on a system with `umask 022`.
+fn ensure_audit_parent_dir(parent: &Path) -> Result<()> {
+    // Determine which components are missing so we only chmod the
+    // freshly-created ones. Walk from `parent` upward until we find
+    // an existing ancestor (or hit the root).
+    let mut to_create: Vec<PathBuf> = Vec::new();
+    let mut cursor: Option<&Path> = Some(parent);
+    while let Some(p) = cursor {
+        if p.exists() {
+            break;
+        }
+        to_create.push(p.to_path_buf());
+        cursor = p.parent();
+    }
+
+    std::fs::create_dir_all(parent)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Walk the freshly-created components from outermost-existing
+        // down to `parent` and force 0o700 on each.
+        for component in to_create.into_iter().rev() {
+            let perm = std::fs::Permissions::from_mode(0o700);
+            std::fs::set_permissions(&component, perm)
+                .with_context(|| format!("setting 0700 on {}", component.display()))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Suppress unused-variable warning when not building for unix.
+        let _ = to_create;
+    }
+
+    Ok(())
+}
+
 /// Append-only mutation audit log. One file handle, guarded by a
 /// `Mutex` so concurrent tool handlers (Phases 4-6) serialize their
 /// writes without interleaving JSON Lines.
@@ -122,7 +167,10 @@ impl MutationLog {
     /// Open (create-or-append) the audit log at `path`. On Unix the
     /// file mode is forced to `0o600` whether the file already
     /// existed or is freshly created — the writer is the source of
-    /// truth on permissions.
+    /// truth on permissions. Any parent directories created by this
+    /// call land at `0o700` on Unix (v0.16.1 item 13: closes a
+    /// disclosure gap where an auto-created parent could inherit the
+    /// process umask and land world-readable).
     ///
     /// # Errors
     ///
@@ -131,7 +179,7 @@ impl MutationLog {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
+            ensure_audit_parent_dir(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
 
@@ -256,6 +304,43 @@ mod tests {
         let _ = MutationLog::open(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "audit log must be 0600; got {mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_auto_created_parent_is_0700() {
+        // v0.16.1 item 13: when MutationLog::open auto-creates the
+        // parent directory, it must land at 0o700 — never inheriting
+        // a permissive umask.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let missing_parent = dir.path().join("layer-a").join("layer-b");
+        let path = missing_parent.join("audit.log");
+        let _ = MutationLog::open(&path).unwrap();
+
+        let mode_a =
+            std::fs::metadata(dir.path().join("layer-a")).unwrap().permissions().mode() & 0o777;
+        let mode_b = std::fs::metadata(&missing_parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode_a, 0o700, "freshly-created intermediate dir must be 0700; got {mode_a:o}");
+        assert_eq!(mode_b, 0o700, "freshly-created leaf parent must be 0700; got {mode_b:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_pre_existing_parent_keeps_mode() {
+        // We must NOT tighten a parent dir the operator already
+        // created. Only freshly-created components get 0o700.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let pre = dir.path().join("operator-owned");
+        std::fs::create_dir_all(&pre).unwrap();
+        std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = pre.join("audit.log");
+        let _ = MutationLog::open(&path).unwrap();
+
+        let mode = std::fs::metadata(&pre).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "pre-existing parent must not be re-permed; got {mode:o}");
     }
 
     #[cfg(unix)]

@@ -119,9 +119,9 @@ pub struct IdeProfile {
     /// initialize handshake (so [`crate::config::ConfirmVia::Auto`]
     /// cannot use elicitation, and `/dev/tty` deadlocks inside the
     /// IDE's raw-mode terminal). The current `--allow-mutations,
-    /// always` overrides on Gemini / Cline / Codex / OpenCode /
+    /// always` overrides on Gemini / Cline / Codex / `OpenCode` /
     /// VS Code Copilot / Cursor / Continue are all Phase 8b
-    /// empirical findings; see [[reference_v0.16_phase8b_results]].
+    /// empirical findings; see `reference_v0.16_phase8b_results`.
     ///
     /// **When an IDE ships elicitation upstream**, REMOVE its
     /// override here in the next hygiene cycle — the safer
@@ -410,9 +410,8 @@ fn merge_json_keyed(
     proposed: &str,
     servers_key: &str,
 ) -> Result<MergeOutcome> {
-    let mut existing_v: JsonValue = serde_json::from_str(existing).with_context(|| {
-        format!("parsing existing IDE config as JSON: `{}`", target.display())
-    })?;
+    let mut existing_v: JsonValue = serde_json::from_str(existing)
+        .with_context(|| format!("parsing existing IDE config as JSON: `{}`", target.display()))?;
     let proposed_v: JsonValue =
         serde_json::from_str(proposed).context("parsing proposed MCP config block as JSON")?;
     let proposed_server = proposed_v
@@ -421,9 +420,9 @@ fn merge_json_keyed(
         .ok_or_else(|| anyhow!("proposed block missing `{servers_key}.{SERVER_KEY}` key"))?
         .clone();
 
-    let root = existing_v.as_object_mut().ok_or_else(|| {
-        anyhow!("existing config at `{}` is not a JSON object", target.display())
-    })?;
+    let root = existing_v
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("existing config at `{}` is not a JSON object", target.display()))?;
     let servers = root
         .entry(servers_key.to_owned())
         .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
@@ -476,9 +475,9 @@ fn merge_continue_array(target: &Path, existing: &str, proposed: &str) -> Result
         .ok_or_else(|| anyhow!("proposed Continue entry missing `transport.command`"))?
         .to_owned();
 
-    let root = existing_v.as_object_mut().ok_or_else(|| {
-        anyhow!("existing config at `{}` is not a JSON object", target.display())
-    })?;
+    let root = existing_v
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("existing config at `{}` is not a JSON object", target.display()))?;
     let experimental = root
         .entry("experimental".to_owned())
         .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));

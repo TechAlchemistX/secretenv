@@ -18,7 +18,7 @@ use crate::tools::args::MigrateAliasArgs;
 /// Emit a `migrate_alias` audit-log entry. Pulled out into a helper
 /// because the handler has 6 return paths that each need to log on
 /// non-dry-run.
-pub(crate) fn audit_migrate(
+pub fn audit_migrate(
     mutation_log: &MutationLog,
     args: &MigrateAliasArgs,
     decision: OperatorDecision,
@@ -38,7 +38,7 @@ pub(crate) fn audit_migrate(
     let _ = mutation_log.append(&entry);
 }
 
-pub(crate) fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -47,7 +47,7 @@ pub(crate) fn now_secs() -> u64 {
 /// the audit-log set is shared with future non-tool surfaces, and
 /// adding `PolicyRefusal` to it would force every audit-log writer
 /// to handle a never-emitted variant.
-pub(crate) const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
+pub const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
     match decision {
         OperatorDecision::Approved => OperatorDecisionEcho::Approved,
         OperatorDecision::Denied => OperatorDecisionEcho::Denied,
@@ -60,6 +60,6 @@ pub(crate) const fn echo_decision(decision: OperatorDecision) -> OperatorDecisio
 /// the call. Every outcome lands in the audit log (even refusals);
 /// the function exists so the call site reads as an explicit policy
 /// rather than an unconditional write.
-pub(crate) const fn should_audit(_outcome: MutationOutcome) -> bool {
+pub const fn should_audit(_outcome: MutationOutcome) -> bool {
     true
 }

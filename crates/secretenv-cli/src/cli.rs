@@ -229,7 +229,7 @@ pub enum McpCommand {
         /// Preserves sibling keys (other MCP servers, unrelated IDE
         /// settings). Supported for JSON shapes — `--ide
         /// {gemini,cursor,cline,vscode-copilot,continue}`. For
-        /// OpenCode (JSONC) / Codex (TOML), use `--force` or paste
+        /// `OpenCode` (JSONC) / Codex (TOML), use `--force` or paste
         /// manually. Mutually exclusive with `--force`.
         #[arg(long, requires = "write")]
         merge: bool,
@@ -722,6 +722,7 @@ async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
 }
 
 /// `secretenv mcp setup` dispatch — print or write per-IDE config.
+#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)] // list/write/force/merge are 4 mutually-modal flags
 fn cmd_mcp_setup(
     ide: Option<&str>,
     list_ides: bool,

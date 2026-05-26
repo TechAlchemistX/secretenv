@@ -158,7 +158,7 @@ pub struct MutationRequest<'a> {
 ///       render the modal. Risk: unknown impact on other 5 IDEs
 ///       that currently work; needs empirical re-validation of all
 ///       6 elicitation surfaces (Claude Code, Gemini, Cline,
-///       Codex, OpenCode, Copilot).
+///       Codex, `OpenCode`, Copilot).
 ///   (b) Detect Copilot from rmcp's `clientInfo.name` at the
 ///       initialize handshake and serve a different schema. Risk:
 ///       client-name strings are not stable across versions;
@@ -456,13 +456,9 @@ async fn read_tty_line(prompt: String) -> Result<String> {
     tokio::task::spawn_blocking(move || -> Result<String> {
         use std::os::fd::AsFd;
 
-        let mut tty = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/tty")
-            .context(
-                "opening /dev/tty (O_RDWR) for prompt + response — is this an interactive session?",
-            )?;
+        let mut tty = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").context(
+            "opening /dev/tty (O_RDWR) for prompt + response — is this an interactive session?",
+        )?;
         tty.write_all(prompt.as_bytes()).context("writing prompt to /dev/tty")?;
         tty.flush().context("flushing /dev/tty")?;
 

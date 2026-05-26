@@ -1,8 +1,9 @@
 // Copyright (C) 2026 Mandeep Patel
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Tool argument records — one struct per MCP tool the server
-//! exposes. Lifted out of `tools/mod.rs` in v0.16.1 Phase D.1 so the
+//! Tool argument records — one struct per MCP tool the server exposes.
+//!
+//! Lifted out of `tools/mod.rs` in v0.16.1 Phase D.1 so the
 //! `#[tool_router]`-annotated impl block reads as
 //! handler-bodies-only, not "arg structs + handler bodies".
 //!
@@ -168,7 +169,7 @@ pub struct GenPasswordArgs {
     ///
     /// The schema override below drops schemars' default
     /// `"format": "uint"` annotation (a schemars-specific JSON
-    /// Schema extension) — OpenCode's stricter validator rejects
+    /// Schema extension) — `OpenCode`'s stricter validator rejects
     /// the `uint` format (Phase 8b FINDING-15). All other tested
     /// MCP clients accept the plain `integer` schema with explicit
     /// `minimum`/`maximum` bounds.
@@ -201,7 +202,7 @@ const fn default_length() -> usize {
 /// `integer` schema with explicit `minimum`/`maximum` bounds and NO
 /// `format` keyword — schemars' default for `usize` is
 /// `{"type": "integer", "format": "uint", "minimum": 0}` and the
-/// non-standard `"uint"` format trips OpenCode's stricter validator
+/// non-standard `"uint"` format trips `OpenCode`'s stricter validator
 /// (Phase 8b FINDING-15).
 fn schema_for_length(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({

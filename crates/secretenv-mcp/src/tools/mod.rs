@@ -37,10 +37,9 @@ pub mod registry_writer;
 // keep the v0.16 public surface unchanged after the Phase D.1
 // extraction.
 pub use args::{
-    DeleteAliasArgs, DetectPasswordManagersArgs, DoctorArgs, GenPasswordArgs,
-    GettingStartedArgs, InitProjectArgs, ListAliasesArgs, ListBackendsArgs,
-    MigrateAliasArgs, RedactFileArgs, RedactStatusArgs, ResolveStatusArgs, SetAliasArgs,
-    StubArgs, VersionInfoArgs, suggest_next_tool,
+    suggest_next_tool, DeleteAliasArgs, DetectPasswordManagersArgs, DoctorArgs, GenPasswordArgs,
+    GettingStartedArgs, InitProjectArgs, ListAliasesArgs, ListBackendsArgs, MigrateAliasArgs,
+    RedactFileArgs, RedactStatusArgs, ResolveStatusArgs, SetAliasArgs, StubArgs, VersionInfoArgs,
 };
 
 use std::sync::Arc;
@@ -1288,7 +1287,11 @@ impl Server {
                 response.error_message =
                     Some(format!("building backend registry: {}", safe_error_message(&e)));
                 if !args.dry_run {
-                    helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::AutoApproved);
+                    helpers::audit_migrate(
+                        &self.mutation_log,
+                        &args,
+                        OperatorDecision::AutoApproved,
+                    );
                 }
                 return Json(response);
             }
@@ -1315,7 +1318,11 @@ impl Server {
                     response.error_message =
                         Some(format!("building migration plan: {}", safe_error_message(&e)));
                     if !args.dry_run {
-                        helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::AutoApproved);
+                        helpers::audit_migrate(
+                            &self.mutation_log,
+                            &args,
+                            OperatorDecision::AutoApproved,
+                        );
                     }
                     return Json(response);
                 }

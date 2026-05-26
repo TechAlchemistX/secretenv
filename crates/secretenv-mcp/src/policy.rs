@@ -144,6 +144,43 @@ pub struct MutationRequest<'a> {
 /// operator must tick BEFORE clicking Accept (a redundant two-step
 /// interaction per Phase 7e Phase 8b walkthrough finding).
 ///
+/// # v0.16.1 F-11 investigation outcome — deferred to v0.16.2
+///
+/// Phase 8b FINDING-11: VS Code Copilot advertises MCP elicitation
+/// but renders NO UI for our empty-schema elicit requests
+/// (`MutationApproval {}`). Mutation calls time out after 30s
+/// server-side, audit log records `decision: "timeout"`. Claude
+/// Code renders the Accept/Decline buttons correctly with the same
+/// empty schema, so the issue is Copilot-specific.
+///
+/// v0.16.1 hygiene cycle investigated three candidate fixes:
+///   (a) Add a `confirm: bool` no-op field to force Copilot to
+///       render the modal. Risk: unknown impact on other 5 IDEs
+///       that currently work; needs empirical re-validation of all
+///       6 elicitation surfaces (Claude Code, Gemini, Cline,
+///       Codex, OpenCode, Copilot).
+///   (b) Detect Copilot from rmcp's `clientInfo.name` at the
+///       initialize handshake and serve a different schema. Risk:
+///       client-name strings are not stable across versions;
+///       fragile.
+///   (c) `--copilot-compat-schema` CLI flag. Risk: yet another
+///       per-IDE workaround alongside the existing Phase 7f
+///       `--allow-mutations always` overrides.
+///
+/// Without a live Copilot session to A/B-test (a), shipping any of
+/// these speculatively risks regressing the IDEs that currently
+/// work. **Deferred to v0.16.2** with the spec:
+///
+/// 1. Set up a Copilot test fixture in `scripts/smoke-test/`.
+/// 2. A/B test option (a) against all 6 elicitation IDEs.
+/// 3. Ship the variant that works for Copilot AND preserves the
+///    UX on the other 5 — or formally close as upstream-fix-only.
+///
+/// Until then, the Phase 7f `--allow-mutations always` override
+/// (shipped in `IDE_PROFILES["vscode-copilot"]` — see
+/// `[[reference_v0.16_phase8b_results]]`) is the documented
+/// workaround.
+///
 /// With an empty schema, the modal shows only the body message + the
 /// three native buttons. Single click = decision:
 ///

@@ -215,15 +215,24 @@ pub enum McpCommand {
         binary: String,
         /// Write the rendered config to the target file. Default is
         /// stdout. Refuses if the target file already exists unless
-        /// `--force` is set (existing-file merging is not yet
-        /// implemented — paste manually for now).
+        /// `--force` or `--merge` is set.
         #[arg(long)]
         write: bool,
         /// With `--write`, overwrite the target file even if it
         /// already exists. Without this flag, an existing file is
         /// treated as an error and the helper exits non-zero.
-        #[arg(long, requires = "write")]
+        /// Mutually exclusive with `--merge`.
+        #[arg(long, requires = "write", conflicts_with = "merge")]
         force: bool,
+        /// With `--write`, splice the SecretEnv MCP entry into the
+        /// existing file in place rather than overwriting it.
+        /// Preserves sibling keys (other MCP servers, unrelated IDE
+        /// settings). Supported for JSON shapes — `--ide
+        /// {gemini,cursor,cline,vscode-copilot,continue}`. For
+        /// OpenCode (JSONC) / Codex (TOML), use `--force` or paste
+        /// manually. Mutually exclusive with `--force`.
+        #[arg(long, requires = "write")]
+        merge: bool,
     },
 }
 
@@ -706,8 +715,8 @@ async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
             eprintln!("SecretEnv MCP server enabled (disable sentinel cleared).");
             Ok(())
         }
-        McpCommand::Setup { ide, list_ides, binary, write, force } => {
-            cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force)
+        McpCommand::Setup { ide, list_ides, binary, write, force, merge } => {
+            cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force, *merge)
         }
     }
 }
@@ -719,8 +728,12 @@ fn cmd_mcp_setup(
     binary: &str,
     write: bool,
     force: bool,
+    merge: bool,
 ) -> Result<()> {
-    use secretenv_mcp::setup::{expand_home, find_profile, render_config, IDE_PROFILES};
+    use secretenv_mcp::setup::{
+        expand_home, find_profile, merge_config_into_file, render_config, MergeOutcome,
+        IDE_PROFILES,
+    };
 
     if list_ides {
         println!("Supported IDEs for `secretenv mcp setup`:\n");
@@ -782,9 +795,40 @@ fn cmd_mcp_setup(
 
     let target = expand_home(profile.config_path)
         .with_context(|| format!("expanding home directory for `{}`", profile.config_path))?;
+
+    if merge {
+        let outcome = merge_config_into_file(profile, binary, &target)?;
+        match outcome {
+            MergeOutcome::Created => eprintln!(
+                "Wrote new MCP config for {} ({}).",
+                profile.display_name,
+                target.display()
+            ),
+            MergeOutcome::Added => eprintln!(
+                "Merged SecretEnv entry into existing {} config ({}).",
+                profile.display_name,
+                target.display()
+            ),
+            MergeOutcome::AlreadyPresent => eprintln!(
+                "SecretEnv entry already present in {} config ({}); no changes.",
+                profile.display_name,
+                target.display()
+            ),
+            MergeOutcome::Conflict => anyhow::bail!(
+                "existing {} config at `{}` already has a `secretenv` MCP entry with a \
+                 different shape. Re-run with `--write --force` to overwrite, or edit \
+                 the file manually.",
+                profile.display_name,
+                target.display()
+            ),
+        }
+        return Ok(());
+    }
+
     if target.exists() && !force {
         anyhow::bail!(
             "target file `{}` already exists. Re-run with `--force` to overwrite, \
+             with `--merge` to splice the SecretEnv entry into the existing file, \
              or paste the block from `secretenv mcp setup --ide {}` into the \
              existing file manually.",
             target.display(),

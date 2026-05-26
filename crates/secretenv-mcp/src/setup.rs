@@ -26,7 +26,10 @@
 //! Adding a new IDE: append to [`IDE_PROFILES`] and pick the best
 //! matching [`ConfigShape`] (or add a new variant if it doesn't fit).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+use serde_json::Value as JsonValue;
 
 /// MCP server registration name written into each IDE's config file.
 /// Stable across IDEs so an operator running across 8 IDEs sees the
@@ -313,6 +316,207 @@ pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
     }
 }
 
+/// Outcome of [`merge_config_into_file`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeOutcome {
+    /// File didn't exist — the merged body was written as the new
+    /// initial content (same as a plain `--write` would have done).
+    Created,
+    /// File existed and the `secretenv` server entry was added.
+    Added,
+    /// File existed and the `secretenv` server entry was already
+    /// present with the same shape — nothing written.
+    AlreadyPresent,
+    /// File existed and the `secretenv` server entry was already
+    /// present with a DIFFERENT shape. Caller decides whether to
+    /// honor `--force` and overwrite.
+    Conflict,
+}
+
+/// Merge the rendered MCP-server registration block for `profile`
+/// into the existing file at `target`. Preserves sibling keys (the
+/// whole point of `--merge` over `--force`).
+///
+/// Behavior matrix per [`ConfigShape`]:
+///
+/// | Shape | Merge support | Conflict signal |
+/// |---|---|---|
+/// | `JsonMcpServers` | ✓ insert at `.mcpServers.secretenv` | existing `secretenv` value ≠ proposed |
+/// | `JsonVsCodeServers` | ✓ insert at `.servers.secretenv` | same |
+/// | `JsonContinueExperimental` | ✓ push to `.experimental.modelContextProtocolServers` array (by `.transport.command` identity) | array entry with matching `transport.command` but different other fields |
+/// | `JsonOpenCode` | ✗ JSONC has comments — parse rejects them; defer to v0.16.2 | n/a |
+/// | `TomlMcpServersTable` | ✗ TOML round-trip strips formatting + comments — defer to v0.16.2 | n/a |
+/// | `ShellClaudeMcpAdd` | n/a — print-only profile, never reaches this code path | n/a |
+///
+/// On unsupported shape returns an error pointing the operator at
+/// `--write --force` (overwrite) or manual paste.
+///
+/// # Errors
+///
+/// Returns an error if the target file cannot be read, the existing
+/// content is not valid JSON for a JSON shape, the proposed body is
+/// internally inconsistent (this would be a bug in
+/// [`render_config`]), the shape is unsupported for merge, or the
+/// write-back fails.
+pub fn merge_config_into_file(
+    profile: &IdeProfile,
+    binary_path: &str,
+    target: &Path,
+) -> Result<MergeOutcome> {
+    if !target.exists() {
+        let body = render_config(profile, binary_path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("creating parent directory `{}` for IDE config", parent.display())
+            })?;
+        }
+        std::fs::write(target, body)
+            .with_context(|| format!("writing MCP config to `{}`", target.display()))?;
+        return Ok(MergeOutcome::Created);
+    }
+
+    let existing = std::fs::read_to_string(target)
+        .with_context(|| format!("reading existing IDE config `{}`", target.display()))?;
+    let proposed = render_config(profile, binary_path);
+
+    match profile.shape {
+        ConfigShape::JsonMcpServers => merge_json_keyed(target, &existing, &proposed, "mcpServers"),
+        ConfigShape::JsonVsCodeServers => merge_json_keyed(target, &existing, &proposed, "servers"),
+        ConfigShape::JsonContinueExperimental => merge_continue_array(target, &existing, &proposed),
+        ConfigShape::JsonOpenCode => bail!(
+            "`--merge` does not support OpenCode's JSONC config yet (comments would be lost \
+             on a round-trip). Use `--write --force` to overwrite, or paste the block \
+             from `secretenv mcp setup --ide opencode` into the existing file manually.",
+        ),
+        ConfigShape::TomlMcpServersTable => bail!(
+            "`--merge` does not support Codex's TOML config yet (formatting + comments \
+             would be lost on a round-trip). Use `--write --force` to overwrite, or paste \
+             the block from `secretenv mcp setup --ide codex` into the existing file \
+             manually.",
+        ),
+        ConfigShape::ShellClaudeMcpAdd => bail!(
+            "`--merge` is not applicable to `--ide claude-code` (the profile emits a \
+             `claude mcp add` shell command, not a file write). Run the printed command in \
+             your shell.",
+        ),
+    }
+}
+
+/// Merge a `JsonMcpServers`-style or `JsonVsCodeServers`-style file —
+/// both have shape `{ "<servers_key>": { "<server_name>": { ... } } }`.
+fn merge_json_keyed(
+    target: &Path,
+    existing: &str,
+    proposed: &str,
+    servers_key: &str,
+) -> Result<MergeOutcome> {
+    let mut existing_v: JsonValue = serde_json::from_str(existing).with_context(|| {
+        format!("parsing existing IDE config as JSON: `{}`", target.display())
+    })?;
+    let proposed_v: JsonValue =
+        serde_json::from_str(proposed).context("parsing proposed MCP config block as JSON")?;
+    let proposed_server = proposed_v
+        .get(servers_key)
+        .and_then(|s| s.get(SERVER_KEY))
+        .ok_or_else(|| anyhow!("proposed block missing `{servers_key}.{SERVER_KEY}` key"))?
+        .clone();
+
+    let root = existing_v.as_object_mut().ok_or_else(|| {
+        anyhow!("existing config at `{}` is not a JSON object", target.display())
+    })?;
+    let servers = root
+        .entry(servers_key.to_owned())
+        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+    let servers_obj = servers.as_object_mut().ok_or_else(|| {
+        anyhow!(
+            "existing config at `{}` has `{servers_key}` but it is not a JSON object",
+            target.display()
+        )
+    })?;
+
+    let outcome = match servers_obj.get(SERVER_KEY) {
+        Some(existing_entry) if existing_entry == &proposed_server => MergeOutcome::AlreadyPresent,
+        Some(_) => MergeOutcome::Conflict,
+        None => {
+            servers_obj.insert(SERVER_KEY.to_owned(), proposed_server);
+            MergeOutcome::Added
+        }
+    };
+
+    if outcome == MergeOutcome::Added {
+        let body = serde_json::to_string_pretty(&existing_v)
+            .context("re-serializing merged IDE config")?;
+        std::fs::write(target, format!("{body}\n"))
+            .with_context(|| format!("writing merged IDE config to `{}`", target.display()))?;
+    }
+
+    Ok(outcome)
+}
+
+/// Merge a Continue-style file with shape
+/// `{ "experimental": { "modelContextProtocolServers": [ ... ] } }`.
+/// Identity for deduplication is `transport.command`.
+fn merge_continue_array(target: &Path, existing: &str, proposed: &str) -> Result<MergeOutcome> {
+    let mut existing_v: JsonValue = serde_json::from_str(existing).with_context(|| {
+        format!("parsing existing Continue config as JSON: `{}`", target.display())
+    })?;
+    let proposed_v: JsonValue = serde_json::from_str(proposed)
+        .context("parsing proposed Continue MCP config block as JSON")?;
+    let proposed_entry = proposed_v
+        .get("experimental")
+        .and_then(|e| e.get("modelContextProtocolServers"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .ok_or_else(|| anyhow!("proposed block missing the Continue MCP entry"))?
+        .clone();
+    let proposed_command = proposed_entry
+        .get("transport")
+        .and_then(|t| t.get("command"))
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| anyhow!("proposed Continue entry missing `transport.command`"))?
+        .to_owned();
+
+    let root = existing_v.as_object_mut().ok_or_else(|| {
+        anyhow!("existing config at `{}` is not a JSON object", target.display())
+    })?;
+    let experimental = root
+        .entry("experimental".to_owned())
+        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+    let experimental_obj = experimental.as_object_mut().ok_or_else(|| {
+        anyhow!("existing `experimental` at `{}` is not a JSON object", target.display())
+    })?;
+    let servers = experimental_obj
+        .entry("modelContextProtocolServers".to_owned())
+        .or_insert_with(|| JsonValue::Array(Vec::new()));
+    let servers_arr = servers.as_array_mut().ok_or_else(|| {
+        anyhow!(
+            "existing `experimental.modelContextProtocolServers` at `{}` is not a JSON array",
+            target.display()
+        )
+    })?;
+
+    let outcome = match servers_arr.iter().position(|entry| {
+        entry.get("transport").and_then(|t| t.get("command")).and_then(|c| c.as_str())
+            == Some(proposed_command.as_str())
+    }) {
+        Some(idx) if servers_arr[idx] == proposed_entry => MergeOutcome::AlreadyPresent,
+        Some(_) => MergeOutcome::Conflict,
+        None => {
+            servers_arr.push(proposed_entry);
+            MergeOutcome::Added
+        }
+    };
+
+    if outcome == MergeOutcome::Added {
+        let body = serde_json::to_string_pretty(&existing_v)
+            .context("re-serializing merged Continue config")?;
+        std::fs::write(target, format!("{body}\n"))
+            .with_context(|| format!("writing merged Continue config to `{}`", target.display()))?;
+    }
+
+    Ok(outcome)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -559,5 +763,135 @@ mod tests {
     fn expand_home_passes_relative_unchanged() {
         let expanded = expand_home(".vscode/mcp.json").unwrap();
         assert_eq!(expanded, PathBuf::from(".vscode/mcp.json"));
+    }
+
+    #[test]
+    fn merge_creates_when_target_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("nonexistent").join("mcp.json");
+        let profile = find_profile("gemini").unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        assert_eq!(outcome, MergeOutcome::Created);
+        let body = std::fs::read_to_string(&target).unwrap();
+        assert!(body.contains("\"mcpServers\""));
+        assert!(body.contains("\"secretenv\""));
+    }
+
+    #[test]
+    fn merge_adds_secretenv_to_existing_json_mcp_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("settings.json");
+        std::fs::write(
+            &target,
+            r#"{
+  "theme": "dark",
+  "mcpServers": {
+    "other-server": { "command": "other", "args": [] }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let profile = find_profile("gemini").unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        assert_eq!(outcome, MergeOutcome::Added);
+
+        let body = std::fs::read_to_string(&target).unwrap();
+        let parsed: JsonValue = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.get("theme").and_then(|v| v.as_str()), Some("dark"));
+        let servers = parsed.get("mcpServers").unwrap().as_object().unwrap();
+        assert!(servers.contains_key("other-server"));
+        assert!(servers.contains_key("secretenv"));
+    }
+
+    #[test]
+    fn merge_is_idempotent_when_entry_already_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("settings.json");
+        let profile = find_profile("gemini").unwrap();
+
+        // Seed the file with the same body that render_config would
+        // produce — a second merge should be AlreadyPresent.
+        let initial = render_config(profile, "secretenv");
+        std::fs::write(&target, &initial).unwrap();
+
+        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        assert_eq!(outcome, MergeOutcome::AlreadyPresent);
+    }
+
+    #[test]
+    fn merge_reports_conflict_when_existing_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("settings.json");
+        std::fs::write(
+            &target,
+            r#"{
+  "mcpServers": {
+    "secretenv": { "command": "/some/other/path/secretenv", "args": ["mcp", "serve"] }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let profile = find_profile("gemini").unwrap();
+        let outcome = merge_config_into_file(profile, "/expected/path/secretenv", &target).unwrap();
+        assert_eq!(outcome, MergeOutcome::Conflict);
+    }
+
+    #[test]
+    fn merge_continue_pushes_into_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        std::fs::write(
+            &target,
+            r#"{
+  "experimental": {
+    "modelContextProtocolServers": [
+      { "transport": { "type": "stdio", "command": "other", "args": [] } }
+    ]
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let profile = find_profile("continue").unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        assert_eq!(outcome, MergeOutcome::Added);
+
+        let body = std::fs::read_to_string(&target).unwrap();
+        let parsed: JsonValue = serde_json::from_str(&body).unwrap();
+        let arr = parsed
+            .get("experimental")
+            .and_then(|e| e.get("modelContextProtocolServers"))
+            .and_then(|a| a.as_array())
+            .unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn merge_rejects_jsonc_opencode() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("opencode.jsonc");
+        std::fs::write(&target, "// hi\n{}\n").unwrap();
+        let profile = find_profile("opencode").unwrap();
+        let err = merge_config_into_file(profile, "secretenv", &target).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--merge"));
+        assert!(msg.contains("OpenCode"));
+    }
+
+    #[test]
+    fn merge_rejects_toml_codex() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        std::fs::write(&target, "# comment\n[other]\nkey = \"value\"\n").unwrap();
+        let profile = find_profile("codex").unwrap();
+        let err = merge_config_into_file(profile, "secretenv", &target).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--merge"));
+        assert!(msg.contains("Codex"));
     }
 }

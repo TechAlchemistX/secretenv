@@ -37,6 +37,29 @@ const TTY_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// that try to push the y/N prompt off-screen.
 const TTY_FRAGMENT_MAX_CHARS: usize = 240;
 
+/// Return `true` for Unicode bidi / format / zero-width characters
+/// that are not control codes (so [`char::is_control`] would miss
+/// them) but can still be used to spoof rendered prompt text on a
+/// terminal that respects them.
+///
+/// Covers the practical attack surface called out by Trojan-Source
+/// (CVE-2021-42574) and follow-on research: explicit directional
+/// overrides + isolates, the Mongolian Vowel Separator, the zero-width
+/// joiner/non-joiner, and the ZWNBSP / BOM.
+const fn is_bidi_or_zero_width_format(c: char) -> bool {
+    matches!(
+        c,
+        // Directional formatting
+        '\u{200E}' | '\u{200F}'           // LRM, RLM
+        | '\u{202A}'..='\u{202E}'         // LRE, RLE, PDF, LRO, RLO
+        | '\u{2066}'..='\u{2069}'         // LRI, RLI, FSI, PDI
+        // Zero-width / joiner / separator / BOM
+        | '\u{200B}'..='\u{200D}'         // ZWSP, ZWNJ, ZWJ
+        | '\u{180E}'                      // MVS (Mongolian Vowel Separator)
+        | '\u{FEFF}'                      // ZWNBSP / BOM
+    )
+}
+
 /// Sanitize a string for safe display on the operator's `/dev/tty`.
 ///
 /// Every agent-controlled fragment (alias name, target URI, registry
@@ -44,13 +67,19 @@ const TTY_FRAGMENT_MAX_CHARS: usize = 240;
 /// Defends against terminal-injection attacks (M6 in the v0.16 Phase 7
 /// security audit) where a hostile alias name like
 /// `"OK\n\r[secretenv mcp] Approve? [Y/n] "` could spoof a prior
-/// approved prompt.
+/// approved prompt, and against Trojan-Source-style bidi/zero-width
+/// attacks (v0.16.1 F-2) where invisible RTL overrides reorder the
+/// rendered prompt to deceive the operator (e.g. an alias name
+/// rendered as `"safe-key"` but actually `"yek-evas\u{202E}"` so the
+/// destination URI appears to be a familiar trusted host).
 ///
 /// Behavior:
 /// - C0 control chars (`U+0000`..=`U+001F`) other than TAB are
 ///   replaced with `?`.
 /// - DEL (`U+007F`) and C1 control chars (`U+0080`..=`U+009F`) are
 ///   replaced with `?`.
+/// - Bidi formatting / zero-width / joiner / BOM chars (per
+///   [`is_bidi_or_zero_width_format`]) are replaced with `?`.
 /// - TAB and SPACE are preserved (legitimate whitespace).
 /// - Inputs longer than [`TTY_FRAGMENT_MAX_CHARS`] are truncated and
 ///   marked with `…`.
@@ -64,7 +93,7 @@ pub fn sanitize_for_tty(s: &str) -> String {
         }
         let safe = if c == '\t' || c == ' ' {
             c
-        } else if c.is_control() {
+        } else if c.is_control() || is_bidi_or_zero_width_format(c) {
             '?'
         } else {
             c
@@ -361,31 +390,65 @@ async fn prompt_via_tty(request: &MutationRequest<'_>) -> Result<OperatorDecisio
     }
 }
 
-/// Open `/dev/tty` for both write (prompt) and read (response).
-/// Writes the prompt, reads exactly one line, returns it.
+/// Open `/dev/tty` once (`O_RDWR`), drop any pre-buffered input via
+/// `tcflush(TCIFLUSH)`, write the prompt, then read exactly one line
+/// and return it.
 ///
-/// Runs the blocking I/O on a `tokio::task::spawn_blocking` so it
+/// # v0.16.1 F-6 TTY TOCTOU fix
+///
+/// The previous implementation opened `/dev/tty` twice — once
+/// write-only for the prompt, once read-only for the response. Two
+/// independent `open(2)` calls against `/dev/tty` create a TOCTOU
+/// window: the kernel resolves `/dev/tty` to the controlling
+/// terminal at open-time, and between the two opens, the controlling
+/// terminal can change (most relevantly, if the parent IDE has been
+/// killed and a different terminal has been re-attached, or if a
+/// `setsid` happened). It also lets pre-buffered keystrokes typed
+/// before the prompt appeared race the read — which is exactly what
+/// an attacker who can write to the same TTY would do to force a
+/// `y\n` response.
+///
+/// The fix is the textbook one: a single `open("/dev/tty",
+/// O_RDWR)` and a `tcflush(TCIFLUSH)` immediately before reading.
+///
+/// Runs the blocking I/O on `tokio::task::spawn_blocking` so it
 /// integrates with the `timeout` wrapper above without holding a
 /// runtime thread.
+#[cfg(unix)]
 async fn read_tty_line(prompt: String) -> Result<String> {
     tokio::task::spawn_blocking(move || -> Result<String> {
-        let mut writer = std::fs::OpenOptions::new()
+        use std::os::fd::AsFd;
+
+        let mut tty = std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
             .open("/dev/tty")
-            .context("opening /dev/tty for prompt write — is this an interactive session?")?;
-        writer.write_all(prompt.as_bytes()).context("writing prompt to /dev/tty")?;
-        writer.flush().context("flushing /dev/tty")?;
+            .context(
+                "opening /dev/tty (O_RDWR) for prompt + response — is this an interactive session?",
+            )?;
+        tty.write_all(prompt.as_bytes()).context("writing prompt to /dev/tty")?;
+        tty.flush().context("flushing /dev/tty")?;
 
-        let reader = std::fs::OpenOptions::new()
-            .read(true)
-            .open("/dev/tty")
-            .context("opening /dev/tty for read")?;
+        // Drop any input buffered before the prompt appeared so a
+        // racy `y\n` typed beforehand cannot be replayed.
+        // QueueSelector::IFlush == TCIFLUSH on POSIX.
+        rustix::termios::tcflush(tty.as_fd(), rustix::termios::QueueSelector::IFlush)
+            .context("tcflush(/dev/tty, TCIFLUSH) before reading response")?;
+
         let mut buf = String::new();
-        BufReader::new(reader).read_line(&mut buf).context("reading line from /dev/tty")?;
+        BufReader::new(tty).read_line(&mut buf).context("reading line from /dev/tty")?;
         Ok(buf)
     })
     .await
     .map_err(|e| anyhow!("tokio join error during TTY prompt: {e}"))?
+}
+
+#[cfg(not(unix))]
+async fn read_tty_line(_prompt: String) -> Result<String> {
+    Err(anyhow!(
+        "TTY confirmation prompts are POSIX-only — set [mcp].confirm_via = \"elicitation\" \
+         or run inside an MCP client that advertises the elicitation capability."
+    ))
 }
 
 #[cfg(test)]
@@ -529,6 +592,55 @@ mod tests {
     #[test]
     fn sanitize_short_input_unchanged() {
         let s = "short and fine";
+        assert_eq!(sanitize_for_tty(s), s);
+    }
+
+    #[test]
+    fn sanitize_strips_rtl_override() {
+        // The classic Trojan-Source attack: an RTL override reverses
+        // the visible order of everything after it on the line.
+        let hostile = "alias\u{202E}deltauris-trusted";
+        let safe = sanitize_for_tty(hostile);
+        assert_eq!(safe, "alias?deltauris-trusted");
+        assert!(!safe.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn sanitize_strips_directional_isolates() {
+        // Directional isolates (U+2066..U+2069) can hide segments
+        // from the operator's bidi-resolution context — equally
+        // dangerous on prompt display.
+        let hostile = "\u{2066}safe\u{2067}hostile\u{2069}-uri";
+        let safe = sanitize_for_tty(hostile);
+        assert_eq!(safe, "?safe?hostile?-uri");
+    }
+
+    #[test]
+    fn sanitize_strips_zero_width_joiners() {
+        // Zero-width joiner / non-joiner / ZWSP let an attacker
+        // construct an alias name that looks like an existing safe
+        // one but compares unequal — operator sees `stripe-key`,
+        // backend sees `stripe\u{200B}-key`.
+        let hostile = "stripe\u{200B}-key";
+        assert_eq!(sanitize_for_tty(hostile), "stripe?-key");
+        assert_eq!(sanitize_for_tty("a\u{200C}b\u{200D}c"), "a?b?c");
+    }
+
+    #[test]
+    fn sanitize_strips_byte_order_mark() {
+        // BOM at the start of an alias name is a classic
+        // copy-paste-from-Word smuggle.
+        let hostile = "\u{FEFF}alias";
+        assert_eq!(sanitize_for_tty(hostile), "?alias");
+    }
+
+    #[test]
+    fn sanitize_preserves_legitimate_unicode() {
+        // Bidi sanitization must NOT clobber legitimate non-ASCII
+        // identifiers (RTL alphabets, CJK, accented Latin, emoji).
+        // Only the bidi-format codepoints listed in
+        // is_bidi_or_zero_width_format() are stripped.
+        let s = "café-مفتاح-鍵-🔑";
         assert_eq!(sanitize_for_tty(s), s);
     }
 

@@ -1360,6 +1360,8 @@ dependencies = [
  "anyhow",
  "secretenv-core",
  "secretenv-telemetry",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

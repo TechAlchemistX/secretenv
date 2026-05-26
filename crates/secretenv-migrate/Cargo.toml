@@ -17,6 +17,16 @@ secretenv-core.workspace      = true
 secretenv-telemetry.workspace = true
 anyhow.workspace              = true
 tracing.workspace             = true
+# `serde` powers the v0.16.1 D.4 `mcp_safe::McpSafeReport`
+# shape-typed projection at the MCP boundary. `MigrateReport`
+# itself stays non-Serialize — every wire-format consumer must
+# go through the projection.
+serde.workspace               = true
+
+[dev-dependencies]
+# Used only by the `mcp_safe::tests` module to assert the projection
+# doesn't include the dangerous fields (delete_hint, probe_results).
+serde_json.workspace = true
 
 [lints]
 workspace = true

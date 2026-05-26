@@ -217,7 +217,15 @@ pub struct GenPasswordArgs {
     /// Number of characters / bytes in the generated value. Must be
     /// between 16 and 1024 (the engine's `MIN_PASSWORD_LEN` and
     /// `MAX_PASSWORD_LEN`). Defaults to 32.
+    ///
+    /// The schema override below drops schemars' default
+    /// `"format": "uint"` annotation (a schemars-specific JSON
+    /// Schema extension) — OpenCode's stricter validator rejects
+    /// the `uint` format (Phase 8b FINDING-15). All other tested
+    /// MCP clients accept the plain `integer` schema with explicit
+    /// `minimum`/`maximum` bounds.
     #[serde(default = "default_length")]
+    #[schemars(schema_with = "schema_for_length")]
     pub length: usize,
     /// Optional registry name to register the alias under. Defaults
     /// to `"default"`.
@@ -239,6 +247,20 @@ fn default_charset() -> String {
 
 const fn default_length() -> usize {
     32
+}
+
+/// Custom JSON Schema for `GenPasswordArgs::length`. Emits a plain
+/// `integer` schema with explicit `minimum`/`maximum` bounds and NO
+/// `format` keyword — schemars' default for `usize` is
+/// `{"type": "integer", "format": "uint", "minimum": 0}` and the
+/// non-standard `"uint"` format trips OpenCode's stricter validator
+/// (Phase 8b FINDING-15).
+fn schema_for_length(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 16,
+        "maximum": 1024,
+    })
 }
 
 /// Argument record for `init_project`.

@@ -107,6 +107,30 @@ pub struct IdeProfile {
     /// scope CLI-flag policy overrides to specific IDEs without
     /// touching the operator's global `[mcp]` config. Default empty
     /// for IDEs that work with the default policy stack.
+    ///
+    /// # Evolution trap (READ before adding/removing entries)
+    ///
+    /// Every non-empty `extra_args` here is a workaround for a
+    /// specific gap in an upstream IDE — usually that the IDE does
+    /// not advertise the MCP `elicitation` capability at the
+    /// initialize handshake (so [`crate::config::ConfirmVia::Auto`]
+    /// cannot use elicitation, and `/dev/tty` deadlocks inside the
+    /// IDE's raw-mode terminal). The current `--allow-mutations,
+    /// always` overrides on Gemini / Cline / Codex / OpenCode /
+    /// VS Code Copilot / Cursor / Continue are all Phase 8b
+    /// empirical findings; see [[reference_v0.16_phase8b_results]].
+    ///
+    /// **When an IDE ships elicitation upstream**, REMOVE its
+    /// override here in the next hygiene cycle — the safer
+    /// per-mutation confirmation modal fires instead. Run
+    /// `secretenv mcp setup --ide <key> --dry-run` after each IDE
+    /// version bump to verify; or build a `--check-overrides`
+    /// detector (v0.17 R-3 carry-forward).
+    ///
+    /// **When adding a new IDE**, default to `&[]` and only add an
+    /// override after testing end-to-end that the IDE refuses or
+    /// hangs on a mutation with the default stack — don't
+    /// pre-emptively widen the trust surface.
     pub extra_args: &'static [&'static str],
 }
 

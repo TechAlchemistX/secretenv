@@ -110,6 +110,24 @@ impl Config {
     /// auto-merging any profile files found in the `profiles/`
     /// subdirectory next to `config.toml`.
     ///
+    /// # Search-path precedence (most → least specific)
+    ///
+    /// 1. `$XDG_CONFIG_HOME/secretenv/config.toml` (Linux/macOS XDG
+    ///    explicit, Windows XDG opt-in).
+    /// 2. `$HOME/.config/secretenv/config.toml` (cross-platform XDG
+    ///    fallback).
+    /// 3. Platform-native config dir (`~/Library/Application Support`
+    ///    on macOS, `%APPDATA%` on Windows) — only used when distinct
+    ///    from #2.
+    ///
+    /// The first existing file wins. To inspect what was actually
+    /// resolved on a given machine, use
+    /// [`default_config_path_xdg`] or run `secretenv doctor` (the
+    /// `config.toml` row prints the resolved path).
+    ///
+    /// To override the search entirely, use [`Config::load_from`]
+    /// (the CLI threads `--config <path>` through it).
+    ///
     /// Returns [`Config::default`] (empty) if neither `config.toml` nor
     /// any profile files exist; caller decides whether that is fatal.
     ///

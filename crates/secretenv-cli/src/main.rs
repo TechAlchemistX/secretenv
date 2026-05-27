@@ -35,6 +35,13 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
+    // Hold the OTel guard for the process lifetime. No-op when none of
+    // `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, etc. is set
+    // — zero startup cost for operators without a collector. Drop flushes
+    // and shuts down; the `exec()` path bypasses Drop and calls
+    // `secretenv_telemetry::flush_before_exec` explicitly.
+    let _telemetry = secretenv_telemetry::init()?;
+
     let cli = Cli::parse();
     // Setup may write to a target that doesn't exist yet — tolerate a
     // missing --config path in that case. Every other command needs an

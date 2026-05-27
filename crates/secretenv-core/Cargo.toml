@@ -52,6 +52,10 @@ tokio.workspace       = true
 toml.workspace        = true
 tracing.workspace     = true
 zeroize.workspace     = true
+# v0.17: `runner::exec_with_env` calls `secretenv_telemetry::flush_before_exec`
+# immediately before `execve()` so SEC-INV-22's bounded-flush guarantee holds.
+# Pure RAII; carries no OTel deps when telemetry is in its no-op mode.
+secretenv-telemetry.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # `rustix` is the only legitimate Unix-only dep here — it provides

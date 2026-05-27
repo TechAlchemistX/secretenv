@@ -664,6 +664,11 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     inject_env_entries(env, |k, v| {
         cmd.env(k, v);
     });
+    // SEC-INV-22: flush pending OTel spans before `execve` replaces this
+    // process — Drop on the CLI's TelemetryGuard would otherwise never
+    // run. Bounded at 1s so a slow collector can't turn `secretenv run`
+    // into a latency cliff; on timeout, pending spans drop.
+    secretenv_telemetry::flush_before_exec(std::time::Duration::from_secs(1));
     // exec() replaces the current process on success and only returns
     // on failure — so the io::Error it produces is always a real one.
     let err = cmd.exec();
@@ -683,6 +688,9 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
         cmd.env(k, v);
     });
     let status = cmd.status().with_context(|| format!("failed to spawn '{program}'"))?;
+    // std::process::exit skips destructors — flush before exit so the
+    // CLI's TelemetryGuard doesn't strand pending spans.
+    secretenv_telemetry::flush_before_exec(std::time::Duration::from_secs(1));
     std::process::exit(status.code().unwrap_or(1));
 }
 

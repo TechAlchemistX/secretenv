@@ -26,6 +26,8 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
+use crate::sampler::default_sampler;
+
 /// Hold the installed tracer provider so [`flush_before_exec`] can find
 /// it without taking a reference through every call site. Set exactly
 /// once by [`init`] when an OTLP or console exporter is wired up; stays
@@ -125,8 +127,13 @@ where
         ExporterMode::Noop => Ok(TelemetryGuard { provider: None }),
         ExporterMode::Console => {
             let exporter = opentelemetry_stdout::SpanExporter::default();
+            // SEC-INV-22: every TracerProvider we install wraps its
+            // sampler with the mutation-non-droppable rule, so that
+            // operator-configured ratio sampling can never silently
+            // drop a registry mutation from the audit stream.
             let provider = SdkTracerProvider::builder()
                 .with_resource(build_resource(env))
+                .with_sampler(default_sampler())
                 .with_batch_exporter(exporter)
                 .build();
             Ok(install(provider))
@@ -144,8 +151,13 @@ where
                 builder = builder.with_timeout(Duration::from_millis(timeout_ms));
             }
             let exporter = builder.build().map_err(|e| InitError::Exporter(format!("{e}")))?;
+            // SEC-INV-22: every TracerProvider we install wraps its
+            // sampler with the mutation-non-droppable rule, so that
+            // operator-configured ratio sampling can never silently
+            // drop a registry mutation from the audit stream.
             let provider = SdkTracerProvider::builder()
                 .with_resource(build_resource(env))
+                .with_sampler(default_sampler())
                 .with_batch_exporter(exporter)
                 .build();
             Ok(install(provider))

@@ -7,163 +7,228 @@
 //! Adding a new attribute requires adding a method on this struct.
 //! There is no `set_attribute(&str, &str)` public method — call
 //! sites cannot smuggle a new key past code review by typing a
-//! string. v0.17 wires these methods to real OTel span attributes
-//! 1:1.
+//! string. v0.17 wires the methods to real OTel span attributes
+//! 1:1 via the typed setters below.
+//!
+//! # Coverage today
+//!
+//! v0.17 ships real emission for the 26 setters that callers in
+//! `secretenv-core` / `secretenv-migrate` / `secretenv-mcp` /
+//! `secretenv-cli` actively need. The remaining attributes in
+//! `docs/reference/opentelemetry.md` §2 (matrix entries with no
+//! current setter) are reserved by the schema; the matching setters
+//! are added as callers materialise — adding a new setter is a
+//! PR-reviewed code change, which is the structural enforcement
+//! point. There is never a generic `set_attribute(&str, &str)`
+//! escape hatch on `SecretEnvSpan`.
+
+use opentelemetry::global::{self, BoxedSpan};
+use opentelemetry::trace::{Span as _, Tracer as _};
+use opentelemetry::KeyValue;
 
 use crate::{RedactionSource, RedactionStream, SecretEnvErrorKind};
 
-/// RAII guard returned by [`SecretEnvSpan::start`]. Dropping it
-/// closes the span and (in v0.17) emits the trace.
+/// OTel `Tracer` name. Single instance per process; the global
+/// `TracerProvider` (installed by [`crate::init`]) hands back a
+/// no-op `BoxedTracer` when telemetry is unconfigured, so calls
+/// remain safe and cheap in the no-collector default.
+const TRACER_NAME: &str = "secretenv";
+
+/// RAII guard returned by [`SecretEnvSpan::start`]. Held by callers
+/// alongside [`SecretEnvSpan`]; both drop at end of scope.
 ///
-/// The `_private` field is the **sealed-construction marker** — it
-/// keeps `SpanGuard` un-constructible from outside this crate so the
-/// only path to obtain one is through [`SecretEnvSpan::start`]. The
-/// field stays even after v0.17 wires real state because removing it
-/// would silently re-open `SpanGuard {}` literals at downstream call
-/// sites, bypassing the `start()` entry point that initialises OTel
-/// span tracking. v0.14.x code-hygiene chip: documented, not removed.
+/// In v0.17 the OTel span lives inside [`SecretEnvSpan`] (its `Drop`
+/// calls `span.end()`), so `SpanGuard` is structurally vestigial.
+/// It is retained as a sealed marker type to keep the v0.14+ call
+/// shape (`let (mut span, _guard) = SecretEnvSpan::start(...)`)
+/// working without an API churn that would touch every call site.
+///
+/// The `_private` field is the sealed-construction marker — it
+/// keeps `SpanGuard` un-constructible from outside this crate so
+/// the only path to obtain one is through [`SecretEnvSpan::start`].
 #[derive(Debug)]
-#[must_use = "dropping the SpanGuard immediately ends the span"]
+#[must_use = "dropping the SpanGuard ends the surrounding span's scope"]
 pub struct SpanGuard {
-    // Sealed-construction marker — see struct docs above.
     _private: (),
 }
 
 impl Drop for SpanGuard {
     fn drop(&mut self) {
-        // v0.14: no-op. v0.17 ends the OTel span here and emits.
+        // No-op. The OTel span ends via SecretEnvSpan's Drop; this
+        // type exists to preserve the v0.14+ call-site shape.
     }
 }
 
-/// Builder for a SecretEnv span. Each method corresponds 1:1 with
-/// an ALLOW attribute in the v0.14+ synthesis §6 matrix.
+/// Builder for a SecretEnv span. Each `record_*` method corresponds
+/// 1:1 with an ALLOW attribute in `docs/reference/opentelemetry.md`
+/// §2.
 ///
-/// In v0.14 the builder is a structural fixture — methods record
-/// nothing. The set-site discipline they impose is the v0.14
-/// deliverable; v0.17 wires every method to an OTel span attribute.
+/// When telemetry is unconfigured, the underlying `BoxedSpan` is the
+/// SDK's no-op span and every `record_*` call is a cheap vtable
+/// dispatch that does nothing.
 #[derive(Debug)]
 pub struct SecretEnvSpan {
     name: &'static str,
+    span: BoxedSpan,
 }
 
-// `missing_const_for_fn` would mark every recorder `const fn`; v0.17
-// will replace these stubs with attribute-emission bodies that mutate
-// shared state (cannot be `const`). Promoting them now and then
-// un-promoting in v0.17 churns the public API for no v0.14 benefit.
-#[allow(clippy::missing_const_for_fn, clippy::must_use_candidate, clippy::unused_self)]
 impl SecretEnvSpan {
     /// Start a new span with a static-str name (e.g. `"redact.match"`,
-    /// `"resolve.alias"`, `"backend.get"`).
+    /// `"resolve.alias"`, `"backend.get"`). Returns the typed builder
+    /// alongside a [`SpanGuard`] kept by the caller for scope.
+    #[must_use = "the span must be held for its scope; \
+                  dropping it immediately ends the span"]
     pub fn start(name: &'static str) -> (Self, SpanGuard) {
-        (Self { name }, SpanGuard { _private: () })
+        let tracer = global::tracer(TRACER_NAME);
+        let span = tracer.start(name);
+        (Self { name, span }, SpanGuard { _private: () })
     }
 
     /// `secretenv.version` — the SecretEnv release that produced
     /// the span. ALLOW.
-    pub fn record_version(&mut self, _v: &str) -> &mut Self {
+    pub fn record_version(&mut self, v: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.version", v.to_owned()));
         self
     }
 
     /// `secretenv.run_id` — UUIDv4 per invocation. ALLOW.
-    pub fn record_run_id(&mut self, _id: &str) -> &mut Self {
+    pub fn record_run_id(&mut self, id: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.run_id", id.to_owned()));
         self
     }
 
     /// `secretenv.command` — `run` / `get` / `migrate` / `doctor` /
     /// `mcp` / `redact`. ALLOW.
-    pub fn record_command(&mut self, _cmd: &str) -> &mut Self {
+    pub fn record_command(&mut self, cmd: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.command", cmd.to_owned()));
         self
     }
 
     /// `secretenv.exit_code`. ALLOW.
-    pub fn record_exit_code(&mut self, _code: i32) -> &mut Self {
+    pub fn record_exit_code(&mut self, code: i32) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.exit_code", i64::from(code)));
         self
     }
 
     /// `secretenv.duration_ms`. ALLOW.
-    pub fn record_duration_ms(&mut self, _ms: u64) -> &mut Self {
+    pub fn record_duration_ms(&mut self, ms: u64) -> &mut Self {
+        // OTel attribute values use i64; ms beyond i64::MAX would mean
+        // a span lasted ~292 million years, which is not a real case.
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.duration_ms",
+            i64::try_from(ms).unwrap_or(i64::MAX),
+        ));
         self
     }
 
-    /// `secretenv.alias.name`. ALLOW (operator's explicit rule —
-    /// alias names are operator-chosen and treated as
-    /// non-sensitive).
-    pub fn record_alias_name(&mut self, _name: &str) -> &mut Self {
+    /// `secretenv.alias.name`. ALLOW.
+    pub fn record_alias_name(&mut self, name: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.alias.name", name.to_owned()));
         self
     }
 
     /// `secretenv.alias.env_var`. ALLOW.
-    pub fn record_alias_env_var(&mut self, _env: &str) -> &mut Self {
+    pub fn record_alias_env_var(&mut self, env: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.alias.env_var", env.to_owned()));
         self
     }
 
     /// `secretenv.alias.count`. ALLOW.
-    pub fn record_alias_count(&mut self, _n: u64) -> &mut Self {
+    pub fn record_alias_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.alias.count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
         self
     }
 
     /// `secretenv.alias.cascade_layer_index`. ALLOW.
-    pub fn record_cascade_layer_index(&mut self, _idx: u32) -> &mut Self {
+    pub fn record_cascade_layer_index(&mut self, idx: u32) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.alias.cascade_layer_index", i64::from(idx)));
         self
     }
 
     /// `secretenv.alias.outcome` — closed enum. ALLOW.
-    pub fn record_alias_outcome(&mut self, _outcome: AliasOutcome) -> &mut Self {
+    pub fn record_alias_outcome(&mut self, outcome: AliasOutcome) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.alias.outcome", outcome.as_attribute_value()));
         self
     }
 
     /// `secretenv.backend.type`. ALLOW.
-    pub fn record_backend_type(&mut self, _ty: &str) -> &mut Self {
+    pub fn record_backend_type(&mut self, ty: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.type", ty.to_owned()));
         self
     }
 
     /// `secretenv.backend.instance_name`. ALLOW.
-    pub fn record_backend_instance(&mut self, _name: &str) -> &mut Self {
+    pub fn record_backend_instance(&mut self, name: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.instance_name", name.to_owned()));
         self
     }
 
     /// `secretenv.backend.region`. ALLOW.
-    pub fn record_backend_region(&mut self, _region: &str) -> &mut Self {
+    pub fn record_backend_region(&mut self, region: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.region", region.to_owned()));
         self
     }
 
     /// `secretenv.backend.cli.name`. ALLOW.
-    pub fn record_backend_cli_name(&mut self, _cli: &str) -> &mut Self {
+    pub fn record_backend_cli_name(&mut self, cli: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.cli.name", cli.to_owned()));
         self
     }
 
     /// `secretenv.backend.cli.version`. ALLOW.
-    pub fn record_backend_cli_version(&mut self, _version: &str) -> &mut Self {
+    pub fn record_backend_cli_version(&mut self, version: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.cli.version", version.to_owned()));
         self
     }
 
     /// `secretenv.backend.auth_method` — closed enum. ALLOW.
-    pub fn record_backend_auth_method(&mut self, _m: AuthMethod) -> &mut Self {
+    pub fn record_backend_auth_method(&mut self, m: AuthMethod) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.backend.auth_method", m.as_attribute_value()));
         self
     }
 
     /// `secretenv.error.kind`. ALLOW.
-    pub fn record_error_kind(&mut self, _kind: SecretEnvErrorKind) -> &mut Self {
+    pub fn record_error_kind(&mut self, kind: SecretEnvErrorKind) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.error.kind", kind.as_attribute_value()));
         self
     }
 
-    /// `secretenv.process.command_name` — argv[0] only. ALLOW.
-    pub fn record_process_command_name(&mut self, _name: &str) -> &mut Self {
+    /// `secretenv.run.command_name` — argv[0] only. ALLOW.
+    pub fn record_process_command_name(&mut self, name: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.run.command_name", name.to_owned()));
         self
     }
 
-    /// `secretenv.process.env_var_count`. ALLOW.
-    pub fn record_process_env_var_count(&mut self, _n: u64) -> &mut Self {
+    /// `secretenv.run.env_var_count`. ALLOW.
+    pub fn record_process_env_var_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.run.env_var_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
         self
     }
 
     /// `secretenv.redact.match_count`. ALLOW.
-    pub fn record_redact_match_count(&mut self, _n: u64) -> &mut Self {
+    pub fn record_redact_match_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.redact.match_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
         self
     }
 
     /// `secretenv.redact.byte_count`. ALLOW.
-    pub fn record_redact_byte_count(&mut self, _bytes: u64) -> &mut Self {
+    pub fn record_redact_byte_count(&mut self, bytes: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.redact.byte_count",
+            i64::try_from(bytes).unwrap_or(i64::MAX),
+        ));
         self
     }
 
@@ -180,34 +245,34 @@ impl SecretEnvSpan {
     // also amending SEC-INV-19 will fail CI.
 
     /// `secretenv.redact.stream`. ALLOW.
-    pub fn record_redact_stream(&mut self, _s: RedactionStream) -> &mut Self {
+    pub fn record_redact_stream(&mut self, s: RedactionStream) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.redact.stream", s.as_attribute_value()));
         self
     }
 
     /// `secretenv.redact.source`. ALLOW.
-    pub fn record_redact_source(&mut self, _src: RedactionSource) -> &mut Self {
+    pub fn record_redact_source(&mut self, src: RedactionSource) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.redact.source", src.as_attribute_value()));
         self
     }
 
     // ---- migrate surface (v0.15 — `secretenv registry migrate`) ----
-    //
-    // The migrate command's typed-attribute methods. Each maps 1:1 to
-    // an ALLOW row in the v0.14+ synthesis §6 attribute matrix
-    // (migrate subset). Resolved alias names, destination URIs, and
-    // in-flight values are NEVER routed through this surface — those
-    // attribute names do not exist as methods, so no DENY-row escape
-    // hatch is reachable from a call site. v0.17 fills in the no-op
-    // bodies with OTLP emission without touching call sites.
 
     /// `secretenv.migrate.phase`. ALLOW. Closed enum
     /// [`MigratePhase`] — emits the kebab-case attribute value.
-    pub fn record_migrate_phase(&mut self, _phase: MigratePhase) -> &mut Self {
+    pub fn record_migrate_phase(&mut self, phase: MigratePhase) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.migrate.phase", phase.as_attribute_value()));
         self
     }
 
     /// `secretenv.migrate.outcome`. ALLOW. Closed enum
     /// [`MigrateOutcome`] — emits the kebab-case attribute value.
-    pub fn record_migrate_outcome(&mut self, _outcome: MigrateOutcome) -> &mut Self {
+    pub fn record_migrate_outcome(&mut self, outcome: MigrateOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.migrate.outcome",
+            outcome.as_attribute_value(),
+        ));
         self
     }
 
@@ -216,13 +281,17 @@ impl SecretEnvSpan {
     /// the backend INSTANCE name (instance names can carry
     /// environment hints like `prod` that fingerprint the operator's
     /// infra topology and stay DENY).
-    pub fn record_migrate_source_backend_type(&mut self, _ty: &str) -> &mut Self {
+    pub fn record_migrate_source_backend_type(&mut self, ty: &str) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.migrate.source_backend_type", ty.to_owned()));
         self
     }
 
     /// `secretenv.migrate.dest_backend_type`. ALLOW. Same shape as
     /// source — TYPE only, not instance name.
-    pub fn record_migrate_dest_backend_type(&mut self, _ty: &str) -> &mut Self {
+    pub fn record_migrate_dest_backend_type(&mut self, ty: &str) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.migrate.dest_backend_type", ty.to_owned()));
         self
     }
 
@@ -231,7 +300,8 @@ impl SecretEnvSpan {
     /// attribute is the flag's value, NOT the actual deletion
     /// outcome (success/failure surfaces via
     /// [`record_migrate_outcome`]).
-    pub fn record_migrate_delete_source(&mut self, _delete: bool) -> &mut Self {
+    pub fn record_migrate_delete_source(&mut self, delete: bool) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.migrate.delete_source", delete));
         self
     }
 
@@ -239,7 +309,8 @@ impl SecretEnvSpan {
     /// UUIDv4-shaped id correlating the three-step transaction
     /// (read → write → pointer-flip) across spans. Operators use
     /// this to grep recovery logs after a partial-failure exit.
-    pub fn record_migrate_transaction_id(&mut self, _id: &str) -> &mut Self {
+    pub fn record_migrate_transaction_id(&mut self, id: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.migrate.transaction_id", id.to_owned()));
         self
     }
 
@@ -254,6 +325,15 @@ impl SecretEnvSpan {
     // is the only protection that holds under careless contributors
     // — exporter-side filtering is fail-open and trivially
     // bypassed by misnamed keys.
+}
+
+impl Drop for SecretEnvSpan {
+    fn drop(&mut self) {
+        // SEC-INV-22's per-span emission point. End() is the contract
+        // the OTel `BatchSpanProcessor` listens on; without it the
+        // span never enters the export queue.
+        self.span.end();
+    }
 }
 
 /// Closed enum for `secretenv.alias.outcome`.
@@ -400,17 +480,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn span_records_silently_at_v0_14() {
+    fn span_records_silently_when_no_provider() {
+        // With no TracerProvider installed, the NoopTracer's BoxedSpan
+        // accepts every record_* call without panic and without
+        // allocating a real span.
         let (mut span, _guard) = SecretEnvSpan::start("redact.match");
-        span.record_version("0.14.0")
+        span.record_version("0.17.0")
             .record_run_id("11111111-1111-1111-1111-111111111111")
             .record_command("run")
             .record_redact_match_count(3)
             .record_alias_outcome(AliasOutcome::Ok);
         assert_eq!(span.name(), "redact.match");
-        // No assertions on emission — the v0.14 contract is "method
-        // exists, accepts the typed argument, returns &Self for
-        // chaining"; v0.17 will wire actual span attributes.
     }
 
     #[test]

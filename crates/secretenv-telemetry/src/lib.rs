@@ -50,6 +50,7 @@ pub mod error_kind;
 pub mod event;
 pub mod init;
 pub mod policy;
+pub mod sampler;
 pub mod sink;
 pub mod span;
 
@@ -57,5 +58,6 @@ pub use error_kind::SecretEnvErrorKind;
 pub use event::{RedactionEvent, RedactionSource, RedactionStream};
 pub use init::{flush_before_exec, init, init_with_env, InitError, TelemetryGuard};
 pub use policy::{AttributeClassification, RedactionPolicy};
+pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
-pub use span::{SecretEnvSpan, SpanGuard};
+pub use span::{AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, SecretEnvSpan, SpanGuard};

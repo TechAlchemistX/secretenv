@@ -293,6 +293,15 @@ pub async fn enforce_mutation_policy(
                     // resolve_confirm_via never returns Auto — unreachable.
                     unreachable!("Auto should have been resolved to a concrete surface")
                 }
+                // ConfirmVia is #[non_exhaustive] in secretenv-mcp-config
+                // (Phase 7h R-4); a future patch that adds a variant
+                // surfaces here as a guarded refusal until this arm is
+                // expanded to handle it.
+                other => bail!(
+                    "MCP server policy uses a confirm_via variant ({other:?}) this \
+                     `secretenv-mcp` build does not handle. Upgrade `secretenv-mcp` to a \
+                     newer release, or set `confirm_via` to a value supported by this build."
+                ),
             }
         }
     }

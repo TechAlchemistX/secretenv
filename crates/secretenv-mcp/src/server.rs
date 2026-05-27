@@ -170,45 +170,10 @@ fn load_config(config_path: Option<&Path>) -> Result<Config> {
 /// if the config cannot be loaded, if the `rmcp` `serve` call fails to
 /// perform the initialize handshake, or if the underlying transport
 /// errors during the service lifetime.
-/// Per-launch policy overrides applied AFTER the `[mcp]` section is
-/// loaded from `config.toml`. Used by per-IDE setup blocks (e.g.
-/// `secretenv mcp setup --ide gemini` emits `--allow-mutations always`
-/// in its `args[]` because Gemini CLI 0.43.0 does not advertise the
-/// MCP elicitation capability).
-///
-/// `None` means "use the config value (or default if absent)". `Some`
-/// overrides it.
-///
-/// # Layering — three sources, in increasing precedence
-///
-/// 1. **[`crate::config::McpConfig::default`]** — built-in defaults
-///    (`allow_mutations = Confirm`, `confirm_via = Auto`, no disabled
-///    tools, default audit-log path).
-/// 2. **`[mcp]` table in `config.toml`** — operator-global stance,
-///    parsed via [`crate::config::McpConfig::from_toml_value`].
-/// 3. **`PolicyOverrides`** — per-launch / per-IDE override layer
-///    threaded in from `secretenv mcp serve --allow-mutations <X>`
-///    / `--confirm-via <Y>`. This is what
-///    [`crate::setup::IdeProfile::extra_args`] uses to scope a
-///    workaround to a specific IDE without contaminating the
-///    operator's global config.
-///
-/// Future drift to watch: v0.17 may add an `allow_cli_overrides =
-/// false` knob to `[mcp]` (carry-forward F-3) so an operator can
-/// veto the per-launch layer from user-scope config. If that lands,
-/// the precedence chain becomes 4-stage with the new knob sitting
-/// between stages 2 and 3.
-#[derive(Debug, Clone, Default)]
-pub struct PolicyOverrides {
-    /// Override for `[mcp].allow_mutations`. `None` = inherit from
-    /// the config layer (which itself falls back to
-    /// [`crate::config::AllowMutations::Confirm`]).
-    pub allow_mutations: Option<crate::config::AllowMutations>,
-    /// Override for `[mcp].confirm_via`. `None` = inherit from the
-    /// config layer (which itself falls back to
-    /// [`crate::config::ConfirmVia::Auto`]).
-    pub confirm_via: Option<crate::config::ConfirmVia>,
-}
+/// `PolicyOverrides` is defined in [`secretenv_mcp_config`] as of
+/// v0.16.2 D.5 — re-exported here so existing
+/// `secretenv_mcp::PolicyOverrides` callers continue to resolve.
+pub use secretenv_mcp_config::PolicyOverrides;
 
 /// Run the `MCP` server with no per-launch policy overrides. Thin
 /// wrapper around [`serve_with_overrides`] for callers that don't

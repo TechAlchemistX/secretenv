@@ -39,6 +39,9 @@ secretenv-backends-init.workspace = true
 # Both `secretenv-cli` and this crate consume it; sits below both
 # in the dep graph (only needs `secretenv-core`).
 secretenv-registry-mutate.workspace = true
+# v0.16.2 D.5 — typed `[mcp]` config schema. Re-exported by
+# `secretenv-mcp::config` + the crate root for backward compat.
+secretenv-mcp-config.workspace = true
 # `secretenv-migrate` is the Phase 1a-extracted library that
 # `migrate_alias` (Phase 6) wraps. Calling `build_migration_plan` +
 # `migrate_with_plan` from the mcp handler is the value-free path:

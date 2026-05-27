@@ -1342,6 +1342,7 @@ dependencies = [
  "schemars",
  "secretenv-backends-init",
  "secretenv-core",
+ "secretenv-mcp-config",
  "secretenv-migrate",
  "secretenv-registry-mutate",
  "secretenv-telemetry",
@@ -1353,6 +1354,15 @@ dependencies = [
  "tracing",
  "trybuild",
  "zeroize",
+]
+
+[[package]]
+name = "secretenv-mcp-config"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]

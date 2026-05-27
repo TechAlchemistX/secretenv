@@ -5,6 +5,7 @@ members = [
     "crates/secretenv-telemetry",
     "crates/secretenv-migrate",
     "crates/secretenv-registry-mutate",
+    "crates/secretenv-mcp-config",
     "crates/secretenv-backends-init",
     "crates/secretenv-mcp",
     "crates/secretenv-cli",
@@ -49,6 +50,7 @@ secretenv-core               = { path = "crates/secretenv-core",                
 secretenv-telemetry          = { path = "crates/secretenv-telemetry",                      version = "0.16.0" }
 secretenv-migrate            = { path = "crates/secretenv-migrate",                        version = "0.16.0" }
 secretenv-registry-mutate    = { path = "crates/secretenv-registry-mutate",                version = "0.16.0" }
+secretenv-mcp-config         = { path = "crates/secretenv-mcp-config",                     version = "0.16.0" }
 secretenv-backends-init      = { path = "crates/secretenv-backends-init",                  version = "0.16.0" }
 secretenv-mcp                = { path = "crates/secretenv-mcp",                            version = "0.16.0" }
 secretenv-backend-local      = { path = "crates/backends/secretenv-backend-local",         version = "0.16.0" }

@@ -145,7 +145,39 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     // site invents the name. `secretenv.value` above also catches
     // generic value-named leaks.
     ("secretenv.migrate.value", AttributeClassification::Deny),
+    // Migrate spans use the generic `secretenv.alias.name` attribute
+    // (a `record_alias_name` call on `SecretEnvSpan`), not a
+    // migrate-scoped variant. The migrate-prefixed name stays DENY as
+    // a fail-closed guard: if a future contributor invents it
+    // thinking it's needed, this row + the SEC-INV-04 typed-builder
+    // discipline reject the emission. (Doc §2.7 lists
+    // `secretenv.migrate.alias_name` as ALLOW; that row of the
+    // matrix is reserved-but-not-shipped in v0.17 — the active
+    // setter is `record_alias_name`.)
     ("secretenv.migrate.alias_name", AttributeClassification::Deny),
+    // --- mcp (v0.16+) ---
+    //
+    // Doc §2.8 ALLOW entries — captured here so the canonical table
+    // is a complete enumeration of every MCP attribute the schema
+    // names, even when the matching `SecretEnvSpan` setter has not
+    // yet been added (the typed builder is the gatekeeper, the
+    // policy table is the audit-facing manifest).
+    ("secretenv.mcp.tool_name", AttributeClassification::Allow),
+    ("secretenv.mcp.client_name", AttributeClassification::Allow),
+    ("secretenv.mcp.client_version", AttributeClassification::Allow),
+    ("secretenv.mcp.transport", AttributeClassification::Allow),
+    ("secretenv.mcp.session_id", AttributeClassification::Allow),
+    ("secretenv.mcp.outcome", AttributeClassification::Allow),
+    ("secretenv.mcp.mutation_confirmed", AttributeClassification::Allow),
+    ("secretenv.mcp.argument_alias_name", AttributeClassification::Allow),
+    // Doc §2.8 DENY entries. `argument_uri` reveals backend topology;
+    // `argument_reason` is the operator-typed elicitation rationale
+    // (prompt-injection vehicle, audit-log only per SEC-INV-12);
+    // `resolved_value` and `tool.output_raw` are secret values.
+    ("secretenv.mcp.argument_uri", AttributeClassification::Deny),
+    ("secretenv.mcp.argument_reason", AttributeClassification::Deny),
+    ("secretenv.mcp.resolved_value", AttributeClassification::Deny),
+    ("secretenv.mcp.tool.output_raw", AttributeClassification::Deny),
 ];
 
 #[cfg(test)]

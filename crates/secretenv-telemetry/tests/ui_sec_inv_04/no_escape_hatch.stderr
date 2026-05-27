@@ -1,0 +1,17 @@
+error[E0599]: no method named `set_attribute` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/no_escape_hatch.rs:17:10
+   |
+17 |     span.set_attribute("any.key", "any.value");
+   |          ^^^^^^^^^^^^^ method not found in `SecretEnvSpan`
+
+error[E0599]: no method named `set_attribute_str` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/no_escape_hatch.rs:18:10
+   |
+18 |     span.set_attribute_str("any.key", "any.value");
+   |          ^^^^^^^^^^^^^^^^^ method not found in `SecretEnvSpan`
+
+error[E0599]: no method named `add_attribute` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/no_escape_hatch.rs:19:10
+   |
+19 |     span.add_attribute("any.key", 42);
+   |          ^^^^^^^^^^^^^ method not found in `SecretEnvSpan`

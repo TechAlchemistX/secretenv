@@ -16,7 +16,19 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
-> v0.16.1 hygiene cycle queue is open — see `kb/wiki/v0.16-phase-8b-checklist.md` + `kb/wiki/audits/2026-05-24-v0.16-phase9-*.md` for the carry-forward catalog. Top items: F-2 (Bidi-control sanitization in `sanitize_for_tty`), F-3 (`[mcp].allow_cli_overrides` opt-in), F-6 (TTY TOCTOU `tcflush`), F-7 (`mcp_client_id` from rmcp `initialize` handshake), F-8 (helper merge logic for existing settings.json), F-11 (Copilot empty-schema rendering investigation), F-15 (schemars `"format": "uint"` cleanup), R-2 (`IdeProfile::extra_args` evolution-trap docstring), R-3 (`secretenv mcp setup --check-overrides` stale-override detector), upstream PRs to Gemini / Cline / Codex / OpenCode to declare `elicitation: {}` in their `registerCapabilities` calls. v0.16 carry-forwards from prior Phase 7 audits also still queued (`run_mutation` combinator, `tools/mod.rs` per-tool split, `audit_log.rs` fcntl-lock + rotation + `mcp audit tail`, `McpSafeReport` in `secretenv-migrate`).
+### v0.16.2 — Refactor sprint (merged-not-tagged) — in progress
+
+Carries the three substantive refactors that v0.16.1's hygiene cycle deferred mid-cycle because each introduces new public crate/subcommand surface that needs a real Phase 7 audit. Plus F-11 (Copilot empty-schema A/B test) operator-led fixture.
+
+- **D.2a — `run_mutation` combinator** (module in `secretenv-mcp`). Per Phase 7 code-review High-1: collapses ~120 LOC of policy-gate + audit-log boilerplate across the `set_alias` / `delete_alias` / `init_project` handlers into one combinator call. `redact_file` / `gen_password` / `migrate_alias` kept as-is (multi-stage validation / orphan-state precision that the clean combinator shape would lose). Retired the misleading `should_audit` helper.
+- **D.2b — new `secretenv-registry-mutate` crate.** Per Phase 7 architecture C-2 + code-review Medium: extracts the `list + edit + serialize + set` transaction body that `secretenv-cli` (`registry_set` / `registry_unset`) and `secretenv-mcp` (`registry_writer`) previously duplicated line-for-line. CLI + MCP each keep their own selection helper (env-aware vs named-only) but share the writer. Workspace + release.yml publish-list update.
+- **D.3 — `audit_log.rs` fcntl-lock + size rotation + `secretenv mcp audit tail` subcommand.** `flock(LOCK_EX)` around every append (cross-process serialization for multi-IDE deployments). Size-based rotation at `[mcp].audit_log_max_bytes` (default 10 MiB; 0 disables) with `[mcp].audit_log_max_rotations` cap (default 5; 0 truncates). New operator subcommand `secretenv mcp audit tail [--lines N] [--path PATH]` for read-only chronological inspection of recent entries.
+- **D.5 — new `secretenv-mcp-config` crate.** Per Phase 7 architecture C-1: lifts the typed `[mcp]` config schema (`AllowMutations`, `ConfirmVia`, `McpConfig`, `PolicyOverrides`) out of `secretenv-mcp` into a slim sibling crate so future consumers (e.g. a slimmer `secretenv doctor` that validates `[mcp]` without spinning up rmcp) can depend on the config types alone. Backward-compat re-exports preserve every `secretenv_mcp::config::*` path. Workspace + release.yml publish-list update.
+- **F-11 Copilot empty-schema A/B test prep.** Operator-led fixture at `scripts/smoke-test/fixtures/vscode-mcp-copilot/` + runbook at `kb/wiki/runbooks/copilot-elicitation-validation.md`. No source-level change to `MutationApproval` in v0.16.2 — the runbook walks the operator through the A/B and the decision tree gates whether option (a) (`confirm: bool` no-op field) ships as default or F-11 closes as upstream-fix-only.
+
+Pending in v0.16.2 (this cycle): Phase 7 audit trio, Phase 8 live-backend smoke, Phase 10 PR + squash-merge.
+
+> Carried over to a future cycle: v0.17 OpenTelemetry (design-locked); Item 12 operator-led upstream issues with Gemini / Cline / Codex / OpenCode for `elicitation: {}` capability declaration; F-3 `[mcp].allow_cli_overrides`; F-7 `mcp_client_id` threading; M-9 / M-12 migrate dual-control reconciliation + `dry_run` audit entry; R-3 `secretenv mcp setup --check-overrides` detector.
 
 ## [0.16.0] - 2026-05-24
 

@@ -51,7 +51,13 @@ use secretenv_core::{Backend, BackendRegistry, BackendUri};
 /// Constructed by the caller (CLI or MCP) after it has resolved
 /// the source URI + backend via its own selection helper. Passed
 /// to [`apply_change`].
+///
+/// `#[non_exhaustive]` per v0.16.2 Phase 7 architecture review:
+/// new variants (e.g. a future `Bulk { changes: Vec<...> }`) can
+/// be added in a patch release without forcing every downstream
+/// `match` site to update.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum AliasChange {
     /// Insert (or update if already present) `alias → target_uri`.
     Insert {

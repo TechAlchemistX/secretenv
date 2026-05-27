@@ -74,12 +74,15 @@ pub struct MutationContext<'a> {
 }
 
 /// Metadata baked into every [`MutationLogEntry`] written by the
-/// combinator. Owned strings because the entry construction outlives
-/// the borrow of the handler's `args`.
+/// combinator. Owned strings because the entry construction
+/// outlives the borrow of the handler's `args`.
+///
+/// **`tool_name` is intentionally absent** — the audit-log entry
+/// reads it from [`MutationRequest::tool_name`] passed alongside
+/// this struct so the policy gate + the audit-log entry can never
+/// drift via a copy-paste typo at the call site (v0.16.2 Phase 7
+/// code-review Low-2).
 pub struct AuditMeta {
-    /// Stable tool name written verbatim into the audit-log entry
-    /// + the [`MutationRequest`].
-    pub tool_name: &'static str,
     /// `Some(alias_name)` for alias-keyed mutations (set / delete /
     /// `gen_password` / migrate); `None` for `init_project` /
     /// `redact_file` which don't carry an alias identity.
@@ -148,7 +151,10 @@ where
 {
     let mk_entry = |decision: OperatorDecision| MutationLogEntry {
         ts_unix_secs: helpers::now_secs(),
-        tool_name: audit.tool_name.to_owned(),
+        // SoT for tool_name is MutationRequest — never AuditMeta
+        // (v0.16.2 Phase 7 code-review Low-2: prevents drift if a
+        // call site mistypes the tool name in one of two places).
+        tool_name: request.tool_name.to_owned(),
         alias_name: audit.alias_name.clone(),
         backend_instance: audit.backend_instance.clone(),
         agent_reason: agent_reason.clone(),

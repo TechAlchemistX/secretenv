@@ -485,7 +485,6 @@ impl Server {
                 agent_reason: &args.reason,
             },
             mutation_runner::AuditMeta {
-                tool_name: "set_alias",
                 alias_name: Some(args.alias.clone()),
                 backend_instance: Some(backend_instance.clone()),
                 mcp_client_id: "unknown".to_owned(),
@@ -546,7 +545,6 @@ impl Server {
                 agent_reason: &args.reason,
             },
             mutation_runner::AuditMeta {
-                tool_name: "delete_alias",
                 alias_name: Some(args.alias.clone()),
                 backend_instance: None,
                 mcp_client_id: "unknown".to_owned(),
@@ -652,7 +650,6 @@ impl Server {
                 agent_reason: &args.reason,
             },
             mutation_runner::AuditMeta {
-                tool_name: "init_project",
                 alias_name: None,
                 backend_instance: None,
                 mcp_client_id: "unknown".to_owned(),
@@ -688,6 +685,14 @@ impl Server {
                        Apply mode (`apply = true`) is gated by [mcp].allow_mutations + \
                        audit-logged. Default `apply = false` only counts."
     )]
+    // v0.16.2 D.2a note: redact_file is intentionally NOT lifted
+    // into mutation_runner::run_mutation because it has multi-stage
+    // pre-write validation (build_registry, build_tainted_set) whose
+    // failures feed distinct response fields (aliases_loaded,
+    // matches_found, bytes_replaced). The clean combinator shape
+    // would either lose that precision or grow a leaky output
+    // channel. Revisit if the combinator gains a structured-output
+    // variant.
     pub async fn redact_file(
         &self,
         args: Parameters<RedactFileArgs>,
@@ -890,6 +895,15 @@ impl Server {
                        CONFIRM backend + path + length before calling. Subject to \
                        [mcp].allow_mutations + audit-logged."
     )]
+    // v0.16.2 D.2a note: gen_password is intentionally NOT lifted
+    // into mutation_runner::run_mutation because of an orphan-state
+    // subtlety. The flow is: backend.set(value) → registry.set(alias).
+    // If the second step fails after the first succeeded, the value
+    // is orphaned in the backend (resolves: false + a distinct error
+    // message warning the operator). The clean combinator shape
+    // would lose the orphan-vs-clean-fail distinction; better to
+    // keep this handler structured around its own outcomes than to
+    // weaken a safety-relevant signal.
     pub async fn gen_password(
         &self,
         args: Parameters<GenPasswordArgs>,
@@ -1126,6 +1140,14 @@ impl Server {
                        flag). CONFIRM before calling. Subject to [mcp].allow_mutations + \
                        audit-logged. `dry_run = true` skips the policy gate + audit (probe only)."
     )]
+    // v0.16.2 D.2a note: migrate_alias is intentionally NOT lifted
+    // into mutation_runner::run_mutation because it has a distinct
+    // multi-phase audit shape (`helpers::audit_migrate` records
+    // source/dest backend types + transaction_id at points the
+    // generic combinator can't see). Dry-run also skips the policy
+    // gate entirely (read-only), which the combinator doesn't
+    // model. Lifting would require either a bespoke variant or a
+    // separate combinator.
     pub async fn migrate_alias(
         &self,
         args: Parameters<MigrateAliasArgs>,

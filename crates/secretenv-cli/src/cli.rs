@@ -233,6 +233,36 @@ pub enum McpCommand {
         #[arg(long, requires = "write")]
         merge: bool,
     },
+    /// Inspect the MCP mutation audit log.
+    ///
+    /// Subcommands query the log written by `mcp serve` (one JSON
+    /// line per mutation tool call). Use `audit tail` for a
+    /// chronological view of recent activity.
+    Audit {
+        #[command(subcommand)]
+        cmd: AuditCommand,
+    },
+}
+
+/// `secretenv mcp audit <subcommand>` — operator-facing read-only
+/// view onto the mutation audit log. v0.16.2 D.3.
+#[derive(Debug, Subcommand)]
+pub enum AuditCommand {
+    /// Print the last N audit-log entries in chronological order.
+    ///
+    /// Reads the active log only (rotated files like
+    /// `mcp-mutations.log.1` are not consulted — merge them
+    /// externally if you need full history). Output is one JSON
+    /// object per line, suitable for piping into `jq`.
+    Tail {
+        /// How many entries to print (default 50).
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        lines: usize,
+        /// Path to the audit-log file. Default is the same XDG
+        /// state-dir location `mcp serve` writes to.
+        #[arg(long, value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+    },
 }
 
 /// `secretenv redact <path> [...]` — Mode B post-hoc file scrubber.
@@ -716,6 +746,28 @@ async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
         }
         McpCommand::Setup { ide, list_ides, binary, write, force, merge } => {
             cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force, *merge)
+        }
+        McpCommand::Audit { cmd } => cmd_mcp_audit(cmd),
+    }
+}
+
+/// `secretenv mcp audit <subcommand>` dispatch. v0.16.2 D.3.
+fn cmd_mcp_audit(cmd: &AuditCommand) -> Result<()> {
+    match cmd {
+        AuditCommand::Tail { lines, path } => {
+            let log_path = match path {
+                Some(p) => p.clone(),
+                None => secretenv_mcp::audit_log::default_audit_log_path()
+                    .context("resolving default audit-log path")?,
+            };
+            let entries = secretenv_mcp::audit_log::tail_entries(&log_path, *lines)
+                .with_context(|| format!("reading audit log at `{}`", log_path.display()))?;
+            for entry in &entries {
+                let line = serde_json::to_string(entry)
+                    .context("serializing audit-log entry for output")?;
+                println!("{line}");
+            }
+            Ok(())
         }
     }
 }

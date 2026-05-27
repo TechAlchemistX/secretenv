@@ -109,7 +109,7 @@ pub enum ConfirmVia {
 ///
 /// All fields have defaults; an absent `[mcp]` table or any missing
 /// field is equivalent to [`McpConfig::default`].
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpConfig {
     /// Mutation tool policy. Default: [`AllowMutations::Confirm`].
@@ -126,6 +126,42 @@ pub struct McpConfig {
     /// fallback is computed by the audit-log writer, not this config
     /// parser, so the default value here stays config-agnostic).
     pub mutation_log: Option<String>,
+    /// Maximum size (bytes) the audit log may reach before
+    /// [`crate::audit_log::MutationLog`] rotates. Default 10 MiB
+    /// (10 * 1024 * 1024). Set to `0` to disable size-based rotation
+    /// (the log grows unbounded; the operator is responsible for
+    /// external rotation). v0.16.2 D.3.
+    #[serde(default = "default_audit_log_max_bytes")]
+    pub audit_log_max_bytes: u64,
+    /// Maximum number of rotated audit-log files to retain (e.g. a
+    /// value of 5 keeps `mcp-mutations.log.1` through
+    /// `mcp-mutations.log.5`; older files are removed at rotation
+    /// time). Default 5. Set to `0` to disable retention (each
+    /// rotation truncates the current log without writing a `.1`
+    /// archive). v0.16.2 D.3.
+    #[serde(default = "default_audit_log_max_rotations")]
+    pub audit_log_max_rotations: u32,
+}
+
+const fn default_audit_log_max_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+
+const fn default_audit_log_max_rotations() -> u32 {
+    5
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            allow_mutations: AllowMutations::default(),
+            confirm_via: ConfirmVia::default(),
+            disabled_tools: Vec::new(),
+            mutation_log: None,
+            audit_log_max_bytes: default_audit_log_max_bytes(),
+            audit_log_max_rotations: default_audit_log_max_rotations(),
+        }
+    }
 }
 
 /// Top-level wrapper used to extract just `[mcp]` from an arbitrary

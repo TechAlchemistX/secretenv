@@ -276,9 +276,13 @@ pub async fn serve_with_overrides(
         );
         mcp_config.confirm_via = cv;
     }
+    let rotation = crate::audit_log::RotationConfig {
+        max_bytes: mcp_config.audit_log_max_bytes,
+        max_rotations: mcp_config.audit_log_max_rotations,
+    };
     let mcp_config = Arc::new(mcp_config);
     let mutation_log = Arc::new(
-        MutationLog::open_with_default(mcp_config.mutation_log.as_deref())
+        MutationLog::open_with_default(mcp_config.mutation_log.as_deref(), rotation)
             .context("opening MCP mutation audit log")?,
     );
 

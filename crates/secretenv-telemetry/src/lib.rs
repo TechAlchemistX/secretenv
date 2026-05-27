@@ -49,6 +49,7 @@
 pub mod error_kind;
 pub mod event;
 pub mod init;
+pub mod metrics;
 pub mod policy;
 pub mod sampler;
 pub mod sink;

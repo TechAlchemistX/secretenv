@@ -85,6 +85,19 @@ See `docs/security.md` for the full Limits matrix.
     /// before printing to stdout.
     Get(GetArgs),
     /// Diagnose backend installation and auth state (Phase 10).
+    #[command(long_about = "\
+Diagnose backend installation and auth state across every configured \
+registry and backend.
+
+Runs three probe levels: L1 = CLI installed, L2 = backend authenticated, \
+L3 = registry readable (--extensive).
+
+OpenTelemetry: SecretEnv emits OTel traces, metrics, and logs when \
+OTEL_EXPORTER_OTLP_ENDPOINT is set. See docs/reference/opentelemetry.md for \
+the full attribute schema, span topology, and the audit-facing ALLOW/DENY \
+classification of every emitted attribute. With no endpoint configured \
+SecretEnv installs no exporter (zero startup overhead).\
+")]
     Doctor(DoctorArgs),
     /// Initialize `config.toml` for a registry URI (Phase 11).
     Setup(SetupArgs),

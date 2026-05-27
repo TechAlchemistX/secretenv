@@ -1,0 +1,23 @@
+[package]
+name        = "secretenv-registry-mutate"
+description = "SecretEnv — shared registry-document mutation helpers. Centralizes the `list + edit + serialize + set` transaction that `secretenv-cli` and `secretenv-mcp` use to apply alias insert / remove operations to a registry's primary source. Extracted v0.16.2 (Phase 7 architecture C-2 + code-review Medium)."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+rust-version.workspace = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[dependencies]
+secretenv-core.workspace = true
+anyhow.workspace         = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

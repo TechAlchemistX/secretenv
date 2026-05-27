@@ -266,6 +266,29 @@ jobs:
       - name: Wait for crates.io to index secretenv-backends-init
         run: sleep 30
 
+      # secretenv-registry-mutate (v0.16.2 D.2b) — shared
+      # list+edit+serialize+set transaction used by BOTH secretenv-cli
+      # and secretenv-mcp. Depends on secretenv-core only; can be
+      # published any time after core. Publishing here (right before
+      # secretenv-mcp) keeps the dep-graph order intuitive for future
+      # readers.
+      - name: Publish secretenv-registry-mutate
+        run: cargo publish -p secretenv-registry-mutate --locked
+
+      - name: Wait for crates.io to index secretenv-registry-mutate
+        run: sleep 30
+
+      # secretenv-mcp-config (v0.16.2 D.5) — typed `[mcp]` config
+      # schema, lifted out of secretenv-mcp so future consumers
+      # (e.g. a slimmer `secretenv doctor` validator) can depend on
+      # the config types alone. Depends on serde + toml + anyhow
+      # only; sits anywhere after the workspace base.
+      - name: Publish secretenv-mcp-config
+        run: cargo publish -p secretenv-mcp-config --locked
+
+      - name: Wait for crates.io to index secretenv-mcp-config
+        run: sleep 30
+
       - name: Publish secretenv-mcp
         run: cargo publish -p secretenv-mcp --locked
 

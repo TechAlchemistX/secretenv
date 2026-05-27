@@ -8,7 +8,6 @@
 //! wiring.
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -233,6 +232,36 @@ pub enum McpCommand {
         /// manually. Mutually exclusive with `--force`.
         #[arg(long, requires = "write")]
         merge: bool,
+    },
+    /// Inspect the MCP mutation audit log.
+    ///
+    /// Subcommands query the log written by `mcp serve` (one JSON
+    /// line per mutation tool call). Use `audit tail` for a
+    /// chronological view of recent activity.
+    Audit {
+        #[command(subcommand)]
+        cmd: AuditCommand,
+    },
+}
+
+/// `secretenv mcp audit <subcommand>` — operator-facing read-only
+/// view onto the mutation audit log. v0.16.2 D.3.
+#[derive(Debug, Subcommand)]
+pub enum AuditCommand {
+    /// Print the last N audit-log entries in chronological order.
+    ///
+    /// Reads the active log only (rotated files like
+    /// `mcp-mutations.log.1` are not consulted — merge them
+    /// externally if you need full history). Output is one JSON
+    /// object per line, suitable for piping into `jq`.
+    Tail {
+        /// How many entries to print (default 50).
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        lines: usize,
+        /// Path to the audit-log file. Default is the same XDG
+        /// state-dir location `mcp serve` writes to.
+        #[arg(long, value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
     },
 }
 
@@ -717,6 +746,28 @@ async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
         }
         McpCommand::Setup { ide, list_ides, binary, write, force, merge } => {
             cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force, *merge)
+        }
+        McpCommand::Audit { cmd } => cmd_mcp_audit(cmd),
+    }
+}
+
+/// `secretenv mcp audit <subcommand>` dispatch. v0.16.2 D.3.
+fn cmd_mcp_audit(cmd: &AuditCommand) -> Result<()> {
+    match cmd {
+        AuditCommand::Tail { lines, path } => {
+            let log_path = match path {
+                Some(p) => p.clone(),
+                None => secretenv_mcp::audit_log::default_audit_log_path()
+                    .context("resolving default audit-log path")?,
+            };
+            let entries = secretenv_mcp::audit_log::tail_entries(&log_path, *lines)
+                .with_context(|| format!("reading audit log at `{}`", log_path.display()))?;
+            for entry in &entries {
+                let line = serde_json::to_string(entry)
+                    .context("serializing audit-log entry for output")?;
+                println!("{line}");
+            }
+            Ok(())
         }
     }
 }
@@ -1517,33 +1568,19 @@ async fn registry_set(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    // Validate target before any write.
-    let target = BackendUri::parse(target_uri)
-        .with_context(|| format!("target '{target_uri}' is not a valid URI"))?;
-    if target.is_alias() {
-        bail!("target must be a direct backend URI, not a secretenv:// alias");
-    }
-    if backends.get(&target.scheme).is_none() {
-        bail!(
-            "target '{target_uri}' references backend instance '{}' which is not configured",
-            target.scheme
-        );
-    }
-
+    secretenv_registry_mutate::validate_target_uri(target_uri, backends)?;
     let (source_uri, backend) = pick_registry_source(registry, config, backends)?;
-    let current = backend
-        .list(&source_uri)
-        .await
-        .with_context(|| format!("reading registry document at '{}'", source_uri.raw))?;
-    // BTreeMap: deterministic ordering on write. HashMap in v0.1
-    // produced non-reproducible diffs on every `registry set`.
-    let mut map: BTreeMap<String, String> = current.into_iter().collect();
-    map.insert(alias.to_owned(), target_uri.to_owned());
-    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&source_uri, &serialized)
-        .await
-        .with_context(|| format!("writing updated registry document to '{}'", source_uri.raw))?;
+    let registry_label = registry.unwrap_or("default").to_owned();
+    secretenv_registry_mutate::apply_change(
+        backend,
+        &source_uri,
+        &registry_label,
+        secretenv_registry_mutate::AliasChange::Insert {
+            alias: alias.to_owned(),
+            target_uri: target_uri.to_owned(),
+        },
+    )
+    .await?;
     eprintln!("set {alias} → {target_uri} in registry at '{}'", source_uri.raw);
     Ok(())
 }
@@ -1898,19 +1935,14 @@ async fn registry_unset(
     backends: &BackendRegistry,
 ) -> Result<()> {
     let (source_uri, backend) = pick_registry_source(registry, config, backends)?;
-    let current = backend
-        .list(&source_uri)
-        .await
-        .with_context(|| format!("reading registry document at '{}'", source_uri.raw))?;
-    let mut map: BTreeMap<String, String> = current.into_iter().collect();
-    if map.remove(alias).is_none() {
-        bail!("alias '{alias}' not found in registry at '{}'", source_uri.raw);
-    }
-    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&source_uri, &serialized)
-        .await
-        .with_context(|| format!("writing updated registry document to '{}'", source_uri.raw))?;
+    let registry_label = registry.unwrap_or("default").to_owned();
+    secretenv_registry_mutate::apply_change(
+        backend,
+        &source_uri,
+        &registry_label,
+        secretenv_registry_mutate::AliasChange::Remove { alias: alias.to_owned(), required: true },
+    )
+    .await?;
     eprintln!("unset {alias} in registry at '{}'", source_uri.raw);
     Ok(())
 }

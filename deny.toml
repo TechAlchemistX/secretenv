@@ -57,6 +57,13 @@ exceptions = [
     { allow = ["AGPL-3.0-only"], crate = "secretenv-migrate" },
     { allow = ["AGPL-3.0-only"], crate = "secretenv-backends-init" },
     { allow = ["AGPL-3.0-only"], crate = "secretenv-mcp" },
+    # v0.16.2 D.2b + D.5 — new first-party crates extracted from
+    # secretenv-mcp; same AGPL-3.0-only license as the rest of the
+    # workspace. Adding a future workspace crate requires one new
+    # line here, which forces explicit-review intent before
+    # cargo-deny will accept it.
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-registry-mutate" },
+    { allow = ["AGPL-3.0-only"], crate = "secretenv-mcp-config" },
 ]
 
 [bans]

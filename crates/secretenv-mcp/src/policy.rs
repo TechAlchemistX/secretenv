@@ -144,7 +144,7 @@ pub struct MutationRequest<'a> {
 /// operator must tick BEFORE clicking Accept (a redundant two-step
 /// interaction per Phase 7e Phase 8b walkthrough finding).
 ///
-/// # v0.16.1 F-11 investigation outcome — deferred to v0.16.2
+/// # v0.16.1 F-11 — deferred; v0.16.2 ships operator-led A/B fixture
 ///
 /// Phase 8b FINDING-11: VS Code Copilot advertises MCP elicitation
 /// but renders NO UI for our empty-schema elicit requests
@@ -153,12 +153,27 @@ pub struct MutationRequest<'a> {
 /// Code renders the Accept/Decline buttons correctly with the same
 /// empty schema, so the issue is Copilot-specific.
 ///
-/// v0.16.1 hygiene cycle investigated three candidate fixes:
+/// **v0.16.2 Phase 4** ships an operator-driven A/B fixture +
+/// runbook to test the leading hypothesis (option (a) below)
+/// against the 6 elicitation IDEs without requiring a code change
+/// up front:
+///
+/// - Fixture: `scripts/smoke-test/fixtures/vscode-mcp-copilot/`
+/// - Runbook: `kb/wiki/runbooks/copilot-elicitation-validation.md`
+///
+/// The runbook walks the operator through:
+///   (1) baseline reproduction of FINDING-11 with the current
+///       empty schema;
+///   (2) applying the option (a) patch (`MutationApproval {
+///       confirm: bool, default true }`);
+///   (3) re-testing all 6 IDEs;
+///   (4) shipping the patch as default OR closing F-11 as
+///       upstream-fix-only based on empirical results.
+///
+/// Three candidate fixes considered when deferring:
 ///   (a) Add a `confirm: bool` no-op field to force Copilot to
-///       render the modal. Risk: unknown impact on other 5 IDEs
-///       that currently work; needs empirical re-validation of all
-///       6 elicitation surfaces (Claude Code, Gemini, Cline,
-///       Codex, `OpenCode`, Copilot).
+///       render the modal. **Primary hypothesis** — the runbook
+///       tests this.
 ///   (b) Detect Copilot from rmcp's `clientInfo.name` at the
 ///       initialize handshake and serve a different schema. Risk:
 ///       client-name strings are not stable across versions;
@@ -167,17 +182,9 @@ pub struct MutationRequest<'a> {
 ///       per-IDE workaround alongside the existing Phase 7f
 ///       `--allow-mutations always` overrides.
 ///
-/// Without a live Copilot session to A/B-test (a), shipping any of
-/// these speculatively risks regressing the IDEs that currently
-/// work. **Deferred to v0.16.2** with the spec:
-///
-/// 1. Set up a Copilot test fixture in `scripts/smoke-test/`.
-/// 2. A/B test option (a) against all 6 elicitation IDEs.
-/// 3. Ship the variant that works for Copilot AND preserves the
-///    UX on the other 5 — or formally close as upstream-fix-only.
-///
-/// Until then, the Phase 7f `--allow-mutations always` override
-/// (shipped in `IDE_PROFILES["vscode-copilot"]` — see
+/// Until the runbook concludes, the Phase 7f
+/// `--allow-mutations always` override (shipped in
+/// `IDE_PROFILES["vscode-copilot"]` — see
 /// `[[reference_v0.16_phase8b_results]]`) is the documented
 /// workaround.
 ///
@@ -293,6 +300,15 @@ pub async fn enforce_mutation_policy(
                     // resolve_confirm_via never returns Auto — unreachable.
                     unreachable!("Auto should have been resolved to a concrete surface")
                 }
+                // ConfirmVia is #[non_exhaustive] in secretenv-mcp-config
+                // (Phase 7h R-4); a future patch that adds a variant
+                // surfaces here as a guarded refusal until this arm is
+                // expanded to handle it.
+                other => bail!(
+                    "MCP server policy uses a confirm_via variant ({other:?}) this \
+                     `secretenv-mcp` build does not handle. Upgrade `secretenv-mcp` to a \
+                     newer release, or set `confirm_via` to a value supported by this build."
+                ),
             }
         }
     }

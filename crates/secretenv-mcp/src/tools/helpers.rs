@@ -12,7 +12,7 @@
 //! the call sites readable.
 
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
-use crate::boundary::{MutationOutcome, OperatorDecisionEcho};
+use crate::boundary::OperatorDecisionEcho;
 use crate::tools::args::MigrateAliasArgs;
 
 /// Emit a `migrate_alias` audit-log entry. Pulled out into a helper
@@ -56,10 +56,9 @@ pub const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
     }
 }
 
-/// Map a [`MutationOutcome`] to whether the audit log should record
-/// the call. Every outcome lands in the audit log (even refusals);
-/// the function exists so the call site reads as an explicit policy
-/// rather than an unconditional write.
-pub const fn should_audit(_outcome: MutationOutcome) -> bool {
-    true
-}
+// `should_audit` retired in v0.16.2 D.2a — the run_mutation
+// combinator unconditionally appends one audit entry per branch, so
+// the abstraction is no longer load-bearing. Per v0.16 Phase 7
+// code-review Medium ("misleading abstraction"), the function was
+// either called inconsistently or returned `true` unconditionally;
+// dropping it removes a class of drift without changing behavior.

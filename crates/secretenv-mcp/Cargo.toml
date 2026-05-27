@@ -34,6 +34,14 @@ secretenv-core      = { path = "../secretenv-core", version = "0.16.0", default-
 # would still need to land in `src/internal/` per the documented
 # escape-hatch rule in `clippy.toml`.
 secretenv-backends-init.workspace = true
+# `secretenv-registry-mutate` (v0.16.2 D.2b) — shared
+# list+edit+serialize+set transaction for alias insert/remove.
+# Both `secretenv-cli` and this crate consume it; sits below both
+# in the dep graph (only needs `secretenv-core`).
+secretenv-registry-mutate.workspace = true
+# v0.16.2 D.5 — typed `[mcp]` config schema. Re-exported by
+# `secretenv-mcp::config` + the crate root for backward compat.
+secretenv-mcp-config.workspace = true
 # `secretenv-migrate` is the Phase 1a-extracted library that
 # `migrate_alias` (Phase 6) wraps. Calling `build_migration_plan` +
 # `migrate_with_plan` from the mcp handler is the value-free path:

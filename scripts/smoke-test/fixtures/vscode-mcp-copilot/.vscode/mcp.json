@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "secretenv": {
+      "type": "stdio",
+      "command": "secretenv",
+      "args": ["mcp", "serve"]
+    }
+  }
+}

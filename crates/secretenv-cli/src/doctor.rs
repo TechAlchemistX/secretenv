@@ -178,6 +178,49 @@ struct DoctorReport {
     /// `backends` array; this field is the audit trail.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fix_actions: Vec<FixAction>,
+    /// OpenTelemetry exporter status. Populated only when
+    /// `--extensive` is set (v0.17 Phase 6.3). `None` for the default
+    /// L1+L2 doctor pass — the `OTel` section is opt-in via the same
+    /// flag that gates registry-read depth probes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    otel: Option<OtelStatus>,
+}
+
+/// OpenTelemetry exporter status as surfaced by `doctor --extensive`.
+/// Carries the env-driven configuration snapshot + a reachability
+/// probe result for the configured endpoint.
+#[derive(Debug, Clone, Serialize)]
+struct OtelStatus {
+    /// `true` when any `OTEL_*` env var is set that would cause
+    /// `secretenv_telemetry::init` to install an exporter (i.e.
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_TRACES_EXPORTER=otlp`).
+    configured: bool,
+    /// The configured OTLP endpoint, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
+    /// `service.name` resource attribute that spans/metrics will
+    /// carry. Defaults to `secretenv`; overridden by
+    /// `OTEL_SERVICE_NAME`.
+    service_name: String,
+    /// Sampler identifier. v0.17 always installs
+    /// `parentbased_always_on` under the mutation-non-droppable
+    /// wrapper; this string is the doc-facing render.
+    sampler: String,
+    /// Reachability probe result. `None` when `configured == false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reachability: Option<OtelReachability>,
+}
+
+/// TCP-connect reachability probe outcome for the OTLP endpoint.
+/// `doctor --extensive` deliberately does NOT send a test span —
+/// just confirms the port answers a TCP handshake within 1 second.
+#[derive(Debug, Clone, Serialize)]
+struct OtelReachability {
+    ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rtt_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -283,8 +326,11 @@ pub async fn run_doctor(
         run_depth_probes(&list, &mut entries, &registries).await;
     }
 
+    // ---- v0.17 Phase 6.3: --extensive OTel reachability section ----
+    let otel = if opts.extensive { Some(probe_otel_status().await) } else { None };
+
     let summary = DoctorSummary::from_entries(&entries);
-    let report = DoctorReport { backends: entries, registries, summary, fix_actions };
+    let report = DoctorReport { backends: entries, registries, summary, fix_actions, otel };
 
     if opts.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -491,6 +537,11 @@ fn render_human(report: &DoctorReport) -> String {
         render_registries(&mut out, &report.registries);
     }
 
+    if let Some(otel) = &report.otel {
+        writeln!(out).unwrap();
+        render_otel(&mut out, otel);
+    }
+
     writeln!(out).unwrap();
     write!(out, "Summary: {}/{} OK", report.summary.ok, report.summary.total).unwrap();
     if report.summary.not_authenticated > 0 {
@@ -505,6 +556,110 @@ fn render_human(report: &DoctorReport) -> String {
     writeln!(out).unwrap();
 
     out
+}
+
+/// v0.17 Phase 6.3 — render the `OTel` exporter status section.
+///
+/// Output shape (configured):
+///
+/// ```text
+/// -- OpenTelemetry --------------------------------------------------
+///   Exporter endpoint: http://localhost:4317
+///   Connection check:  ok (TCP 12ms)
+///   Service name:      secretenv
+///   Sampler:           parentbased_always_on (mutation-non-droppable)
+/// ```
+///
+/// When not configured, prints a one-line "not configured" message
+/// with a pointer to the reference doc.
+#[allow(clippy::unwrap_used)]
+fn render_otel(out: &mut String, otel: &OtelStatus) {
+    writeln!(out, "-- OpenTelemetry --------------------------------------------------").unwrap();
+    if !otel.configured {
+        writeln!(out, "  No exporter configured. Set OTEL_EXPORTER_OTLP_ENDPOINT to enable.")
+            .unwrap();
+        writeln!(out, "  Docs: docs/reference/opentelemetry.md").unwrap();
+        return;
+    }
+    if let Some(endpoint) = &otel.endpoint {
+        writeln!(out, "  Exporter endpoint: {endpoint}").unwrap();
+    }
+    if let Some(reach) = &otel.reachability {
+        let summary = if reach.ok {
+            reach.rtt_ms.map_or_else(|| "ok".to_owned(), |ms| format!("ok (TCP {ms}ms)"))
+        } else {
+            reach.error.clone().unwrap_or_else(|| "unreachable".to_owned())
+        };
+        writeln!(out, "  Connection check:  {summary}").unwrap();
+    }
+    writeln!(out, "  Service name:      {}", otel.service_name).unwrap();
+    writeln!(out, "  Sampler:           {}", otel.sampler).unwrap();
+}
+
+/// Probe the operator's `OTel` env to populate [`OtelStatus`]. When an
+/// endpoint is configured, perform a 1-second TCP-connect probe to
+/// confirm the port answers — deliberately not a span export to keep
+/// `doctor --extensive` side-effect-free on the collector side.
+async fn probe_otel_status() -> OtelStatus {
+    let endpoint_env = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .ok()
+        .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok());
+    let exporter_explicit = std::env::var("OTEL_TRACES_EXPORTER")
+        .ok()
+        .or_else(|| std::env::var("OTEL_METRICS_EXPORTER").ok())
+        .filter(|v| matches!(v.as_str(), "otlp" | "console"));
+    let configured = endpoint_env.is_some() || exporter_explicit.is_some();
+    let service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "secretenv".to_owned());
+    let sampler = "parentbased_always_on (mutation-non-droppable)".to_owned();
+
+    let reachability = if let Some(ep) = endpoint_env.as_deref() {
+        Some(probe_otel_reachability(ep).await)
+    } else {
+        None
+    };
+
+    OtelStatus { configured, endpoint: endpoint_env, service_name, sampler, reachability }
+}
+
+/// 1-second TCP-connect probe against the configured endpoint.
+/// Parses host:port from URLs of the shape `http://host:port`,
+/// `https://host:port`, or `grpc://host:port`. Falls back to assuming
+/// the input is already a `host:port` pair otherwise.
+async fn probe_otel_reachability(endpoint: &str) -> OtelReachability {
+    let host_port = parse_endpoint_host_port(endpoint);
+    let started = std::time::Instant::now();
+    let connect_fut = tokio::net::TcpStream::connect(&host_port);
+    match tokio::time::timeout(std::time::Duration::from_secs(1), connect_fut).await {
+        Ok(Ok(_stream)) => OtelReachability {
+            ok: true,
+            rtt_ms: Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            error: None,
+        },
+        Ok(Err(e)) => OtelReachability {
+            ok: false,
+            rtt_ms: None,
+            error: Some(format!("TCP connect failed: {e}")),
+        },
+        Err(_) => OtelReachability {
+            ok: false,
+            rtt_ms: None,
+            error: Some("TCP connect timed out after 1s".to_owned()),
+        },
+    }
+}
+
+/// Strip the scheme + path from an OTLP endpoint URL and return
+/// `host:port`. Defaults to port 4317 (the OTLP/gRPC standard) when
+/// the URL omits an explicit port.
+fn parse_endpoint_host_port(endpoint: &str) -> String {
+    let after_scheme = endpoint.split_once("://").map_or(endpoint, |(_, rest)| rest);
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    if host_port.contains(':') {
+        host_port.to_owned()
+    } else {
+        format!("{host_port}:4317")
+    }
 }
 
 #[allow(clippy::unwrap_used)]
@@ -640,7 +795,13 @@ mod tests {
 
     fn report(entries: Vec<DoctorEntry>) -> DoctorReport {
         let summary = DoctorSummary::from_entries(&entries);
-        DoctorReport { backends: entries, registries: Vec::new(), summary, fix_actions: Vec::new() }
+        DoctorReport {
+            backends: entries,
+            registries: Vec::new(),
+            summary,
+            fix_actions: Vec::new(),
+            otel: None,
+        }
     }
 
     fn report_with_registries(
@@ -648,12 +809,12 @@ mod tests {
         registries: Vec<RegistryReport>,
     ) -> DoctorReport {
         let summary = DoctorSummary::from_entries(&entries);
-        DoctorReport { backends: entries, registries, summary, fix_actions: Vec::new() }
+        DoctorReport { backends: entries, registries, summary, fix_actions: Vec::new(), otel: None }
     }
 
     fn report_with_fix(entries: Vec<DoctorEntry>, fix_actions: Vec<FixAction>) -> DoctorReport {
         let summary = DoctorSummary::from_entries(&entries);
-        DoctorReport { backends: entries, registries: Vec::new(), summary, fix_actions }
+        DoctorReport { backends: entries, registries: Vec::new(), summary, fix_actions, otel: None }
     }
 
     // ---- From<BackendStatus> ----

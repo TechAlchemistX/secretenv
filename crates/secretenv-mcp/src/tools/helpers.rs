@@ -11,9 +11,27 @@
 //! paths that each need to log on non-dry-run; a free function keeps
 //! the call sites readable.
 
+use rmcp::service::Peer;
+use rmcp::RoleServer;
+
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::OperatorDecisionEcho;
 use crate::tools::args::MigrateAliasArgs;
+
+/// Resolve the MCP client's identifier from the rmcp `initialize`
+/// handshake's `clientInfo.name`, falling back to `"unknown"` when
+/// the peer info hasn't been initialised yet (only happens during
+/// the handshake itself, never inside a tool handler).
+///
+/// v0.16.0 Phase 8b finding F-7 — every audit-log entry and `OTel`
+/// `mcp.client_name` span attribute that previously hardcoded
+/// `"unknown"` now resolves through this helper so the audit /
+/// telemetry surface carries the real client name (`claude-code`,
+/// `cursor`, `vscode-copilot`, etc.).
+#[must_use]
+pub fn client_id_from_peer(peer: &Peer<RoleServer>) -> String {
+    peer.peer_info().map_or_else(|| "unknown".to_owned(), |p| p.client_info.name.clone())
+}
 
 /// Emit a `migrate_alias` audit-log entry. Pulled out into a helper
 /// because the handler has 6 return paths that each need to log on
@@ -22,6 +40,7 @@ pub fn audit_migrate(
     mutation_log: &MutationLog,
     args: &MigrateAliasArgs,
     decision: OperatorDecision,
+    client_id: &str,
 ) {
     let entry = MutationLogEntry {
         ts_unix_secs: now_secs(),
@@ -33,9 +52,13 @@ pub fn audit_migrate(
         ),
         agent_reason: args.reason.clone(),
         operator_decision: decision,
-        mcp_client_id: "unknown".to_owned(),
+        mcp_client_id: client_id.to_owned(),
     };
-    let _ = mutation_log.append(&entry);
+    // v0.16.2 audit Sec F-1: surface audit-log append failures via
+    // tracing instead of silently swallowing.
+    if let Err(e) = mutation_log.append(&entry) {
+        tracing::error!(error = ?e, "audit-log append failed");
+    }
 }
 
 pub fn now_secs() -> u64 {

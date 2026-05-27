@@ -487,7 +487,7 @@ impl Server {
             mutation_runner::AuditMeta {
                 alias_name: Some(args.alias.clone()),
                 backend_instance: Some(backend_instance.clone()),
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             },
             args.reason.clone(),
             || async {
@@ -547,7 +547,7 @@ impl Server {
             mutation_runner::AuditMeta {
                 alias_name: Some(args.alias.clone()),
                 backend_instance: None,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             },
             args.reason.clone(),
             || async {
@@ -652,7 +652,7 @@ impl Server {
             mutation_runner::AuditMeta {
                 alias_name: None,
                 backend_instance: None,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             },
             args.reason.clone(),
             || async move {
@@ -741,7 +741,7 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: OperatorDecision::Denied,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     let _ = self.mutation_log.append(&entry);
                     response.outcome = MutationOutcome::Refused;
@@ -762,7 +762,7 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: decision,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     let _ = self.mutation_log.append(&entry);
                     response.outcome = outcome;
@@ -800,7 +800,7 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: allowed_decision,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     let _ = self.mutation_log.append(&entry);
                 }
@@ -829,7 +829,7 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: allowed_decision,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     let _ = self.mutation_log.append(&entry);
                 }
@@ -875,7 +875,7 @@ impl Server {
                 backend_instance: None,
                 agent_reason: args.reason.clone(),
                 operator_decision: allowed_decision,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
             let _ = self.mutation_log.append(&entry);
         }
@@ -948,7 +948,7 @@ impl Server {
                         backend_instance: Some(backend_instance.clone()),
                         agent_reason: args.reason.clone(),
                         operator_decision: OperatorDecision::Denied,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     let _ = self.mutation_log.append(&entry);
                     response.outcome = MutationOutcome::Refused;
@@ -964,7 +964,7 @@ impl Server {
                         backend_instance: Some(backend_instance.clone()),
                         agent_reason: args.reason.clone(),
                         operator_decision: d,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     let _ = self.mutation_log.append(&entry);
                     response.outcome = if d == OperatorDecision::Timeout {
@@ -993,7 +993,7 @@ impl Server {
                     backend_instance: Some(backend_instance.clone()),
                     agent_reason: args.reason.clone(),
                     operator_decision: decision,
-                    mcp_client_id: "unknown".to_owned(),
+                    mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
                 let _ = self.mutation_log.append(&entry);
                 return Json(response);
@@ -1019,7 +1019,7 @@ impl Server {
                     backend_instance: Some(backend_instance.clone()),
                     agent_reason: args.reason.clone(),
                     operator_decision: decision,
-                    mcp_client_id: "unknown".to_owned(),
+                    mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
                 let _ = self.mutation_log.append(&entry);
                 return Json(response);
@@ -1039,7 +1039,7 @@ impl Server {
                     backend_instance: Some(backend_instance.clone()),
                     agent_reason: args.reason.clone(),
                     operator_decision: decision,
-                    mcp_client_id: "unknown".to_owned(),
+                    mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
                 let _ = self.mutation_log.append(&entry);
                 return Json(response);
@@ -1060,7 +1060,7 @@ impl Server {
                 backend_instance: Some(backend_instance.clone()),
                 agent_reason: args.reason.clone(),
                 operator_decision: decision,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
             let _ = self.mutation_log.append(&entry);
             return Json(response);
@@ -1081,7 +1081,7 @@ impl Server {
                 backend_instance: Some(backend_instance.clone()),
                 agent_reason: args.reason.clone(),
                 operator_decision: decision,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
             let _ = self.mutation_log.append(&entry);
             return Json(response);
@@ -1122,9 +1122,12 @@ impl Server {
             backend_instance: Some(backend_instance.clone()),
             agent_reason: args.reason.clone(),
             operator_decision: decision,
-            mcp_client_id: "unknown".to_owned(),
+            mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
         };
-        let _ = self.mutation_log.append(&entry);
+        // v0.16.2 audit Sec F-1: surface audit-log append failures.
+        if let Err(append_err) = self.mutation_log.append(&entry) {
+            tracing::error!(error = ?append_err, "audit-log append failed");
+        }
 
         Json(response)
     }
@@ -1158,6 +1161,9 @@ impl Server {
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let dest_backend_instance = secretenv_core::BackendUri::parse(&args.dest_uri)
             .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme);
+        // v0.16.0 F-7: resolve once at the top of the handler and
+        // reuse across the 5 audit-log call sites below.
+        let client_id = helpers::client_id_from_peer(&ctx.peer);
 
         let mut response = MigrateAliasResponse {
             alias_name: args.alias.clone(),
@@ -1186,6 +1192,7 @@ impl Server {
                         &self.mutation_log,
                         &args,
                         OperatorDecision::AutoApproved,
+                        &client_id,
                     );
                 }
                 return Json(response);
@@ -1217,6 +1224,7 @@ impl Server {
                             &self.mutation_log,
                             &args,
                             OperatorDecision::AutoApproved,
+                            &client_id,
                         );
                     }
                     return Json(response);
@@ -1247,7 +1255,12 @@ impl Server {
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
-                    helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::Denied);
+                    helpers::audit_migrate(
+                        &self.mutation_log,
+                        &args,
+                        OperatorDecision::Denied,
+                        &client_id,
+                    );
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -1257,7 +1270,7 @@ impl Server {
                         MutationOutcome::Refused
                     };
                     response.decision = helpers::echo_decision(d);
-                    helpers::audit_migrate(&self.mutation_log, &args, d);
+                    helpers::audit_migrate(&self.mutation_log, &args, d, &client_id);
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
@@ -1327,7 +1340,7 @@ impl Server {
         }
 
         if !args.dry_run {
-            helpers::audit_migrate(&self.mutation_log, &args, decision);
+            helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
         }
         Json(response)
     }

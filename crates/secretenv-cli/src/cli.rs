@@ -8,7 +8,6 @@
 //! wiring.
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -1517,33 +1516,19 @@ async fn registry_set(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    // Validate target before any write.
-    let target = BackendUri::parse(target_uri)
-        .with_context(|| format!("target '{target_uri}' is not a valid URI"))?;
-    if target.is_alias() {
-        bail!("target must be a direct backend URI, not a secretenv:// alias");
-    }
-    if backends.get(&target.scheme).is_none() {
-        bail!(
-            "target '{target_uri}' references backend instance '{}' which is not configured",
-            target.scheme
-        );
-    }
-
+    secretenv_registry_mutate::validate_target_uri(target_uri, backends)?;
     let (source_uri, backend) = pick_registry_source(registry, config, backends)?;
-    let current = backend
-        .list(&source_uri)
-        .await
-        .with_context(|| format!("reading registry document at '{}'", source_uri.raw))?;
-    // BTreeMap: deterministic ordering on write. HashMap in v0.1
-    // produced non-reproducible diffs on every `registry set`.
-    let mut map: BTreeMap<String, String> = current.into_iter().collect();
-    map.insert(alias.to_owned(), target_uri.to_owned());
-    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&source_uri, &serialized)
-        .await
-        .with_context(|| format!("writing updated registry document to '{}'", source_uri.raw))?;
+    let registry_label = registry.unwrap_or("default").to_owned();
+    secretenv_registry_mutate::apply_change(
+        backend,
+        &source_uri,
+        &registry_label,
+        secretenv_registry_mutate::AliasChange::Insert {
+            alias: alias.to_owned(),
+            target_uri: target_uri.to_owned(),
+        },
+    )
+    .await?;
     eprintln!("set {alias} → {target_uri} in registry at '{}'", source_uri.raw);
     Ok(())
 }
@@ -1898,19 +1883,14 @@ async fn registry_unset(
     backends: &BackendRegistry,
 ) -> Result<()> {
     let (source_uri, backend) = pick_registry_source(registry, config, backends)?;
-    let current = backend
-        .list(&source_uri)
-        .await
-        .with_context(|| format!("reading registry document at '{}'", source_uri.raw))?;
-    let mut map: BTreeMap<String, String> = current.into_iter().collect();
-    if map.remove(alias).is_none() {
-        bail!("alias '{alias}' not found in registry at '{}'", source_uri.raw);
-    }
-    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend
-        .set(&source_uri, &serialized)
-        .await
-        .with_context(|| format!("writing updated registry document to '{}'", source_uri.raw))?;
+    let registry_label = registry.unwrap_or("default").to_owned();
+    secretenv_registry_mutate::apply_change(
+        backend,
+        &source_uri,
+        &registry_label,
+        secretenv_registry_mutate::AliasChange::Remove { alias: alias.to_owned(), required: true },
+    )
+    .await?;
     eprintln!("unset {alias} in registry at '{}'", source_uri.raw);
     Ok(())
 }

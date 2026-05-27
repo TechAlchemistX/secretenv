@@ -20,6 +20,10 @@ path = "src/main.rs"
 secretenv-core.workspace             = true
 secretenv-telemetry.workspace        = true
 secretenv-migrate.workspace          = true
+# v0.16.2 D.2b — shared list+edit+serialize+set transaction
+# previously duplicated between registry_set/unset here and
+# secretenv-mcp's registry_writer module.
+secretenv-registry-mutate.workspace  = true
 secretenv-backends-init.workspace    = true
 secretenv-mcp.workspace              = true
 secretenv-backend-local.workspace    = true

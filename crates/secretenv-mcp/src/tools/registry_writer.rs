@@ -3,31 +3,34 @@
 
 //! Registry-document writers shared by `set_alias` + `delete_alias`.
 //!
-//! Mirrors `secretenv-cli/src/cli.rs::{registry_set, registry_unset}`
-//! at the seam: build the live `BackendRegistry`, pick the primary
-//! source URI for the named registry, list the current alias→target
-//! map, mutate it (insert/remove), serialize via
-//! [`secretenv_core::serialize_registry_doc`], and write back via
-//! [`secretenv_core::Backend::set`]. The CLI helper is private to
-//! its binary crate so this duplication is the price of not adding
-//! another shared library crate.
+//! v0.16.2 D.2b: the list+edit+serialize+set transaction body
+//! lives in [`secretenv_registry_mutate`]; this module owns the
+//! MCP-specific selection helper (`pick_primary_source` — named
+//! registries only, no URI-form selection; intentionally stricter
+//! than the CLI's env-aware `pick_registry_source`).
+//!
+//! # SEC-INV-02 reminder
 //!
 //! These functions never touch a [`secretenv_core::Secret`]. The
 //! `set(uri, &str)` call passes the SERIALIZED REGISTRY DOC bytes
 //! (an alias→URI map) — not a secret value. Per SEC-INV-02 the
-//! `Backend::set` trait method takes `&str` (not `&Secret`); calling
-//! it from `secretenv-mcp` with a registry document is the
+//! `Backend::set` trait method takes `&str` (not `&Secret`);
+//! calling it from `secretenv-mcp` (now via
+//! `secretenv-registry-mutate`) with a registry document is the
 //! value-free path.
-
-use std::collections::BTreeMap;
 
 use anyhow::{anyhow, bail, Context, Result};
 use secretenv_core::{Backend, BackendRegistry, BackendUri, Config, RegistrySelection};
+use secretenv_registry_mutate::{apply_change, validate_target_uri, AliasChange};
 
 /// Resolve the primary source URI of `registry` (the operator-
 /// supplied name, or `default` when `None`) to the backing
-/// `&dyn Backend` + `BackendUri`. Mirrors `pick_registry_source` in
-/// the CLI.
+/// `&dyn Backend` + `BackendUri`.
+///
+/// **Strict named-only selection** — refuses URI-form registry
+/// selections that the CLI's `pick_registry_source` would accept.
+/// The MCP boundary enforces "named registries only" so an agent
+/// cannot smuggle an arbitrary backend URI as a "registry" target.
 fn pick_primary_source<'a>(
     registry_name: Option<&str>,
     config: &Config,
@@ -64,9 +67,9 @@ fn pick_primary_source<'a>(
 ///
 /// # Errors
 ///
-/// - Target URI fails to parse.
-/// - Target URI is itself a `secretenv://` alias (chains rejected).
-/// - Target backend instance is not configured.
+/// - Target URI fails to parse / is a `secretenv://` alias / target
+///   backend is not configured (per
+///   [`secretenv_registry_mutate::validate_target_uri`]).
 /// - Registry source URI is invalid / backend not configured.
 /// - Backend `list` or `set` call fails.
 pub async fn set_alias_in_registry(
@@ -76,33 +79,25 @@ pub async fn set_alias_in_registry(
     config: &Config,
     backends: &BackendRegistry,
 ) -> Result<()> {
-    let target =
-        BackendUri::parse(target_uri).with_context(|| "target URI is not parseable".to_owned())?;
-    if target.is_alias() {
-        bail!("target must be a direct backend URI, not a secretenv:// alias");
-    }
-    if backends.get(&target.scheme).is_none() {
-        bail!("target references backend instance `{}` which is not configured", target.scheme);
-    }
-
+    validate_target_uri(target_uri, backends)?;
     let registry_label = registry_name.unwrap_or("default").to_owned();
     let (source_uri, backend) = pick_primary_source(registry_name, config, backends)?;
-    let current = backend
-        .list(&source_uri)
-        .await
-        .with_context(|| format!("reading registry document for registry `{registry_label}`"))?;
-    let mut map: BTreeMap<String, String> = current.into_iter().collect();
-    map.insert(alias.to_owned(), target_uri.to_owned());
-    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend.set(&source_uri, &serialized).await.with_context(|| {
-        format!("writing updated registry document for registry `{registry_label}`")
-    })?;
-    Ok(())
+    apply_change(
+        backend,
+        &source_uri,
+        &registry_label,
+        AliasChange::Insert { alias: alias.to_owned(), target_uri: target_uri.to_owned() },
+    )
+    .await
 }
 
-/// Remove `alias` from the registry document backing `registry_name`.
-/// Removing an absent alias is treated as success (idempotent — matches
-/// the CLI's `registry unset` shape).
+/// Remove `alias` from the registry document backing
+/// `registry_name`.
+///
+/// Removing an absent alias is treated as success (idempotent —
+/// matches the MCP boundary's `delete_alias` contract, which
+/// intentionally diverges from the CLI's `registry unset`
+/// strict-not-found semantics).
 ///
 /// # Errors
 ///
@@ -116,15 +111,11 @@ pub async fn delete_alias_in_registry(
 ) -> Result<()> {
     let registry_label = registry_name.unwrap_or("default").to_owned();
     let (source_uri, backend) = pick_primary_source(registry_name, config, backends)?;
-    let current = backend
-        .list(&source_uri)
-        .await
-        .with_context(|| format!("reading registry document for registry `{registry_label}`"))?;
-    let mut map: BTreeMap<String, String> = current.into_iter().collect();
-    map.remove(alias);
-    let serialized = secretenv_core::serialize_registry_doc(backend.registry_format(), &map)?;
-    backend.set(&source_uri, &serialized).await.with_context(|| {
-        format!("writing updated registry document for registry `{registry_label}`")
-    })?;
-    Ok(())
+    apply_change(
+        backend,
+        &source_uri,
+        &registry_label,
+        AliasChange::Remove { alias: alias.to_owned(), required: false },
+    )
+    .await
 }

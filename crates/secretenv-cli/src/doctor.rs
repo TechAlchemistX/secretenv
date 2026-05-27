@@ -39,11 +39,20 @@ use serde::Serialize;
 
 /// Knobs for [`run_doctor`]. Kept as a struct so future flag additions
 /// don't grow the function signature.
+///
+/// Four orthogonal bools; see the matching `DoctorArgs` clap struct
+/// in `cli.rs` for the rationale on not collapsing into an enum.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DoctorOpts {
     pub json: bool,
     pub fix: bool,
     pub extensive: bool,
+    /// v0.17 Phase 6.2 — install a local in-memory `TracerProvider`,
+    /// capture every span the doctor pass emits, and render them as
+    /// a chronologically-sorted table after the normal report. No
+    /// OTLP collector required.
+    pub trace: bool,
 }
 
 /// Machine-readable shape for `--json`.
@@ -184,6 +193,26 @@ struct DoctorReport {
     /// flag that gates registry-read depth probes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     otel: Option<OtelStatus>,
+    /// Captured trace spans rendered as the `--trace` section
+    /// (v0.17 Phase 6.2). Populated only when `--trace` is set. JSON
+    /// shape is a flat array sorted by start time; the human render
+    /// shows one line per span with name + duration + selected
+    /// attributes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trace: Option<Vec<TraceSpanRow>>,
+}
+
+/// One captured span as rendered in the `--trace` section. Mirrors
+/// [`secretenv_telemetry::LocalTraceSpan`] without the `start_unix_ms`
+/// field (already sorted; the absolute timestamp is not operator-useful).
+#[derive(Debug, Clone, Serialize)]
+struct TraceSpanRow {
+    name: String,
+    duration_ms: u64,
+    /// Attribute key/values lifted from the span; the render path
+    /// surfaces a subset (`backend.type`, `backend.instance_name`)
+    /// but JSON callers see every key/value pair.
+    attributes: Vec<(String, String)>,
 }
 
 /// OpenTelemetry exporter status as surfaced by `doctor --extensive`.
@@ -265,6 +294,14 @@ pub async fn run_doctor(
 ) -> Result<()> {
     let list: Vec<&dyn Backend> = backends.all().collect();
 
+    // ---- v0.17 Phase 6.2: install a local in-memory tracer if
+    // ---- --trace is set, so the doctor probe spans get captured
+    // ---- locally and we can render the trace section after the
+    // ---- normal report. doctor --trace is a one-shot, so the
+    // ---- global-provider swap has no downstream consequence.
+    let trace_capture =
+        if opts.trace { Some(secretenv_telemetry::LocalTraceCapture::install()) } else { None };
+
     // ---- Pass 1: initial Level 1+2 check across all backends ----
     let mut statuses = check_all_backends(&list).await;
 
@@ -329,8 +366,23 @@ pub async fn run_doctor(
     // ---- v0.17 Phase 6.3: --extensive OTel reachability section ----
     let otel = if opts.extensive { Some(probe_otel_status().await) } else { None };
 
+    // ---- v0.17 Phase 6.2: drain captured spans for --trace section.
+    // Done after every probe site so the table includes every span
+    // the doctor pass emitted, including the per-backend ones from
+    // `check_all_backends`.
+    let trace = trace_capture.map(|c| {
+        c.drain()
+            .into_iter()
+            .map(|s| TraceSpanRow {
+                name: s.name,
+                duration_ms: s.duration_ms,
+                attributes: s.attributes,
+            })
+            .collect()
+    });
+
     let summary = DoctorSummary::from_entries(&entries);
-    let report = DoctorReport { backends: entries, registries, summary, fix_actions, otel };
+    let report = DoctorReport { backends: entries, registries, summary, fix_actions, otel, trace };
 
     if opts.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -353,13 +405,31 @@ pub async fn run_doctor(
 /// wrapped in its own timeout so one wedged backend cannot hang the
 /// whole doctor run; a timeout surfaces as a synthesized
 /// `BackendStatus::Error` so the JSON shape stays uniform.
+///
+/// Each per-backend probe is also wrapped in a `secretenv.doctor.backend`
+/// `SecretEnvSpan`, recording `backend.type`, `backend.instance_name`,
+/// and the elapsed `duration_ms`. These spans are no-ops when no
+/// `TracerProvider` is installed; the v0.17 `doctor --trace` path
+/// captures them through `LocalTraceCapture` so the operator can see
+/// per-backend latency without standing up an OTLP collector.
 async fn check_all_backends(list: &[&dyn Backend]) -> Vec<BackendStatus> {
     join_all(list.iter().map(|b| async {
+        let started = std::time::Instant::now();
+        let (mut span, _guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.doctor.backend");
+        span.record_backend_type(b.backend_type()).record_backend_instance(b.instance_name());
         let label = format!("{}::check", b.instance_name());
-        match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async { Ok(b.check().await) }).await {
+        let status = match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async {
+            Ok(b.check().await)
+        })
+        .await
+        {
             Ok(status) => status,
             Err(err) => BackendStatus::Error { message: err.to_string() },
-        }
+        };
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        span.record_duration_ms(elapsed_ms);
+        status
     }))
     .await
 }
@@ -542,6 +612,11 @@ fn render_human(report: &DoctorReport) -> String {
         render_otel(&mut out, otel);
     }
 
+    if let Some(trace) = &report.trace {
+        writeln!(out).unwrap();
+        render_trace(&mut out, trace);
+    }
+
     writeln!(out).unwrap();
     write!(out, "Summary: {}/{} OK", report.summary.ok, report.summary.total).unwrap();
     if report.summary.not_authenticated > 0 {
@@ -594,6 +669,71 @@ fn render_otel(out: &mut String, otel: &OtelStatus) {
     }
     writeln!(out, "  Service name:      {}", otel.service_name).unwrap();
     writeln!(out, "  Sampler:           {}", otel.sampler).unwrap();
+}
+
+/// v0.17 Phase 6.2 — render the captured-spans table.
+///
+/// Output shape:
+///
+/// ```text
+/// -- Trace (local capture) ------------------------------------------
+///   secretenv.doctor.backend   aws-ssm/payments        124ms
+///   secretenv.doctor.backend   1password/work          341ms
+///   ...
+///   P95 latency (this run): 341ms   Slowest: 1password/work
+/// ```
+///
+/// When the operator's probe pass emitted no spans (no instrumented
+/// site fired, e.g. an empty backend list), prints an empty-section
+/// notice instead.
+#[allow(clippy::unwrap_used)]
+fn render_trace(out: &mut String, spans: &[TraceSpanRow]) {
+    writeln!(out, "-- Trace (local capture) ------------------------------------------").unwrap();
+    if spans.is_empty() {
+        writeln!(out, "  No spans captured during this doctor pass.").unwrap();
+        return;
+    }
+    for s in spans {
+        let label = backend_label_from_attrs(&s.attributes);
+        writeln!(out, "  {:<28} {:<24} {:>5}ms", s.name, label, s.duration_ms).unwrap();
+    }
+    // P95 + slowest summary line for operator at-a-glance triage.
+    let mut durations: Vec<u64> = spans.iter().map(|s| s.duration_ms).collect();
+    durations.sort_unstable();
+    let p95 = percentile(&durations, 95);
+    if let Some(slowest) = spans.iter().max_by_key(|s| s.duration_ms) {
+        writeln!(
+            out,
+            "  P95 latency (this run): {p95}ms   Slowest: {}",
+            backend_label_from_attrs(&slowest.attributes),
+        )
+        .unwrap();
+    }
+}
+
+/// Build the `backend.type/instance_name` label used as the second
+/// column of the trace table. Falls back to `-` when neither
+/// attribute is present (e.g. a future non-backend span).
+fn backend_label_from_attrs(attrs: &[(String, String)]) -> String {
+    let bt = attrs.iter().find(|(k, _)| k == "secretenv.backend.type").map(|(_, v)| v.as_str());
+    let bi =
+        attrs.iter().find(|(k, _)| k == "secretenv.backend.instance_name").map(|(_, v)| v.as_str());
+    match (bt, bi) {
+        (Some(t), Some(i)) => format!("{t}/{i}"),
+        (Some(t), None) => t.to_owned(),
+        (None, Some(i)) => i.to_owned(),
+        (None, None) => "-".to_owned(),
+    }
+}
+
+/// Nearest-rank percentile over a sorted slice; returns 0 on empty
+/// input. Phase 6.2 uses this for the P95 line in the trace table.
+fn percentile(sorted: &[u64], pct: usize) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = (pct * sorted.len()).div_ceil(100).saturating_sub(1);
+    sorted[rank.min(sorted.len() - 1)]
 }
 
 /// Probe the operator's `OTel` env to populate [`OtelStatus`]. When an
@@ -801,6 +941,7 @@ mod tests {
             summary,
             fix_actions: Vec::new(),
             otel: None,
+            trace: None,
         }
     }
 
@@ -809,12 +950,26 @@ mod tests {
         registries: Vec<RegistryReport>,
     ) -> DoctorReport {
         let summary = DoctorSummary::from_entries(&entries);
-        DoctorReport { backends: entries, registries, summary, fix_actions: Vec::new(), otel: None }
+        DoctorReport {
+            backends: entries,
+            registries,
+            summary,
+            fix_actions: Vec::new(),
+            otel: None,
+            trace: None,
+        }
     }
 
     fn report_with_fix(entries: Vec<DoctorEntry>, fix_actions: Vec<FixAction>) -> DoctorReport {
         let summary = DoctorSummary::from_entries(&entries);
-        DoctorReport { backends: entries, registries: Vec::new(), summary, fix_actions, otel: None }
+        DoctorReport {
+            backends: entries,
+            registries: Vec::new(),
+            summary,
+            fix_actions,
+            otel: None,
+            trace: None,
+        }
     }
 
     // ---- From<BackendStatus> ----

@@ -536,8 +536,15 @@ pub struct GetArgs {
     pub yes: bool,
 }
 
-/// `secretenv doctor [--json] [--fix] [--extensive]`.
+/// `secretenv doctor [--json] [--fix] [--extensive] [--trace]`.
+///
+/// Four independent operator knobs deliberately modelled as bools
+/// rather than a single enum: each flag composes orthogonally
+/// (`--fix --extensive --trace --json` is a meaningful combo); an
+/// enum would either force the operator to remember a Cartesian
+/// product of variants or split into multiple subcommands.
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DoctorArgs {
     /// Emit machine-readable JSON instead of human output.
     #[arg(long)]
@@ -553,6 +560,12 @@ pub struct DoctorArgs {
     /// permission scope ("can read" vs "denied").
     #[arg(long)]
     pub extensive: bool,
+    /// Capture spans emitted during the doctor pass into a local
+    /// in-memory exporter and render them as a chronologically-sorted
+    /// table. No OTLP collector required — useful for operator
+    /// observability without standing up infrastructure.
+    #[arg(long)]
+    pub trace: bool,
 }
 
 /// `secretenv setup <registry-uri>` — bootstrap a fresh config.toml.
@@ -672,6 +685,7 @@ impl Cli {
                         json: args.json,
                         fix: args.fix,
                         extensive: args.extensive,
+                        trace: args.trace,
                     },
                 )
                 .await

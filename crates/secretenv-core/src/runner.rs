@@ -495,23 +495,51 @@ pub async fn build_env(
         }
     }
 
+    // v0.17 Phase 6.1: pre-fetch header for --verbose. Counts only
+    // the uri-backed aliases — manifest defaults don't run an
+    // observable fetch.
+    if verbose && !dry_run && !uri_indices.is_empty() {
+        eprintln!("[secretenv] resolving {} aliases...", uri_indices.len());
+    }
+
     // Second pass: dispatch all URI fetches concurrently. `fetch_one`
     // returns `Ok(None)` in dry-run mode (printed the placeholder,
-    // nothing to inject), `Ok(Some(entry))` on success.
-    let fetches =
-        uri_indices.iter().map(|&idx| fetch_one(&resolved[idx], backends, dry_run, verbose));
+    // nothing to inject), `Ok(Some(entry, timing))` on success. The
+    // `AliasTiming` lets us print a per-alias summary table after all
+    // fetches return.
+    let fetches = uri_indices.iter().map(|&idx| fetch_one(&resolved[idx], backends, dry_run));
     let results = futures::future::join_all(fetches).await;
 
     // Collect successes into their original slots; aggregate every
     // failure's error message. Multi-failure returns a single joined
     // anyhow error so one CLI run surfaces every broken alias.
     let mut errors: Vec<anyhow::Error> = Vec::new();
+    let mut timings: Vec<AliasTiming> = Vec::new();
     for (idx, result) in uri_indices.iter().zip(results) {
         match result {
-            Ok(Some(entry)) => slots[*idx] = Some(entry),
-            Ok(None) => { /* dry-run; nothing to place */ }
-            Err(err) => errors.push(err),
+            Ok((Some(entry), timing)) => {
+                timings.push(timing);
+                slots[*idx] = Some(entry);
+            }
+            Ok((None, timing)) => {
+                // dry-run path; still capture timing so the table
+                // sees the alias even though no fetch ran.
+                timings.push(timing);
+            }
+            Err((err, timing)) => {
+                timings.push(timing);
+                errors.push(err);
+            }
         }
+    }
+
+    // v0.17 Phase 6.1: per-alias summary table on stderr. Sorted by
+    // declaration order via uri_indices; the table NEVER includes a
+    // backend URI (only the alias name + the backend instance
+    // scheme) so --verbose can stay on in CI builds without leaking
+    // registry topology.
+    if verbose && !dry_run && !timings.is_empty() {
+        render_alias_timing_table(&timings);
     }
 
     if !errors.is_empty() {
@@ -521,56 +549,145 @@ pub async fn build_env(
     Ok(slots.into_iter().flatten().collect())
 }
 
-/// Fetch a single `Uri`-sourced secret. Returns `Ok(None)` in dry-run
-/// (placeholder printed, caller should not inject anything). Returns
-/// `Ok(Some(entry))` on a successful fetch.
+/// Per-alias timing captured during the parallel fetch pass, used to
+/// render the `--verbose` summary table (v0.17 Phase 6.1).
+#[derive(Debug, Clone)]
+struct AliasTiming {
+    alias_name: String,
+    backend_instance: String,
+    duration_ms: u64,
+    outcome: AliasFetchOutcome,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AliasFetchOutcome {
+    Ok,
+    Failed,
+    DryRun,
+}
+
+impl AliasFetchOutcome {
+    const fn as_label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+            Self::DryRun => "dry-run",
+        }
+    }
+}
+
+fn render_alias_timing_table(timings: &[AliasTiming]) {
+    let alias_w = timings.iter().map(|t| t.alias_name.len()).max().unwrap_or(0).max(5);
+    let backend_w = timings.iter().map(|t| t.backend_instance.len()).max().unwrap_or(0).max(7);
+    for t in timings {
+        eprintln!(
+            "  {:<alias_w$} {:<backend_w$} {:>5}ms   {}",
+            t.alias_name,
+            t.backend_instance,
+            t.duration_ms,
+            t.outcome.as_label(),
+            alias_w = alias_w,
+            backend_w = backend_w,
+        );
+    }
+}
+
+/// Fetch a single `Uri`-sourced secret. Returns `Ok((None, _))` in
+/// dry-run (placeholder printed, caller should not inject anything).
+/// Returns `Ok((Some(entry), timing))` on a successful fetch.
+///
+/// The tuple's second element is the per-alias timing captured for
+/// the v0.17 Phase 6.1 `--verbose` summary table. Errors carry the
+/// timing too so a failed fetch still shows up as a row with `failed`
+/// outcome, not silently absent from the table.
 ///
 /// Runs under the global `DEFAULT_GET_TIMEOUT` via
 /// [`crate::with_timeout`].
+type FetchOk = (Option<EnvEntry>, AliasTiming);
+
 async fn fetch_one(
     secret: &ResolvedSecret,
     backends: &BackendRegistry,
     dry_run: bool,
-    verbose: bool,
-) -> Result<Option<EnvEntry>> {
+) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
+    let started = std::time::Instant::now();
     let (target, alias_name) = match &secret.source {
         ResolvedSource::Uri { target, alias_name, .. } => (target, alias_name.clone()),
         ResolvedSource::Default(_) => {
             // Unreachable: `build_env` only calls `fetch_one` for
             // `Uri` entries. Kept as defensive no-op rather than a
             // panic because one-shot helper misuse should not abort.
-            return Ok(None);
+            return Ok((
+                None,
+                AliasTiming {
+                    alias_name: secret.env_var.clone(),
+                    backend_instance: String::new(),
+                    duration_ms: 0,
+                    outcome: AliasFetchOutcome::DryRun,
+                },
+            ));
         }
     };
 
     if dry_run {
         println!("{} ← {}", secret.env_var, target.raw);
-        return Ok(None);
+        return Ok((
+            None,
+            AliasTiming {
+                alias_name,
+                backend_instance: target.scheme.clone(),
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                outcome: AliasFetchOutcome::DryRun,
+            },
+        ));
     }
 
-    if verbose {
-        // Log scheme (instance name) only — never `target.raw`, which
-        // contains the full backend path and would leak registry
-        // topology into CI build logs on any `--verbose` run. Full
-        // URI is reserved for `--dry-run` output, which is explicit.
-        eprintln!("secretenv: fetching {} from instance '{}'", secret.env_var, target.scheme);
-    }
-
-    let backend: &dyn Backend = backends.get(&target.scheme).ok_or_else(|| {
-        anyhow!(
-            "secret '{}': no backend instance '{}' is registered — \
-             add it to [backends.{}] in config.toml",
-            secret.env_var,
-            target.scheme,
-            target.scheme
-        )
-    })?;
+    let Some(backend) = backends.get(&target.scheme) else {
+        let timing = AliasTiming {
+            alias_name,
+            backend_instance: target.scheme.clone(),
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            outcome: AliasFetchOutcome::Failed,
+        };
+        return Err((
+            anyhow!(
+                "secret '{}': no backend instance '{}' is registered — \
+                 add it to [backends.{}] in config.toml",
+                secret.env_var,
+                target.scheme,
+                target.scheme
+            ),
+            timing,
+        ));
+    };
+    let backend: &dyn Backend = backend;
     let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
-    let value =
-        crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await.with_context(
-            || format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw),
-        )?;
-    Ok(Some(EnvEntry { key: secret.env_var.clone(), alias_name: Some(alias_name), value }))
+    match crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await {
+        Ok(value) => {
+            let timing = AliasTiming {
+                alias_name: alias_name.clone(),
+                backend_instance: target.scheme.clone(),
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                outcome: AliasFetchOutcome::Ok,
+            };
+            Ok((
+                Some(EnvEntry { key: secret.env_var.clone(), alias_name: Some(alias_name), value }),
+                timing,
+            ))
+        }
+        Err(e) => Err((
+            e.context(format!(
+                "secret '{}': failed to fetch from '{}'",
+                secret.env_var, target.raw
+            )),
+            AliasTiming {
+                alias_name,
+                backend_instance: target.scheme.clone(),
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                outcome: AliasFetchOutcome::Failed,
+            },
+        )),
+    }
 }
 
 /// Combine N>1 fetch failures into a single anyhow error whose

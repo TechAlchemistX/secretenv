@@ -23,7 +23,7 @@ pub enum AttributeClassification {
     Deny,
     /// Attribute is allowed only under an explicit per-run opt-in
     /// flag (e.g. `--otel-include-error-detail` for
-    /// `secretenv.error.message`).
+    /// `secretenv.backend.error.message`).
     DenyByDefault,
 }
 
@@ -85,9 +85,17 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.alias.count", AttributeClassification::Allow),
     ("secretenv.alias.cascade_layer_index", AttributeClassification::Allow),
     ("secretenv.alias.outcome", AttributeClassification::Allow),
+    // v0.17 Phase 9c — Sec F-3 residue. Spec §2.1 ALLOW (bool flag for
+    // manifest-default vs registry-resolved aliases).
+    ("secretenv.alias.is_default", AttributeClassification::Allow),
     ("secretenv.alias.uri", AttributeClassification::Deny),
     ("secretenv.alias.uri.raw", AttributeClassification::Deny),
     ("secretenv.alias.uri.path", AttributeClassification::Deny),
+    // v0.17 Phase 9c — Sec F-3 residue. DENY per synthesis §9
+    // specialist-disagreement resolution (security §5.2 wins over
+    // otel §4; scheme + path together = topology fingerprint, and
+    // `backend.instance_name` already covers the operational need).
+    ("secretenv.alias.uri_scheme", AttributeClassification::Deny),
     // --- value (always DENY) ---
     ("secretenv.value", AttributeClassification::Deny),
     ("secretenv.value.length", AttributeClassification::Deny),
@@ -108,13 +116,19 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.backend.cli.name", AttributeClassification::Allow),
     ("secretenv.backend.cli.identity", AttributeClassification::Deny),
     ("secretenv.backend.auth_method", AttributeClassification::Allow),
+    // v0.17 Phase 9c — Sec F-3 residue. Spec §2.3 ALLOW (closed-enum
+    // probe-level + probe-outcome attrs from the v0.16 doctor levels).
+    ("secretenv.backend.probe.level", AttributeClassification::Allow),
+    ("secretenv.backend.probe.outcome", AttributeClassification::Allow),
     // --- error ---
     // v0.17 Phase 7b — renamed from `secretenv.error.kind` to match
     // doc §2.3. No callers existed at the time of rename, so this is
     // a pure key-string change inside `SecretEnvSpan::record_error_kind`.
     ("secretenv.backend.error.kind", AttributeClassification::Allow),
-    ("secretenv.error.message", AttributeClassification::DenyByDefault),
-    ("secretenv.error.cli_stderr", AttributeClassification::Deny),
+    // v0.17 Phase 9c — names aligned to spec §2.3 (Phase 7b renamed
+    // `error.kind` → `backend.error.kind` but missed these two siblings).
+    ("secretenv.backend.error.message", AttributeClassification::DenyByDefault),
+    ("secretenv.backend.error.cli_stderr", AttributeClassification::Deny),
     // --- process ---
     ("secretenv.process.argv", AttributeClassification::Deny),
     ("secretenv.process.command_name", AttributeClassification::Allow),
@@ -180,6 +194,14 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.redact.mode", AttributeClassification::Allow),
     ("secretenv.redact.stream", AttributeClassification::Allow),
     ("secretenv.redact.source", AttributeClassification::Allow),
+    // v0.17 Phase 9c — Sec F-3 residue. Spec §2.6 ALLOW entries
+    // (line + token + context attrs on redact event spans) +
+    // DENY guard on matched_value (alongside the existing alias_name
+    // DENY above; both are alias-or-value-shaped surfaces).
+    ("secretenv.redact.line_number", AttributeClassification::Allow),
+    ("secretenv.redact.replacement_token", AttributeClassification::Allow),
+    ("secretenv.redact.match_context", AttributeClassification::Allow),
+    ("secretenv.redact.matched_value", AttributeClassification::Deny),
     // --- migrate (v0.15) ---
     ("secretenv.migrate.phase", AttributeClassification::Allow),
     ("secretenv.migrate.outcome", AttributeClassification::Allow),
@@ -198,6 +220,10 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     // the deletion outcome (which surfaces via migrate.outcome).
     ("secretenv.migrate.delete_source", AttributeClassification::Allow),
     ("secretenv.migrate.transaction_id", AttributeClassification::Allow),
+    // v0.17 Phase 9c — Sec F-3 residue. Spec §2.7 ALLOW (closed enum,
+    // same shape as `migrate.phase`; identifies which phase failed
+    // when migrate.outcome=partial-failure).
+    ("secretenv.migrate.partial_failure_stage", AttributeClassification::Allow),
     // The migrated value itself NEVER appears on any attribute name —
     // these explicit DENY rows exist to fail-closed if a future call
     // site invents the name. `secretenv.value` above also catches
@@ -248,7 +274,7 @@ mod tests {
         assert_eq!(p.classify("secretenv.run_id"), Some(AttributeClassification::Allow));
         assert_eq!(p.classify("secretenv.value"), Some(AttributeClassification::Deny));
         assert_eq!(
-            p.classify("secretenv.error.message"),
+            p.classify("secretenv.backend.error.message"),
             Some(AttributeClassification::DenyByDefault),
         );
         assert_eq!(p.classify("does.not.exist"), None);

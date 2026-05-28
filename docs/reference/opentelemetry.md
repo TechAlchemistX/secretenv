@@ -200,15 +200,25 @@ Root spans correspond to top-level invocations. Child spans correspond to logica
 > `secretenv.redact.filter_event`, `secretenv.registry.migrate` (+ its
 > 5 phase children: `probe` / `read` / `write` / `pointer_flip` /
 > `delete`), `secretenv.doctor.backend`, and `secretenv.mcp.tool.<name>`
-> for all 14 MCP tools. The following spans appear in the topology
-> trees below as schema-reserved but are **not emitted** in v0.17:
-> `secretenv.manifest.load`, `secretenv.registry.load`,
-> `secretenv.backend.probe` (as a child under resolution),
-> `secretenv.exec.prepare`, `secretenv.exec.flush`, and
-> `secretenv.doctor.registry`. The hand-off to `execve` is currently
-> covered by an explicit `flush_before_exec` call rather than an
-> `exec.flush` span. These will land as a v0.17.x hygiene chip; their
-> absence does not affect any SEC-INV invariant.
+> for all 14 MCP tools. The following **11 spans** appear in the
+> topology trees below as schema-reserved but are **not emitted**
+> in v0.17:
+>
+> - §4.1 run subtree: `secretenv.manifest.load`,
+>   `secretenv.registry.load`, `secretenv.backend.probe` (as a child
+>   under resolution), `secretenv.exec.prepare`, `secretenv.exec.flush`
+> - §4.3 doctor subtree: `secretenv.doctor` root,
+>   `secretenv.doctor.registry`
+> - §4.4 MCP subtree: `secretenv.mcp.policy.evaluate`,
+>   `secretenv.mcp.confirm`, `secretenv.registry.transaction`,
+>   `secretenv.audit.append`
+>
+> The hand-off to `execve` is covered by an explicit
+> `flush_before_exec` call rather than an `exec.flush` span. The MCP
+> policy/confirm/audit events are captured in `audit_log.rs` as
+> structured records but not as OTel spans. These will land as
+> v0.17.x hygiene chips; their absence does not affect any SEC-INV
+> invariant.
 
 ### 4.1 `secretenv.run`
 

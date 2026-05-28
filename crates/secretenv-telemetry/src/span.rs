@@ -235,7 +235,8 @@ impl SecretEnvSpan {
 
     /// `secretenv.run.outcome` — closed enum. ALLOW.
     pub fn record_run_outcome(&mut self, outcome: ResolutionOutcome) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.run.outcome", outcome.as_attribute_value()));
+        self.span
+            .set_attribute(KeyValue::new("secretenv.run.outcome", outcome.as_attribute_value()));
         self
     }
 

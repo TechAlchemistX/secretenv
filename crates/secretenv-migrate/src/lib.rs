@@ -552,8 +552,7 @@ where
     let mut outcome = MigrateReportOutcome::Success;
     let mut delete_hint = Some(source.delete_hint(&plan.source_uri));
     if args.delete_source && post_commit_source_delete_consent(&plan) {
-        let (mut delete_span, _delete_guard) =
-            SecretEnvSpan::start("secretenv.migrate.delete");
+        let (mut delete_span, _delete_guard) = SecretEnvSpan::start("secretenv.migrate.delete");
         delete_span
             .record_migrate_phase(MigratePhase::DeleteSource)
             .record_migrate_source_backend_type(source.backend_type());
@@ -567,8 +566,12 @@ where
                 // Phase 7 audit (code-rev S8): distinct telemetry
                 // outcome so OTel queries can see "migrated but
                 // source cleanup failed" without scraping logs.
+                // Phase 9b — Sec F-4: use the dedicated
+                // `OkWithCleanupFailure` variant rather than the
+                // misleading `DestWriteFailed` (which an operator
+                // would read as a pre-commit write failure).
                 outcome = MigrateReportOutcome::SourceDeleteFailedPostCommit;
-                delete_span.record_migrate_outcome(MigrateOutcome::DestWriteFailed);
+                delete_span.record_migrate_outcome(MigrateOutcome::OkWithCleanupFailure);
             }
         }
     }
@@ -608,8 +611,10 @@ async fn probe_phase(
     source: &dyn Backend,
     dest: &dyn Backend,
 ) -> Result<(u64, Vec<(String, String)>)> {
-    let span = tracing::info_span!("secretenv.migrate.probe", alias = %plan.alias);
-    let _enter = span.enter();
+    // v0.17 Phase 9b — Phase 8c added a typed `SecretEnvSpan` at the
+    // caller site (`migrate_with_plan`); the bridged `info_span!` here
+    // would emit a duplicate OTel span via the tracing-opentelemetry
+    // layer (`cli/src/main.rs:53`). Dropped to keep one span per phase.
     let start = Instant::now();
     let mut results = Vec::with_capacity(2);
 
@@ -670,8 +675,7 @@ async fn probe_phase(
 /// duplicate nested child). The `OTel` contract uses the
 /// `secretenv.migrate.*` names exactly.
 async fn migrate_read(plan: &MigrationPlan, source: &dyn Backend) -> Result<(Secret<String>, u64)> {
-    let span = tracing::info_span!("secretenv.migrate.read", alias = %plan.alias);
-    let _enter = span.enter();
+    // v0.17 Phase 9b — typed span lives at the caller (migrate_with_plan).
     let start = Instant::now();
     let value = source
         .get(&plan.source_uri)
@@ -688,8 +692,7 @@ async fn migrate_write(
     dest: &dyn Backend,
     value: &Secret<String>,
 ) -> Result<u64> {
-    let span = tracing::info_span!("secretenv.migrate.write", alias = %plan.alias);
-    let _enter = span.enter();
+    // v0.17 Phase 9b — typed span lives at the caller (migrate_with_plan).
     let start = Instant::now();
     dest.write_secret(&plan.dest_uri, value)
         .await
@@ -706,9 +709,7 @@ async fn migrate_write(
 /// parameter was dropped — the elapsed measurement now lives in the
 /// caller so it's captured even on `Err` (code-rev S5).
 async fn migrate_registry_flip(plan: &MigrationPlan, backends: &BackendRegistry) -> Result<()> {
-    let span = tracing::info_span!("secretenv.migrate.pointer_flip", alias = %plan.alias);
-    let _enter = span.enter();
-
+    // v0.17 Phase 9b — typed span lives at the caller (migrate_with_plan).
     let backend = backend_for(backends, &plan.registry_source_uri)?;
     let current = backend.list(&plan.registry_source_uri).await.with_context(|| {
         format!("reading registry document at '{}'", plan.registry_source_uri.raw)
@@ -725,8 +726,7 @@ async fn migrate_registry_flip(plan: &MigrationPlan, backends: &BackendRegistry)
 
 /// Phase 4 (opt-in) — delete source after a successful commit.
 async fn migrate_source_delete(plan: &MigrationPlan, source: &dyn Backend) -> Result<u64> {
-    let span = tracing::info_span!("secretenv.migrate.source_delete", alias = %plan.alias);
-    let _enter = span.enter();
+    // v0.17 Phase 9b — typed span lives at the caller (migrate_with_plan).
     let start = Instant::now();
     source
         .delete_secret(&plan.source_uri)

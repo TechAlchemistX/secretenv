@@ -36,6 +36,10 @@ const MUTATION_SPAN_NAMES: &[&str] = &[
     "secretenv.migrate.read",
     "secretenv.migrate.write",
     "secretenv.migrate.pointer_flip",
+    // Phase 9b — Arch Code-H2. Post-commit source-delete touches
+    // dest-side state (source cleanup after a successful migrate)
+    // and is one of the 4 phases SEC-INV-22 contracts as non-droppable.
+    "secretenv.migrate.delete",
 ];
 
 /// Wraps any [`ShouldSample`] with the mutation-non-droppable rule.

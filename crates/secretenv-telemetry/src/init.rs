@@ -146,14 +146,29 @@ where
 /// comma-separated `key=value` pairs. Both key and value are
 /// percent-decoded (the spec allows escaping `,`, `=`, and any byte
 /// via `%XX`). Pairs with an empty key are dropped. Malformed pairs
-/// (no `=`) are dropped silently — the spec allows this.
+/// (no `=`) are warn-logged once each (Phase 9b — Sec L-2) so
+/// operators see typos at startup instead of silently losing attrs.
 fn parse_resource_attributes(raw: &str) -> Vec<(String, String)> {
     raw.split(',')
         .filter_map(|kv| {
-            let (k, v) = kv.split_once('=')?;
+            let trimmed = kv.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let Some((k, v)) = trimmed.split_once('=') else {
+                tracing::warn!(
+                    pair = trimmed,
+                    "OTEL_RESOURCE_ATTRIBUTES: dropping malformed entry (no '=' separator)",
+                );
+                return None;
+            };
             let k = percent_decode(k.trim());
             let v = percent_decode(v.trim());
             if k.is_empty() {
+                tracing::warn!(
+                    pair = trimmed,
+                    "OTEL_RESOURCE_ATTRIBUTES: dropping entry with empty key",
+                );
                 None
             } else {
                 Some((k, v))
@@ -515,7 +530,11 @@ pub fn flush_before_exec(timeout: Duration) {
             let _ = worker.join();
         }
         Err(_) => {
-            tracing::debug!(
+            // Phase 9b — Sec L-1. Bumped from `debug!` to `warn!` so
+            // operators triaging "spans not appearing in collector"
+            // get a signal at the default `secretenv=warn` filter
+            // level. One event per exec; low noise.
+            tracing::warn!(
                 timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
                 "otel flush timed out; dropping pending spans + metrics",
             );

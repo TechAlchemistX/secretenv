@@ -164,8 +164,11 @@ impl Server {
     pub async fn getting_started(
         &self,
         _args: Parameters<GettingStartedArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<GettingStartedResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.getting_started");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.getting_started");
+        span.record_mcp_tool_name("getting_started")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let registries = self.config.registries.len();
         let backends = self.config.backends.len();
@@ -199,8 +202,11 @@ impl Server {
     pub async fn version_info(
         &self,
         _args: Parameters<VersionInfoArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<VersionInfoResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.version_info");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.version_info");
+        span.record_mcp_tool_name("version_info")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let tools = self
             .tool_router
@@ -257,8 +263,11 @@ impl Server {
     pub async fn list_backends(
         &self,
         _args: Parameters<ListBackendsArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<ListBackendsResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_backends");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_backends");
+        span.record_mcp_tool_name("list_backends")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let mut backends: Vec<BackendListing> = self
             .config
@@ -290,8 +299,11 @@ impl Server {
     pub async fn resolve_status(
         &self,
         _args: Parameters<ResolveStatusArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<ResolveStatusResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.resolve_status");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.resolve_status");
+        span.record_mcp_tool_name("resolve_status")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         // Run a single doctor probe and reuse its per-instance status
         // map; cheaper than re-probing each backend per registry.
@@ -380,8 +392,12 @@ impl Server {
     pub async fn detect_password_managers(
         &self,
         _args: Parameters<DetectPasswordManagersArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<DetectPasswordManagersResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.detect_password_managers");
+        let (mut span, _guard) =
+            SecretEnvSpan::start("secretenv.mcp.tool.detect_password_managers");
+        span.record_mcp_tool_name("detect_password_managers")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let detections = password_managers::run_all_probes().await;
         let total_supported = detections.len();
@@ -410,8 +426,14 @@ impl Server {
                        remediation hints; no --fix flag — the agent + operator decide \
                        whether to act on the hints."
     )]
-    pub async fn doctor(&self, _args: Parameters<DoctorArgs>) -> Json<DoctorResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.doctor");
+    pub async fn doctor(
+        &self,
+        _args: Parameters<DoctorArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Json<DoctorResponse> {
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.doctor");
+        span.record_mcp_tool_name("doctor")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let backends = doctor::probe_all_backends(&self.config).await;
         let total = backends.len();
@@ -429,8 +451,11 @@ impl Server {
     pub async fn redact_status(
         &self,
         _args: Parameters<RedactStatusArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<RedactStatusResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_status");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_status");
+        span.record_mcp_tool_name("redact_status")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         Json(RedactStatusResponse {
             default_redact_mode: DEFAULT_REDACT_MODE.to_owned(),
@@ -534,8 +559,11 @@ impl Server {
         args: Parameters<DeleteAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<DeleteAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.delete_alias");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.delete_alias");
         let args = args.0;
+        span.record_mcp_tool_name("delete_alias")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.alias);
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let summary = format!("remove alias `{}` from registry `{}`", args.alias, registry_name);
 
@@ -592,7 +620,9 @@ impl Server {
         args: Parameters<InitProjectArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<InitProjectResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.init_project");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.init_project");
+        span.record_mcp_tool_name("init_project")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
         let args = args.0;
         let cwd = args
             .cwd
@@ -704,7 +734,9 @@ impl Server {
         args: Parameters<RedactFileArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<RedactFileResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_file");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_file");
+        span.record_mcp_tool_name("redact_file")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let file_path = std::path::PathBuf::from(&args.file_path);
@@ -925,7 +957,10 @@ impl Server {
         args: Parameters<GenPasswordArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<GenPasswordResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.gen_password");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.gen_password");
+        span.record_mcp_tool_name("gen_password")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.0.alias);
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let backend_instance = secretenv_core::BackendUri::parse(&args.target_uri)
@@ -1186,7 +1221,10 @@ impl Server {
         args: Parameters<MigrateAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<MigrateAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.migrate_alias");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.migrate_alias");
+        span.record_mcp_tool_name("migrate_alias")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.0.alias);
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let dest_backend_instance = secretenv_core::BackendUri::parse(&args.dest_uri)

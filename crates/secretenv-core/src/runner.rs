@@ -81,7 +81,12 @@ pub enum RedactMode {
 /// Constructed by the CLI from `--dry-run` / `--verbose` /
 /// `--redact` / `--no-redact` flags. Defaults match v0.13
 /// behavior except `redact` which is `Auto` (the v0.14 default).
+// v0.17 Phase 9b — Code H3 / Arch L1. Mark non-exhaustive so adding a
+// new option (a likely scenario for v0.17.x: telemetry-include-error-detail,
+// signed-attribute opt-in, etc.) doesn't silently break downstream
+// integrators constructing this struct via record-update syntax.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct RunOptions {
     /// Print what would happen without fetching or executing.
     pub dry_run: bool,
@@ -177,6 +182,13 @@ pub async fn run(
 /// # Errors
 /// Same set as [`run`], plus a redact-mode-A startup error if any
 /// tainted value exceeds the 64 KiB tail-window cap.
+// Phase 8b + 9b added inline span lifecycle, metric emission, and
+// path-stripping for command_name, pushing this function over the
+// 100-line clippy threshold. The function is still a single linear
+// story (start root span → resolve → emit metrics → dispatch to
+// exec / pipe-redact / dry-run paths). Splitting would mean dragging
+// the run_span guard across helper boundaries.
+#[allow(clippy::too_many_lines)]
 pub async fn run_with_options(
     resolved: &[ResolvedSecret],
     backends: &BackendRegistry,
@@ -195,7 +207,15 @@ pub async fn run_with_options(
     // fire across an execve()); the pipe-redact + dry-run paths
     // return normally and the span drops at end-of-function.
     let (mut run_span, run_guard) = SecretEnvSpan::start("secretenv.run");
-    let argv0 = command.first().map_or("<empty>", String::as_str);
+    // v0.17 Phase 9b — Sec F-1. Strip any path prefix from argv[0]
+    // before emission: operators routinely run
+    // `secretenv run -- /usr/local/bin/deploy.sh` and the absolute
+    // path leaks host filesystem layout (incl. `/home/<user>/...` on
+    // dev workstations) to whatever OTel backend is configured.
+    // Spec §2.5 contracts this as "argv[0] only" — basename only.
+    let argv0_raw = command.first().map_or("<empty>", String::as_str);
+    let argv0 =
+        std::path::Path::new(argv0_raw).file_name().and_then(|s| s.to_str()).unwrap_or(argv0_raw);
     run_span
         .record_run_id(&secretenv_telemetry::fresh_run_id())
         .record_command("run")
@@ -224,11 +244,10 @@ pub async fn run_with_options(
             // Emit the spec's run-level histogram point on the failure
             // branch too so the operator sees the latency distribution.
             let registry = options.registry_name.as_deref().unwrap_or("<direct-uri>");
-            let resolution_ms = u64::try_from(resolution_started.elapsed().as_millis())
-                .unwrap_or(u64::MAX);
-            let bucket = secretenv_telemetry::metrics::AliasCountBucket::from_count(
-                resolved.len() as u64,
-            );
+            let resolution_ms =
+                u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let bucket =
+                secretenv_telemetry::metrics::AliasCountBucket::from_count(resolved.len() as u64);
             secretenv_telemetry::metrics::record_resolution_duration(
                 resolution_ms,
                 registry,
@@ -243,17 +262,12 @@ pub async fn run_with_options(
         }
     };
 
-    let resolution_ms =
-        u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let resolution_ms = u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let registry_for_metrics = options.registry_name.as_deref().unwrap_or("<direct-uri>");
-    let alias_bucket = secretenv_telemetry::metrics::AliasCountBucket::from_count(
-        resolved.len() as u64,
-    );
-    let outcome_for_metric = if options.dry_run {
-        ResolutionOutcome::DryRun
-    } else {
-        ResolutionOutcome::Success
-    };
+    let alias_bucket =
+        secretenv_telemetry::metrics::AliasCountBucket::from_count(resolved.len() as u64);
+    let outcome_for_metric =
+        if options.dry_run { ResolutionOutcome::DryRun } else { ResolutionOutcome::Success };
     secretenv_telemetry::metrics::record_resolution_duration(
         resolution_ms,
         registry_for_metrics,
@@ -781,8 +795,7 @@ async fn fetch_one(
     if dry_run {
         println!("{} ← {}", secret.env_var, target.raw);
         let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        span.record_resolution_outcome(ResolutionOutcome::DryRun)
-            .record_resolution_latency_ms(ms);
+        span.record_resolution_outcome(ResolutionOutcome::DryRun).record_resolution_latency_ms(ms);
         return Ok((
             None,
             AliasTiming {
@@ -796,8 +809,7 @@ async fn fetch_one(
 
     let Some(backend) = backends.get(&target.scheme) else {
         let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        span.record_resolution_outcome(ResolutionOutcome::Failure)
-            .record_resolution_latency_ms(ms);
+        span.record_resolution_outcome(ResolutionOutcome::Failure).record_resolution_latency_ms(ms);
         let timing = AliasTiming {
             alias_name,
             backend_instance: target.scheme.clone(),

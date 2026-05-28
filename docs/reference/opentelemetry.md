@@ -98,7 +98,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.resolution.latency_ms` | ALLOW | |
 | `secretenv.run.dry_run` | ALLOW | bool |
 | `secretenv.run.verbose` | ALLOW | bool |
-| `secretenv.run.command_name` | ALLOW | `argv[0]` only |
+| `secretenv.run.command_name` | ALLOW | Basename of `argv[0]` only — any absolute or relative path prefix is stripped before emission to avoid leaking host filesystem layout (Phase 9b Sec F-1) |
 | `secretenv.run.command_argv` | **DENY** | Full argv may contain secrets |
 | `secretenv.run.env_var_count` | ALLOW | Aggregate |
 | `secretenv.run.env_var_value` | **DENY** | |
@@ -187,11 +187,28 @@ SecretEnv classifies every data element into one of two tiers:
 
 **Scrubbing of `backend.error.message`.** The single exception to the "no free-string attribute" rule is `backend.error.message`, which is **DENY by default**. Operators may opt in per-run via `--otel-include-error-detail`. Even when opted in, the message is passed through the SEC-INV-20 scrubber before emission: URI-shaped substrings, AWS 12-digit account numbers, and high-entropy tokens (> 20 chars mixed case + digits) are replaced with `<redacted>`. Raw backend stderr (`backend.error.cli_stderr`) remains DENY in all cases.
 
+> **v0.17 status.** The `--otel-include-error-detail` flag is **not yet shipped** — `backend.error.message` is unconditionally DENY in v0.17 (structurally enforced by absence of the `SecretEnvSpan::record_error_message` setter). The flag + scrubber wiring lands in v0.18. The DENY-by-default posture above is therefore the only posture in v0.17. Tracked at [[v0.17-deferred-items]] as the only spec-promised surface explicitly deferred from v0.17.0.
+
 ---
 
 ## 4. Span topology
 
 Root spans correspond to top-level invocations. Child spans correspond to logical phases. Span names are stable and form part of the audit contract.
+
+> **v0.17 shipped subset.** v0.17 ships the load-bearing spans:
+> `secretenv.run`, `secretenv.resolution`, `secretenv.backend.fetch`,
+> `secretenv.redact.filter_event`, `secretenv.registry.migrate` (+ its
+> 5 phase children: `probe` / `read` / `write` / `pointer_flip` /
+> `delete`), `secretenv.doctor.backend`, and `secretenv.mcp.tool.<name>`
+> for all 14 MCP tools. The following spans appear in the topology
+> trees below as schema-reserved but are **not emitted** in v0.17:
+> `secretenv.manifest.load`, `secretenv.registry.load`,
+> `secretenv.backend.probe` (as a child under resolution),
+> `secretenv.exec.prepare`, `secretenv.exec.flush`, and
+> `secretenv.doctor.registry`. The hand-off to `execve` is currently
+> covered by an explicit `flush_before_exec` call rather than an
+> `exec.flush` span. These will land as a v0.17.x hygiene chip; their
+> absence does not affect any SEC-INV invariant.
 
 ### 4.1 `secretenv.run`
 

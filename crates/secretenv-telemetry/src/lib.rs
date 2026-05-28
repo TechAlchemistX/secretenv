@@ -62,10 +62,10 @@ pub use init::{
     flush_before_exec, init, init_with_env, tracing_bridge_layer, InitError, TelemetryGuard,
 };
 pub use local_trace::{LocalTraceCapture, LocalTraceSpan};
+pub use metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
 pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
-pub use metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
 pub use span::{AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, SecretEnvSpan, SpanGuard};
 
 /// Generate a fresh per-invocation run ID.

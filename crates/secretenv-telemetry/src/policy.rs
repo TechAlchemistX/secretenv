@@ -97,7 +97,13 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.backend.instance_name", AttributeClassification::Allow),
     ("secretenv.backend.address", AttributeClassification::Deny),
     ("secretenv.backend.account_id", AttributeClassification::Deny),
+    // v0.17 Phase 9b — Sec F-3. Spec §2.3 lists DENY (Vault Enterprise
+    // namespace + similar topology hints). No setter shipped; locked in
+    // the matrix so a future ALLOW addition is caught.
+    ("secretenv.backend.namespace", AttributeClassification::Deny),
     ("secretenv.backend.region", AttributeClassification::Allow),
+    // Phase 9b — Sec F-3. Spec §2.3 ALLOW. Operator-stated label.
+    ("secretenv.backend.profile_name", AttributeClassification::Allow),
     ("secretenv.backend.cli.version", AttributeClassification::Allow),
     ("secretenv.backend.cli.name", AttributeClassification::Allow),
     ("secretenv.backend.cli.identity", AttributeClassification::Deny),
@@ -136,6 +142,31 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.backend.fetch.duration_ms", AttributeClassification::Allow),
     // Registry identifier — operator-stated; ALLOW.
     ("secretenv.registry.name", AttributeClassification::Allow),
+    // v0.17 Phase 9b — Sec F-3. Spec §2.4 entries the canonical
+    // matrix was missing. `selection` is the closed-enum tag for
+    // named-vs-direct-uri (NOT the URI itself). Source URI is DENY
+    // for the same topology reason as alias.uri.
+    ("secretenv.registry.selection", AttributeClassification::Allow),
+    ("secretenv.registry.source_count", AttributeClassification::Allow),
+    ("secretenv.registry.source_index", AttributeClassification::Allow),
+    ("secretenv.registry.source_uri", AttributeClassification::Deny),
+    // Phase 9b — Sec F-3. Spec §2.4 manifest entries. `path` is
+    // relative-only by contract (absolute path = host filesystem leak,
+    // see F-1 fix for the parallel command_name basename guard).
+    ("secretenv.manifest.path", AttributeClassification::Allow),
+    ("secretenv.manifest.alias_count", AttributeClassification::Allow),
+    ("secretenv.manifest.default_count", AttributeClassification::Allow),
+    // Phase 9b — Sec F-3. Spec §2.9 doctor aggregates.
+    ("secretenv.doctor.check_level", AttributeClassification::Allow),
+    ("secretenv.doctor.backend_count", AttributeClassification::Allow),
+    ("secretenv.doctor.failure_count", AttributeClassification::Allow),
+    // Phase 9b — Sec F-3. Spec §2.9 gen.password. Length + charset name
+    // are ALLOW (operational); value + entropy_bits are DENY (the
+    // entropy_bits is a partial length oracle).
+    ("secretenv.gen.password.length", AttributeClassification::Allow),
+    ("secretenv.gen.password.charset_name", AttributeClassification::Allow),
+    ("secretenv.gen.password.value", AttributeClassification::Deny),
+    ("secretenv.gen.password.entropy_bits", AttributeClassification::Deny),
     // --- redact ---
     ("secretenv.redact.match_count", AttributeClassification::Allow),
     ("secretenv.redact.byte_count", AttributeClassification::Allow),

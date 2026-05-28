@@ -1029,13 +1029,16 @@ async fn cmd_run(
     } else {
         RedactMode::Auto
     };
-    let options = RunOptions {
-        dry_run: args.dry_run,
-        verbose: args.verbose,
-        redact,
-        redact_token: args.redact_token.clone(),
-        registry_name: selection.registry_label().map(str::to_owned),
-    };
+    // RunOptions is `#[non_exhaustive]` (Phase 9b Code-H3 / Arch-L1)
+    // so external constructions go through Default + field mutation
+    // rather than a struct expression. Within-crate callers (e.g.
+    // future builder methods) can still construct directly.
+    let mut options = RunOptions::default();
+    options.dry_run = args.dry_run;
+    options.verbose = args.verbose;
+    options.redact = redact;
+    options.redact_token = args.redact_token.clone();
+    options.registry_name = selection.registry_label().map(str::to_owned);
 
     // Capture the dispatch up front so the report reflects what we
     // actually did, not what we requested. `Auto` may degrade to

@@ -16,6 +16,52 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
+(Empty — pending v0.17.x carry-forwards.)
+
+## [0.17.0] - 2026-05-28
+
+**Headline:** First-class OpenTelemetry instrumentation lands. Traces (spans) and metrics ship across the full resolution flow + v0.14 redact + v0.15 migrate + v0.16 MCP surfaces. Zero startup cost when no `OTEL_*` env vars are set (the OTel SDK is linked but no providers are installed). Authoritative attribute matrix locked in `docs/reference/opentelemetry.md` §2 (51 ALLOW · 25 DENY · structurally enforced via the typed `SecretEnvSpan` builder — no generic `set_attribute(k, v)` escape hatch).
+
+v0.16.0 → v0.17.0: backend total stays at **15**; workspace gains the `secretenv-telemetry` first OTel-enabled publish + 9 (Phase 8b) + 4 (Phase 8c) + 3 (Phase 9b) new typed-attribute setters totalling 38 in `SecretEnvSpan`; 4 new metric call-sites against the 10 Phase 4 instruments.
+
+### Added
+
+- **OpenTelemetry traces.** The `secretenv.run` root span wraps the entire resolution + exec lifecycle, with per-alias `secretenv.resolution` and per-fetch `secretenv.backend.fetch` children. Ends explicitly before `execve` (Drop can't fire across exec). 4 spec-mandated attrs on each: `run.dry_run` / `run.verbose` / `run.outcome` / `run.failed_alias_count` plus `resolution.outcome` + `resolution.latency_ms` plus `backend.fetch.outcome` + `backend.fetch.duration_ms`.
+- **OpenTelemetry metrics.** 10 typed instruments: `resolution.duration` + `resolution.count` histograms/counters, `backend.fetch.duration` + `backend.probe.count`, `redact.events`, `mcp.tool.calls` + `mcp.tool.duration`, `doctor.failure.count`, `migrate.operation.count`, `registry.alias_count` gauge. Cardinality-safe by construction — `alias.name` is structurally absent from every histogram/gauge signature.
+- **Redact span emission** (`secretenv.redact.filter_event`). One span per non-empty stdout/stderr stream in runtime-pipe mode, one span on the post-hoc `secretenv redact <file>` CLI path. Carries `mode` (runtime / post-hoc / disabled), `stream` (stdout / stderr), `match_count`, `byte_count`. SEC-INV-19: `redact.alias_name` is **never** emitted — alias names live only in the operator-local terminal substitution token.
+- **Migrate phase tree** (`secretenv.registry.migrate` root + 5 child spans: `probe` / `read` / `write` / `pointer_flip` / `delete`). Mutation non-droppable sampler keeps every child + root in the trace stream even under aggressive ratio sampling (SEC-INV-22).
+- **MCP tool spans.** All 14 MCP tools emit `secretenv.mcp.tool.<name>` spans with `tool_name`, `client_name` (from rmcp peer.client_info), and — for the 4 alias-mutation tools (`set_alias` / `delete_alias` / `migrate_alias` / `gen_password`) — `argument_alias_name`. SEC-INV-12: `argument_reason` is **never** emitted (prompt-injection vehicle; lives in the audit log only).
+- **Mutation non-droppable sampler.** `MutationNonDroppableSampler<S>` wraps any operator-configured sampler and forces `RecordAndSample` for the 8 mutation span names (4 MCP + 4 migrate phases). Override-safe: `OTEL_TRACES_SAMPLER=traceidratio OTEL_TRACES_SAMPLER_ARG=0.0001` still emits every mutation. Smoke-tested live.
+- **Doctor OTel surfaces.** `secretenv doctor --extensive` adds an OTel section reporting `OTEL_EXPORTER_OTLP_ENDPOINT` + TCP-connect reachability (no test span emitted). `secretenv doctor --trace` renders a local-capture span table (uses an in-process `InMemorySpanExporter`; no collector required).
+- **`secretenv run --verbose`** — per-alias resolution timing table on stderr; no collector required.
+- **W3C TRACEPARENT propagation.** Inbound only — `secretenv.run` becomes a child of the parent trace when run from a CI system that sets `TRACEPARENT` / `TRACESTATE`. Outbound propagation to the exec'd child binary is deferred to v1.0+.
+- **Section 36 smoke harness** (`scripts/smoke-test/run-tests.sh` ~430 LOC across Blocks A–E). Docker Jaeger collector lifecycle (`scripts/smoke-test/lib/otel-collector.sh`). Isolated local-backend fixture (`scripts/smoke-test/fixtures/v0.17-otel/`). 60 assertions covering trace emission, redact spans, migrate phase tree, MCP tool attrs, console metric exporter shape, SEC-INV negative checks. Soft-SKIPs when `docker` or `jq` missing. Operator runbook at `kb/wiki/runbooks/v0.17-otel-smoke.md`.
+- **Compile-fail SEC-INV guards.** trybuild gates at `crates/secretenv-telemetry/tests/ui_sec_inv_04/` (no `set_attribute` escape hatch + no `record_alias_uri_*` setter) + `ui_sec_inv_12/` (no `record_mcp_argument_reason`) + `ui_sec_inv_19/` (no `record_redact_alias_name`). CI grep gate `scripts/check_tracing_leaks.sh` extended with 7 leak patterns covering bare-macro / `Span::record(...)` / `event!()` forms.
+
+### Changed
+
+- **Spec §4 span topology** — `secretenv.registry.migrate` (was `secretenv.migrate`) brings the migrate root span in line with the spec'd name. Mutation sampler whitelist updated to match.
+- **`SecretEnvSpan` typed builder** — 13 new `record_*` methods totalling 38 typed setters. Every emitted ALLOW attribute has exactly one method; every DENY attribute has no method. No generic `set_attribute(k, v)` exists anywhere on the type.
+- **`RunOptions` is now `#[non_exhaustive]`** so future v0.17.x additions don't silently break downstream record-update constructions.
+
+### BREAKING
+
+- **Migrate OTel span name renamed** — `secretenv.migrate` → `secretenv.registry.migrate`. Operators with OTel-backend queries / dashboards referencing the old name need to update. The rename brings the code into line with `docs/reference/opentelemetry.md` §4.2; the old name was a leftover from the metric name being reused as the span name.
+- **`RunOptions` gains `#[non_exhaustive]`** — downstream library integrators constructing `RunOptions { dry_run, verbose, redact, redact_token }` directly will need to switch to `RunOptions { dry_run, ..Default::default() }` or use the builder pattern. Within-workspace callers unaffected.
+
+### Security
+
+- **SEC-INV-04 holds** across the v0.17 surface expansion — every new ALLOW attribute went through a typed `record_*` setter; every new DENY attribute (5 added: `run.command_argv`, `run.env_var_value`, `registry.source_uri`, `backend.namespace`, `gen.password.{value,entropy_bits}`) has no setter. Structural enforcement via the typed builder + 4 compile-fail guards + CI grep gate.
+- **SEC-INV-12 / -19 / -22 all green.** `mcp.argument_reason`, `redact.alias_name`, and the 8 mutation span names are all verified by live smoke assertions in section 36 plus integration tests in `crates/secretenv-telemetry/tests/`.
+- **Phase 9b Sec F-1 fix** — `secretenv.run.command_name` is the basename of argv[0] only; absolute and relative path prefixes are stripped before emission to prevent host filesystem layout leaks to OTel collectors.
+
+### Known limitations
+
+- **`--otel-include-error-detail` flag is not yet shipped.** Spec §3 promises this per-run opt-in for `backend.error.message` emission (gated through the SEC-INV-20 scrubber). v0.17 ships the schema-reserved attribute as unconditionally DENY (structurally enforced by absence of `SecretEnvSpan::record_error_message` setter). Tracked at `kb/wiki/v0.17-deferred-items.md`; lands in v0.18.
+- **Logs signal not installed.** `docs/reference/opentelemetry.md` §1 mentions "traces + metrics + logs". v0.17 installs `TracerProvider` + `MeterProvider`; `LoggerProvider` is reserved for a v0.17.x or v0.18 cycle. `tracing::*!` events still surface via the tracing-opentelemetry bridge as span events, just not as OTel `LogRecord` instances.
+- **6 spec-listed spans are schema-reserved, not emitted.** `secretenv.manifest.load`, `secretenv.registry.load`, `secretenv.backend.probe` (under resolution), `secretenv.exec.prepare`, `secretenv.exec.flush`, `secretenv.doctor.registry`. The `execve` handoff is covered by an explicit `flush_before_exec` call rather than an `exec.flush` span. These will land as a v0.17.x hygiene chip; their absence does not affect any SEC-INV invariant. See spec §4 callout box.
+- **Span parent-child relationships are flat** in v0.17 — each span is started independently via `SecretEnvSpan::start(...)` without `Context::current_with_span(...).attach()`. Operators inspecting trace UIs will see all spans at the root level rather than nested. The mutation non-droppable sampler operates per span name, not via trace ancestry, so SEC-INV-22 is unaffected. Tree-shape lift deferred to v0.17.x hygiene.
+
 ### v0.16.2 — Refactor sprint (merged-not-tagged) — in progress
 
 Carries the three substantive refactors that v0.16.1's hygiene cycle deferred mid-cycle because each introduces new public crate/subcommand surface that needs a real Phase 7 audit. Plus F-11 (Copilot empty-schema A/B test) operator-led fixture.

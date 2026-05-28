@@ -4198,6 +4198,294 @@ fi
 
 
 # ---------------------------------------------------------------
+section_begin 36 "v0.17 OpenTelemetry — span emission + cardinality + sampler"
+
+# Local Jaeger collector + 5 assertion blocks against an isolated
+# `local-otel://` backend fixture. All blocks gated on `docker` +
+# `jq` being available — the section soft-SKIPs if either is missing.
+# See `kb/wiki/runbooks/v0.17-otel-smoke.md` for manual procedure.
+if section_active_for 36; then
+    if ! command -v docker >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        record "1200 v0.17 OTel smoke setup" SKIP "docker or jq missing; OTel section needs both"
+    else
+        # shellcheck source=lib/otel-collector.sh
+        . "$_here/lib/otel-collector.sh"
+
+        V017_WORK="$RUNS/v0.17-otel"
+        V017_CONFIG="$RUNTIME_DIR/v0.17-otel/config/config.toml"
+        V017_PROJ="$RUNTIME_DIR/v0.17-otel/project"
+        V017_SENTINEL_VALUE="otel-smoke-sentinel-VALUE-DO-NOT-LEAK-INTO-OTEL-ATTRS-7c2f1b3a"
+        mkdir -p "$V017_WORK"
+
+        # v0.17 fixtures were staged by the top-level
+        # seed_runtime_from_fixtures call at smoke startup (lib/common.sh).
+        # They live under $RUNTIME_DIR/v0.17-otel/{config,project,local-secrets}.
+
+        # Start collector once for the whole section; teardown at end.
+        if ! otel_start || ! otel_wait_ready; then
+            record "1201 v0.17 OTel collector start" FAIL "Jaeger all-in-one failed to come up; section skipped"
+        else
+            record "1201 v0.17 OTel collector start" PASS
+
+            export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:${OTEL_OTLP_GRPC_PORT}"
+            export OTEL_SERVICE_NAME="secretenv"
+
+            # -------------------------------------------------------
+            # Block A — Trace emission (15 assertions)
+            # -------------------------------------------------------
+
+            (
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" run -- /bin/echo block-a-hello \
+                    > "$V017_WORK/blockA-run.log" 2>&1
+            )
+            # Allow batch processor to flush; smoke isn't load-sensitive.
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockA-traces.json" || true
+
+            assert_contains  "1210 v0.17 Block A — secretenv.run root span present" \
+                "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.run"'
+            assert_contains  "1211 v0.17 Block A — service.name=secretenv resource" \
+                "$V017_WORK/blockA-traces.json" '"key":"service.name"'
+            assert_contains  "1212 v0.17 Block A — service.version resource attr" \
+                "$V017_WORK/blockA-traces.json" '"key":"service.version"'
+            assert_contains  "1213 v0.17 Block A — host.name resource attr (arch F-3)" \
+                "$V017_WORK/blockA-traces.json" '"key":"host.name"'
+            assert_contains  "1214 v0.17 Block A — process.pid resource attr (arch F-3)" \
+                "$V017_WORK/blockA-traces.json" '"key":"process.pid"'
+            assert_contains  "1215 v0.17 Block A — host.arch resource attr (arch F-3)" \
+                "$V017_WORK/blockA-traces.json" '"key":"host.arch"'
+            assert_contains  "1216 v0.17 Block A — os.type resource attr (arch F-3)" \
+                "$V017_WORK/blockA-traces.json" '"key":"os.type"'
+            # SEC-INV-04: no fixture value in any span attribute.
+            assert_not_contains "1217 v0.17 Block A — sentinel value absent from all spans" \
+                "$V017_WORK/blockA-traces.json" "$V017_SENTINEL_VALUE"
+            # SEC-INV (topology): no `local-otel://` URI body in span attrs.
+            assert_not_contains "1218 v0.17 Block A — backend URI body absent from spans" \
+                "$V017_WORK/blockA-traces.json" '"value":"local-otel://'
+            # Doc §2.6 + Phase 7b H-2: error.kind key uses the canonical name.
+            assert_not_contains "1219 v0.17 Block A — no plain secretenv.error.kind (renamed to backend.error.kind)" \
+                "$V017_WORK/blockA-traces.json" '"key":"secretenv.error.kind"'
+
+            # `OTEL_SERVICE_NAME` override
+            (
+                export OTEL_SERVICE_NAME="my-test-service"
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" run -- /bin/echo block-a-renamed \
+                    > "$V017_WORK/blockA-rename.log" 2>&1
+            )
+            sleep 3
+            otel_query_traces "my-test-service" 5 > "$V017_WORK/blockA-rename-traces.json" || true
+            assert_contains "1220 v0.17 Block A — OTEL_SERVICE_NAME override honored" \
+                "$V017_WORK/blockA-rename-traces.json" '"serviceName":"my-test-service"'
+
+            # `OTEL_TRACES_EXPORTER=none` → no new spans
+            otel_reset >/dev/null
+            (
+                export OTEL_TRACES_EXPORTER="none"
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" run -- /bin/echo block-a-none \
+                    > "$V017_WORK/blockA-none.log" 2>&1
+            )
+            sleep 3
+            otel_query_traces "secretenv" 5 > "$V017_WORK/blockA-none-traces.json" || echo '{"data":[]}' > "$V017_WORK/blockA-none-traces.json"
+            assert_contains "1221 v0.17 Block A — OTEL_TRACES_EXPORTER=none emits no traces" \
+                "$V017_WORK/blockA-none-traces.json" '"data":[]'
+
+            # `TRACEPARENT` injection → parent linkage (arch F-2)
+            otel_reset >/dev/null
+            (
+                # 00-<32 hex>-<16 hex>-01 per W3C spec; deterministic so
+                # we can grep for the trace id in the resulting trace.
+                export TRACEPARENT="00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" run -- /bin/echo block-a-tp \
+                    > "$V017_WORK/blockA-tp.log" 2>&1
+            )
+            sleep 3
+            otel_query_traces "secretenv" 5 > "$V017_WORK/blockA-tp-traces.json" || true
+            assert_contains "1222 v0.17 Block A — TRACEPARENT trace_id propagates (arch F-2)" \
+                "$V017_WORK/blockA-tp-traces.json" 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+            # Restore default OTEL env for subsequent blocks.
+            otel_reset >/dev/null
+
+            # 1223-1224 marked TODO at first-run polish: per-alias span shape
+            # depends on the v0.14 resolve_alias `tracing::info_span!` site
+            # being bridged via Phase 7b's `tracing_bridge_layer`. Verify
+            # once and inline the assertion once the live span name is
+            # confirmed.
+            record "1223 v0.17 Block A — TODO: secretenv.resolve_alias child span shape" SKIP "first-run pending: confirm bridged tracing span name via Jaeger UI"
+            record "1224 v0.17 Block A — TODO: secretenv.run.exec_child span ordering" SKIP "first-run pending: confirm bridged tracing span name via Jaeger UI"
+
+            # -------------------------------------------------------
+            # Block B — Redact span emission (8 assertions)
+            # -------------------------------------------------------
+
+            (
+                cd "$V017_PROJ"
+                # Verbose so redact engine emits its tracing events.
+                "$BIN" --config "$V017_CONFIG" run --verbose -- /bin/sh -c \
+                    "echo \"$V017_SENTINEL_VALUE\"" \
+                    > "$V017_WORK/blockB-run.log" 2>&1
+            )
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockB-traces.json" || true
+
+            # SEC-INV-19 — `redact.alias_name` MUST NOT appear in any span.
+            assert_not_contains "1230 v0.17 Block B — SEC-INV-19: redact.alias_name absent" \
+                "$V017_WORK/blockB-traces.json" '"key":"secretenv.redact.alias_name"'
+            # SEC-INV: matched value MUST NOT appear in any span.
+            assert_not_contains "1231 v0.17 Block B — matched_value absent from redact spans" \
+                "$V017_WORK/blockB-traces.json" "$V017_SENTINEL_VALUE"
+            # SEC-INV: matched_value attribute key MUST NOT exist.
+            assert_not_contains "1232 v0.17 Block B — secretenv.redact.matched_value key absent" \
+                "$V017_WORK/blockB-traces.json" '"key":"secretenv.redact.matched_value"'
+
+            # `secretenv redact /tmp/...` post-hoc path
+            cp "$RUNTIME_DIR/v0.17-otel/local-secrets/sentinel.txt" "$V017_WORK/posthoc-input.txt"
+            (
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" redact "$V017_WORK/posthoc-input.txt" \
+                    > "$V017_WORK/blockB-posthoc.log" 2>&1
+            )
+            sleep 3
+            otel_query_traces "secretenv" 30 > "$V017_WORK/blockB-posthoc-traces.json" || true
+            # 1233-1237 marked TODO at first-run polish: the precise
+            # redact-mode + match-context attribute strings need
+            # confirmation against the live `tracing::info_span!`
+            # call shape inside `secretenv-core::redact`.
+            record "1233 v0.17 Block B — TODO: secretenv.redact.filter_event span" SKIP "first-run pending: confirm span name via Jaeger UI"
+            record "1234 v0.17 Block B — TODO: redact.match_count attribute" SKIP "first-run pending"
+            record "1235 v0.17 Block B — TODO: redact.stream attribute" SKIP "first-run pending"
+            record "1236 v0.17 Block B — TODO: redact.byte_count attribute" SKIP "first-run pending"
+            record "1237 v0.17 Block B — TODO: redact.mode=post_hoc on redact CLI path" SKIP "first-run pending"
+
+            # -------------------------------------------------------
+            # Block C — Migrate span tree (10 assertions)
+            # -------------------------------------------------------
+            #
+            # The migrate smoke runs a two-instance local→local
+            # rename via the same fixture used in section 32. Span
+            # tree assertions ride on top of the bridged tracing
+            # info_spans in `secretenv-migrate::execute`.
+
+            otel_reset >/dev/null
+            # 1240-1249: stub block — first-run task is to wire a
+            # local-otel-source → local-otel-dest fixture and assert
+            # the 4-phase span tree (probe / read / write /
+            # pointer_flip). Mirror the structure of section 32.
+            # SEC-INV: the URI bodies MUST NOT appear as span attrs.
+            record "1240 v0.17 Block C — TODO: secretenv.registry.migrate root span" SKIP "first-run pending: two-instance fixture extension"
+            record "1241 v0.17 Block C — TODO: secretenv.migrate.probe child" SKIP "first-run pending"
+            record "1242 v0.17 Block C — TODO: secretenv.migrate.read child" SKIP "first-run pending"
+            record "1243 v0.17 Block C — TODO: secretenv.migrate.write child" SKIP "first-run pending"
+            record "1244 v0.17 Block C — TODO: secretenv.migrate.pointer_flip child" SKIP "first-run pending"
+            record "1245 v0.17 Block C — TODO: span ordering probe → read → write → pointer_flip" SKIP "first-run pending"
+            record "1246 v0.17 Block C — TODO: source_uri / dest_uri absent from any migrate span" SKIP "first-run pending"
+            record "1247 v0.17 Block C — TODO: migrate.alias_name on root" SKIP "first-run pending"
+            record "1248 v0.17 Block C — TODO: migrate.source_backend_type + dest_backend_type" SKIP "first-run pending"
+            record "1249 v0.17 Block C — TODO: partial-failure → migrate.outcome=error + partial_failure_stage" SKIP "first-run pending"
+
+            # -------------------------------------------------------
+            # Block D — MCP tool spans (8 assertions)
+            # -------------------------------------------------------
+            #
+            # Reuses `lib/mcp-driver.py` from section 35 with the
+            # OTel env vars exported. The driver invokes `mcp serve`
+            # against the local-otel fixture and issues a few tool
+            # calls; section 36 then queries Jaeger for the resulting
+            # spans.
+
+            otel_reset >/dev/null
+            # 1250-1257: stub block — driver invocation + per-tool
+            # span shape assertions land in the first-run polish.
+            # The SEC-INV-12 negative checks (no argument_reason,
+            # no argument_uri, no resolved_value, mutation
+            # non-droppability under 0.0001 ratio sampler) are the
+            # critical assertions to confirm; the rest are
+            # structural.
+            record "1250 v0.17 Block D — TODO: secretenv.mcp.tool.list_aliases span" SKIP "first-run pending: mcp-driver harness adaptation"
+            record "1251 v0.17 Block D — TODO: mcp.tool_name + outcome + session_id attrs" SKIP "first-run pending"
+            record "1252 v0.17 Block D — TODO: mcp.client_name (Phase 6a F-7 closure)" SKIP "first-run pending"
+            record "1253 v0.17 Block D — TODO: set_alias has argument_alias_name + mutation_confirmed=true" SKIP "first-run pending"
+            record "1254 v0.17 Block D — TODO: SEC-INV: set_alias has NO argument_uri" SKIP "first-run pending"
+            record "1255 v0.17 Block D — TODO: SEC-INV-12: set_alias has NO argument_reason" SKIP "first-run pending"
+            record "1256 v0.17 Block D — TODO: list_aliases (read-only) has NO resolved_value" SKIP "first-run pending"
+            record "1257 v0.17 Block D — TODO: SEC-INV-22: mutation span survives 0.0001 ratio sampler" SKIP "first-run pending"
+
+            # -------------------------------------------------------
+            # Block E — Doctor + metrics (9 assertions, no Jaeger)
+            # -------------------------------------------------------
+
+            unset OTEL_EXPORTER_OTLP_ENDPOINT
+            (
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" doctor --trace \
+                    > "$V017_WORK/blockE-trace.log" 2>&1
+            )
+            assert_contains "1260 v0.17 Block E — doctor --trace renders Trace section" \
+                "$V017_WORK/blockE-trace.log" "Trace (local capture)"
+            assert_contains "1261 v0.17 Block E — doctor --trace lists secretenv.doctor.backend spans" \
+                "$V017_WORK/blockE-trace.log" "secretenv.doctor.backend"
+            assert_contains "1262 v0.17 Block E — doctor --trace shows P95 + slowest lines" \
+                "$V017_WORK/blockE-trace.log" "P95 latency"
+            assert_not_contains "1263 v0.17 Block E — doctor --trace has no URI body in output" \
+                "$V017_WORK/blockE-trace.log" "local-otel://"
+
+            # doctor --extensive without endpoint → "not configured"
+            (
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" doctor --extensive \
+                    > "$V017_WORK/blockE-noendpoint.log" 2>&1
+            )
+            assert_contains "1264 v0.17 Block E — doctor --extensive no-endpoint shows not-configured msg" \
+                "$V017_WORK/blockE-noendpoint.log" "No exporter configured"
+
+            # doctor --extensive WITH endpoint → reachability section
+            (
+                export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:${OTEL_OTLP_GRPC_PORT}"
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" doctor --extensive \
+                    > "$V017_WORK/blockE-endpoint.log" 2>&1
+            )
+            assert_contains "1265 v0.17 Block E — doctor --extensive shows OK reachability" \
+                "$V017_WORK/blockE-endpoint.log" "Connection check:  ok"
+
+            # run --verbose per-alias timing table
+            (
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" run --verbose -- /bin/echo blockE-verbose \
+                    > "$V017_WORK/blockE-verbose.log" 2>&1
+            )
+            assert_contains "1266 v0.17 Block E — run --verbose emits resolving header" \
+                "$V017_WORK/blockE-verbose.log" "resolving"
+            assert_not_contains "1267 v0.17 Block E — run --verbose has no URI in timing table" \
+                "$V017_WORK/blockE-verbose.log" "local-otel://"
+
+            # OTEL_METRICS_EXPORTER=console emits resolution.duration metric
+            (
+                export OTEL_METRICS_EXPORTER="console"
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" run -- /bin/echo blockE-metric \
+                    > "$V017_WORK/blockE-metric.log" 2>&1
+            )
+            # Stdout metric exporter prints to stdout; the smoke captures
+            # combined stderr+stdout. v0.17 Phase 4 instruments are
+            # registered when init() is called with metrics enabled.
+            record "1268 v0.17 Block E — TODO: console metric exporter emits resolution.duration" SKIP "first-run pending: confirm console emission shape"
+
+            # Always tear down the collector at the end of the section
+            # so leftover containers don't haunt subsequent sections /
+            # repeat runs.
+            otel_stop
+            unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME
+        fi
+    fi
+fi
+
+
+# ---------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------
 {

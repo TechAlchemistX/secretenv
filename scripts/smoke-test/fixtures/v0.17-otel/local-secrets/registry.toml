@@ -1,0 +1,1 @@
+otel_sentinel = "local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/sentinel.txt"

@@ -1,0 +1,12 @@
+# v0.17 OTel smoke fixture — minimal local-backend config so the smoke
+# can verify span emission against a single-alias resolution without
+# touching cloud credentials. Used by section 36 of run-tests.sh.
+#
+# `@@RUNTIME_DIR@@` is replaced by `render_fixture` (lib/common.sh)
+# with the active `$RUNTIME_DIR` at smoke startup.
+
+[backends.local-otel]
+type = "local"
+
+[registries.otel-default]
+sources = ["local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/registry.toml"]

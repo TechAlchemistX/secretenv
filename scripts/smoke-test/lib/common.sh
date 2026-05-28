@@ -135,4 +135,24 @@ seed_runtime_from_fixtures() {
             git commit -q -m "touch: trailing newline"
         )
     fi
+
+    # v0.17 OTel smoke fixture (section 36) — isolated single-alias
+    # local-backend setup so the OTel section can verify span
+    # emission without depending on cloud creds. Lifecycle is
+    # independent of the cloud-backend fixtures above.
+    if [ -d "$FIXTURES_DIR/v0.17-otel" ]; then
+        mkdir -p "$RUNTIME_DIR/v0.17-otel/local-secrets" \
+                 "$RUNTIME_DIR/v0.17-otel/config" \
+                 "$RUNTIME_DIR/v0.17-otel/project"
+        cp -p "$FIXTURES_DIR/v0.17-otel/local-secrets/sentinel.txt" \
+              "$RUNTIME_DIR/v0.17-otel/local-secrets/sentinel.txt"
+        render_fixture \
+            "$FIXTURES_DIR/v0.17-otel/local-secrets/registry.toml" \
+            "$RUNTIME_DIR/v0.17-otel/local-secrets/registry.toml"
+        render_fixture \
+            "$FIXTURES_DIR/v0.17-otel/config/config.toml" \
+            "$RUNTIME_DIR/v0.17-otel/config/config.toml"
+        cp -p "$FIXTURES_DIR/v0.17-otel/project/secretenv.toml" \
+              "$RUNTIME_DIR/v0.17-otel/project/secretenv.toml"
+    fi
 }

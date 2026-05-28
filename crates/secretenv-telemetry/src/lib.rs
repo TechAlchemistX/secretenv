@@ -58,7 +58,9 @@ pub mod span;
 
 pub use error_kind::SecretEnvErrorKind;
 pub use event::{RedactionEvent, RedactionSource, RedactionStream};
-pub use init::{flush_before_exec, init, init_with_env, InitError, TelemetryGuard};
+pub use init::{
+    flush_before_exec, init, init_with_env, tracing_bridge_layer, InitError, TelemetryGuard,
+};
 pub use local_trace::{LocalTraceCapture, LocalTraceSpan};
 pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};

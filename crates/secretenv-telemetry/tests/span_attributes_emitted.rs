@@ -129,7 +129,7 @@ fn every_active_setter_emits_its_typed_attribute() {
     // Closed-enum kebab-case strings.
     assert_eq!(attr(s, "secretenv.alias.outcome"), Some(&Value::from("ok")));
     assert_eq!(attr(s, "secretenv.backend.auth_method"), Some(&Value::from("cli-session")));
-    assert_eq!(attr(s, "secretenv.error.kind"), Some(&Value::from("backend-auth-failed")));
+    assert_eq!(attr(s, "secretenv.backend.error.kind"), Some(&Value::from("backend-auth-failed")),);
     assert_eq!(attr(s, "secretenv.migrate.phase"), Some(&Value::from("pointer-flip")));
     assert_eq!(attr(s, "secretenv.migrate.outcome"), Some(&Value::from("ok")));
 

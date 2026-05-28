@@ -116,6 +116,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.redact.line_number` | ALLOW | |
 | `secretenv.redact.replacement_token` | ALLOW | The literal token written in place of the match |
 | `secretenv.redact.match_context` | ALLOW | `exact` / `substring` / `base64_form` |
+| `secretenv.redact.source` | ALLOW | Closed enum: `mode-a` (runtime pipe) / `mode-b` (post-hoc file rewrite) / `stripped`. Distinguishes which redaction path scrubbed the match for percentile-by-mode triage. |
 | `secretenv.redact.alias_name` | **DENY in OTel** | SEC-INV-19. The alias name appears in the operator-local redaction token; it does **not** appear as an OTel attribute. (Resolves the conflict between the OTel spec's permissive position and the security invariant; security wins for OTel emission.) |
 | `secretenv.redact.matched_value` / `.value_length` | **DENY** | |
 

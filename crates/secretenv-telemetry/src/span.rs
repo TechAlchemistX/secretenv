@@ -193,9 +193,15 @@ impl SecretEnvSpan {
         self
     }
 
-    /// `secretenv.error.kind`. ALLOW.
+    /// `secretenv.backend.error.kind`. ALLOW. Closed enum
+    /// [`SecretEnvErrorKind`] — emits the kebab-case attribute value.
+    /// Method name kept as `record_error_kind` (no callers to break);
+    /// emitted key matches `docs/reference/opentelemetry.md` §2.3.
     pub fn record_error_kind(&mut self, kind: SecretEnvErrorKind) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.error.kind", kind.as_attribute_value()));
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.backend.error.kind",
+            kind.as_attribute_value(),
+        ));
         self
     }
 

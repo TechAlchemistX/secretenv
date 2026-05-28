@@ -103,7 +103,10 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.backend.cli.identity", AttributeClassification::Deny),
     ("secretenv.backend.auth_method", AttributeClassification::Allow),
     // --- error ---
-    ("secretenv.error.kind", AttributeClassification::Allow),
+    // v0.17 Phase 7b — renamed from `secretenv.error.kind` to match
+    // doc §2.3. No callers existed at the time of rename, so this is
+    // a pure key-string change inside `SecretEnvSpan::record_error_kind`.
+    ("secretenv.backend.error.kind", AttributeClassification::Allow),
     ("secretenv.error.message", AttributeClassification::DenyByDefault),
     ("secretenv.error.cli_stderr", AttributeClassification::Deny),
     // --- process ---

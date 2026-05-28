@@ -165,7 +165,7 @@ impl Server {
         &self,
         _args: Parameters<GettingStartedArgs>,
     ) -> Json<GettingStartedResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.getting_started");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.getting_started");
 
         let registries = self.config.registries.len();
         let backends = self.config.backends.len();
@@ -200,7 +200,7 @@ impl Server {
         &self,
         _args: Parameters<VersionInfoArgs>,
     ) -> Json<VersionInfoResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.version_info");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.version_info");
 
         let tools = self
             .tool_router
@@ -231,7 +231,7 @@ impl Server {
         &self,
         _args: Parameters<ListAliasesArgs>,
     ) -> Json<ListAliasesResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.list_aliases");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_aliases");
 
         let enumeration = aliases::enumerate_all(&self.config).await;
         let total_aliases = enumeration.aliases.len();
@@ -255,7 +255,7 @@ impl Server {
         &self,
         _args: Parameters<ListBackendsArgs>,
     ) -> Json<ListBackendsResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.list_backends");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_backends");
 
         let mut backends: Vec<BackendListing> = self
             .config
@@ -288,7 +288,7 @@ impl Server {
         &self,
         _args: Parameters<ResolveStatusArgs>,
     ) -> Json<ResolveStatusResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.resolve_status");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.resolve_status");
 
         // Run a single doctor probe and reuse its per-instance status
         // map; cheaper than re-probing each backend per registry.
@@ -378,7 +378,7 @@ impl Server {
         &self,
         _args: Parameters<DetectPasswordManagersArgs>,
     ) -> Json<DetectPasswordManagersResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.detect_password_managers");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.detect_password_managers");
 
         let detections = password_managers::run_all_probes().await;
         let total_supported = detections.len();
@@ -408,7 +408,7 @@ impl Server {
                        whether to act on the hints."
     )]
     pub async fn doctor(&self, _args: Parameters<DoctorArgs>) -> Json<DoctorResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.doctor");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.doctor");
 
         let backends = doctor::probe_all_backends(&self.config).await;
         let total = backends.len();
@@ -427,7 +427,7 @@ impl Server {
         &self,
         _args: Parameters<RedactStatusArgs>,
     ) -> Json<RedactStatusResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_status");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_status");
 
         Json(RedactStatusResponse {
             default_redact_mode: DEFAULT_REDACT_MODE.to_owned(),
@@ -459,7 +459,7 @@ impl Server {
         args: Parameters<SetAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<SetAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.set_alias");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.set_alias");
         let args = args.0;
 
         // Best-effort backend-instance extraction for the response
@@ -528,7 +528,7 @@ impl Server {
         args: Parameters<DeleteAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<DeleteAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.delete_alias");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.delete_alias");
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let summary = format!("remove alias `{}` from registry `{}`", args.alias, registry_name);
@@ -586,7 +586,7 @@ impl Server {
         args: Parameters<InitProjectArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<InitProjectResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.init_project");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.init_project");
         let args = args.0;
         let cwd = args
             .cwd
@@ -698,7 +698,7 @@ impl Server {
         args: Parameters<RedactFileArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<RedactFileResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_file");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_file");
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let file_path = std::path::PathBuf::from(&args.file_path);
@@ -743,7 +743,9 @@ impl Server {
                         operator_decision: OperatorDecision::Denied,
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
@@ -764,7 +766,9 @@ impl Server {
                         operator_decision: decision,
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = outcome;
                     response.decision = helpers::echo_decision(decision);
                     return Json(response);
@@ -802,7 +806,9 @@ impl Server {
                         operator_decision: allowed_decision,
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                 }
                 return Json(response);
             }
@@ -831,7 +837,9 @@ impl Server {
                         operator_decision: allowed_decision,
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                 }
                 return Json(response);
             }
@@ -877,7 +885,9 @@ impl Server {
                 operator_decision: allowed_decision,
                 mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
-            let _ = self.mutation_log.append(&entry);
+            if let Err(append_err) = self.mutation_log.append(&entry) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
         }
 
         Json(response)
@@ -909,7 +919,7 @@ impl Server {
         args: Parameters<GenPasswordArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<GenPasswordResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.gen_password");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.gen_password");
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let backend_instance = secretenv_core::BackendUri::parse(&args.target_uri)
@@ -950,7 +960,9 @@ impl Server {
                         operator_decision: OperatorDecision::Denied,
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
@@ -966,7 +978,9 @@ impl Server {
                         operator_decision: d,
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = if d == OperatorDecision::Timeout {
                         MutationOutcome::Timeout
                     } else {
@@ -995,7 +1009,9 @@ impl Server {
                     operator_decision: decision,
                     mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
-                let _ = self.mutation_log.append(&entry);
+                if let Err(append_err) = self.mutation_log.append(&entry) {
+                    tracing::error!(error = ?append_err, "audit-log append failed");
+                }
                 return Json(response);
             }
         };
@@ -1021,7 +1037,9 @@ impl Server {
                     operator_decision: decision,
                     mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
-                let _ = self.mutation_log.append(&entry);
+                if let Err(append_err) = self.mutation_log.append(&entry) {
+                    tracing::error!(error = ?append_err, "audit-log append failed");
+                }
                 return Json(response);
             }
         };
@@ -1041,7 +1059,9 @@ impl Server {
                     operator_decision: decision,
                     mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
-                let _ = self.mutation_log.append(&entry);
+                if let Err(append_err) = self.mutation_log.append(&entry) {
+                    tracing::error!(error = ?append_err, "audit-log append failed");
+                }
                 return Json(response);
             }
         };
@@ -1062,7 +1082,9 @@ impl Server {
                 operator_decision: decision,
                 mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
-            let _ = self.mutation_log.append(&entry);
+            if let Err(append_err) = self.mutation_log.append(&entry) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             return Json(response);
         };
 
@@ -1083,7 +1105,9 @@ impl Server {
                 operator_decision: decision,
                 mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
-            let _ = self.mutation_log.append(&entry);
+            if let Err(append_err) = self.mutation_log.append(&entry) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             return Json(response);
         }
 
@@ -1156,7 +1180,7 @@ impl Server {
         args: Parameters<MigrateAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<MigrateAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.migrate_alias");
+        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.migrate_alias");
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let dest_backend_instance = secretenv_core::BackendUri::parse(&args.dest_uri)

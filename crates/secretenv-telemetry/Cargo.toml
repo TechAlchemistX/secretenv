@@ -19,6 +19,7 @@ readme.workspace       = true
 # secretenv-telemetry — never as a direct dep of any other crate.
 # The Phase 9 release-prep audit enforces this.
 tracing.workspace                  = true
+tracing-subscriber.workspace       = true                                              # subscriber Layer<S> bound for the tracing-otel bridge layer return type
 tokio.workspace                    = true                                              # rt + time for bounded flush
 thiserror.workspace                = true
 # v0.17 build plan was drafted against OTel 0.27; the ecosystem renamed
@@ -30,6 +31,11 @@ opentelemetry-otlp                 = { version = "0.32", features = ["grpc-tonic
 opentelemetry-semantic-conventions = { version = "0.32" }
 opentelemetry-stdout               = { version = "0.32", features = ["trace", "metrics", "logs"] }
 tracing-opentelemetry              = { version = "0.33" }
+# v0.17 Phase 7b — `host.name` OTel standard resource attribute via
+# the dedicated `hostname` crate. Small (Apache-2.0 OR MIT), zero
+# transitive deps. Safer than reading `/etc/hostname` directly +
+# more portable than `rustix::system::uname`.
+hostname                           = "0.4"
 
 [dev-dependencies]
 # `trybuild` powers the SEC-INV-19 compile-fail guard at

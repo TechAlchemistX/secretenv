@@ -91,6 +91,11 @@ pub struct RunOptions {
     pub redact: RedactMode,
     /// Override the substitution token. `None` → alias-aware default.
     pub redact_token: Option<String>,
+    /// v0.17 Phase 8b — registry name to attach to the
+    /// `secretenv.run` `OTel` span as `secretenv.registry.name`.
+    /// `None` skips the attribute; operator-stated identifier per
+    /// `docs/reference/opentelemetry.md` §2.5.
+    pub registry_name: Option<String>,
 }
 
 /// A fully-resolved env-var pair, ready for injection into the child
@@ -178,20 +183,105 @@ pub async fn run_with_options(
     command: &[String],
     options: &RunOptions,
 ) -> Result<()> {
+    use secretenv_telemetry::{ResolutionOutcome, SecretEnvSpan};
+
     if command.is_empty() {
         bail!("no command specified — 'secretenv run' needs a program to execute");
     }
 
-    let env = build_env(resolved, backends, options.dry_run, options.verbose).await?;
+    // v0.17 Phase 8b — root `secretenv.run` span. Wraps the entire
+    // resolution + exec lifecycle. Held in a scoped block so the
+    // exec() path can end it explicitly before handoff (Drop won't
+    // fire across an execve()); the pipe-redact + dry-run paths
+    // return normally and the span drops at end-of-function.
+    let (mut run_span, run_guard) = SecretEnvSpan::start("secretenv.run");
+    let argv0 = command.first().map_or("<empty>", String::as_str);
+    run_span
+        .record_run_id(&secretenv_telemetry::fresh_run_id())
+        .record_command("run")
+        .record_process_command_name(argv0)
+        .record_process_env_var_count(resolved.len() as u64)
+        .record_run_dry_run(options.dry_run)
+        .record_run_verbose(options.verbose);
+    if let Some(name) = options.registry_name.as_deref() {
+        run_span.record_registry_name(name);
+    }
+
+    let resolution_started = std::time::Instant::now();
+    let env = match build_env(resolved, backends, options.dry_run, options.verbose).await {
+        Ok(env) => {
+            run_span.record_run_failed_alias_count(0);
+            env
+        }
+        Err(err) => {
+            // build_env aggregates per-alias failures into one error; the
+            // per-resolution spans already carry the precise count
+            // (`outcome=failure`). Setting failed=alias_count at the
+            // run level is the conservative aggregate.
+            run_span
+                .record_run_outcome(ResolutionOutcome::Failure)
+                .record_run_failed_alias_count(resolved.len() as u64);
+            // Emit the spec's run-level histogram point on the failure
+            // branch too so the operator sees the latency distribution.
+            let registry = options.registry_name.as_deref().unwrap_or("<direct-uri>");
+            let resolution_ms = u64::try_from(resolution_started.elapsed().as_millis())
+                .unwrap_or(u64::MAX);
+            let bucket = secretenv_telemetry::metrics::AliasCountBucket::from_count(
+                resolved.len() as u64,
+            );
+            secretenv_telemetry::metrics::record_resolution_duration(
+                resolution_ms,
+                registry,
+                ResolutionOutcome::Failure,
+                bucket,
+            );
+            secretenv_telemetry::metrics::increment_resolution_count(
+                registry,
+                ResolutionOutcome::Failure,
+            );
+            return Err(err);
+        }
+    };
+
+    let resolution_ms =
+        u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let registry_for_metrics = options.registry_name.as_deref().unwrap_or("<direct-uri>");
+    let alias_bucket = secretenv_telemetry::metrics::AliasCountBucket::from_count(
+        resolved.len() as u64,
+    );
+    let outcome_for_metric = if options.dry_run {
+        ResolutionOutcome::DryRun
+    } else {
+        ResolutionOutcome::Success
+    };
+    secretenv_telemetry::metrics::record_resolution_duration(
+        resolution_ms,
+        registry_for_metrics,
+        outcome_for_metric,
+        alias_bucket,
+    );
+    secretenv_telemetry::metrics::increment_resolution_count(
+        registry_for_metrics,
+        outcome_for_metric,
+    );
 
     if options.dry_run {
+        run_span.record_run_outcome(ResolutionOutcome::DryRun);
         return Ok(());
     }
 
     // Decide redact dispatch.
     let mode = effective_redact_mode(options.redact);
     match mode {
-        RedactMode::ForceExec => exec_with_env(command, &env),
+        RedactMode::ForceExec => {
+            // Set success + end the span explicitly — execve() bypasses
+            // Drop, so without this the BatchProcessor's flush would
+            // ship an unended span and Jaeger drops it.
+            run_span.record_run_outcome(ResolutionOutcome::Success);
+            drop(run_span);
+            drop(run_guard);
+            exec_with_env(command, &env)
+        }
         RedactMode::ForcePipe | RedactMode::Auto => {
             // For Auto, we've already decided via effective_redact_mode
             // whether to fall back to exec. Build the tainted set here.
@@ -211,7 +301,13 @@ pub async fn run_with_options(
                 .redact_token
                 .as_ref()
                 .map_or(SubstitutionToken::AliasAware, |s| SubstitutionToken::Fixed(s.clone()));
-            run_with_pipe_redaction(command, &env, &tainted, token).await
+            let result = run_with_pipe_redaction(command, &env, &tainted, token).await;
+            // Span ends normally via Drop here; record outcome first.
+            match &result {
+                Ok(()) => run_span.record_run_outcome(ResolutionOutcome::Success),
+                Err(_) => run_span.record_run_outcome(ResolutionOutcome::Failure),
+            };
+            result
         }
     }
 }
@@ -322,11 +418,40 @@ async fn run_with_pipe_redaction(
     let stdout_res = stdout_task.await.context("redact stdout relay panicked")?;
     let stderr_res = stderr_task.await.context("redact stderr relay panicked")?;
     signal_task.abort();
-    stdout_res.context("redact stdout relay failed")?;
-    stderr_res.context("redact stderr relay failed")?;
+    let stdout_report = stdout_res.context("redact stdout relay failed")?;
+    let stderr_report = stderr_res.context("redact stderr relay failed")?;
+
+    // v0.17 Phase 8c — emit one `secretenv.redact.filter_event` span
+    // per stream with the aggregated match/byte counts. Emission is
+    // suppressed when match_count == 0 so quiet runs don't add empty
+    // spans (the contract is "report what was scrubbed").
+    emit_redact_event_span(secretenv_telemetry::RedactionStream::Stdout, &stdout_report);
+    emit_redact_event_span(secretenv_telemetry::RedactionStream::Stderr, &stderr_report);
+    secretenv_telemetry::flush_before_exec(std::time::Duration::from_secs(1));
 
     let code = exit_status.code().unwrap_or(128);
     std::process::exit(code);
+}
+
+/// v0.17 Phase 8c — emit one `secretenv.redact.filter_event` span
+/// summarising a single stream's runtime-mode redact pass.
+///
+/// Quiet streams (`match_count == 0`) get no span. The recorded
+/// attributes (`mode=runtime`, `stream`, aggregate counts) match
+/// `docs/reference/opentelemetry.md` §2.6.
+fn emit_redact_event_span(
+    stream: secretenv_telemetry::RedactionStream,
+    report: &crate::redact::ScrubReport,
+) {
+    if report.match_count == 0 {
+        return;
+    }
+    let (mut span, _guard) =
+        secretenv_telemetry::SecretEnvSpan::start("secretenv.redact.filter_event");
+    span.record_redact_mode(secretenv_telemetry::RedactMode::Runtime)
+        .record_redact_stream(stream)
+        .record_redact_match_count(report.match_count)
+        .record_redact_byte_count(report.byte_count);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,7 +466,7 @@ async fn relay_stream<R>(
     mut scrubber: StreamingScrubber,
     mut reader: R,
     kind: StreamKind,
-) -> Result<()>
+) -> Result<crate::redact::ScrubReport>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -349,31 +474,37 @@ where
 
     let mut buf = vec![0u8; 8 * 1024];
     let mut out_buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut total = crate::redact::ScrubReport::zero();
     loop {
         let n = reader.read(&mut buf).await.context("redact stream: reading from child pipe")?;
         if n == 0 {
             break;
         }
         out_buf.clear();
-        let _ = scrubber.push(&buf[..n], &mut out_buf)?;
+        let chunk_rep = scrubber.push(&buf[..n], &mut out_buf)?;
+        total = total + chunk_rep;
         if let Err(err) = write_kind(kind, &out_buf) {
             if is_broken_pipe(&err) {
-                return Ok(()); // parent's stdout was closed early — clean exit.
+                // parent's stdout was closed early — clean exit; return
+                // whatever scrub totals we accumulated so the caller's
+                // span still carries truthful aggregates.
+                return Ok(total);
             }
             return Err(err);
         }
     }
     out_buf.clear();
-    let _ = scrubber.flush(&mut out_buf)?;
+    let flush_rep = scrubber.flush(&mut out_buf)?;
+    total = total + flush_rep;
     if !out_buf.is_empty() {
         if let Err(err) = write_kind(kind, &out_buf) {
             if is_broken_pipe(&err) {
-                return Ok(());
+                return Ok(total);
             }
             return Err(err);
         }
     }
-    Ok(())
+    Ok(total)
 }
 
 /// Whether the error chain at `err` includes a `BrokenPipe` io error.
@@ -605,11 +736,20 @@ fn render_alias_timing_table(timings: &[AliasTiming]) {
 /// [`crate::with_timeout`].
 type FetchOk = (Option<EnvEntry>, AliasTiming);
 
+// v0.17 Phase 8b adds span + metric emission, pushing this function
+// over the 100-line clippy threshold. Splitting would mean dragging
+// the AliasTiming + span/metric pair through tuple-passing across an
+// arbitrary helper; the function is still a single linear story
+// (start span → dispatch dry-run / no-backend / fetch → record
+// outcome + timing). Allow it locally rather than fragment the flow.
+#[allow(clippy::too_many_lines)]
 async fn fetch_one(
     secret: &ResolvedSecret,
     backends: &BackendRegistry,
     dry_run: bool,
 ) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
+    use secretenv_telemetry::{FetchOutcome, ResolutionOutcome, SecretEnvSpan};
+
     let started = std::time::Instant::now();
     let (target, alias_name) = match &secret.source {
         ResolvedSource::Uri { target, alias_name, .. } => (target, alias_name.clone()),
@@ -629,24 +769,39 @@ async fn fetch_one(
         }
     };
 
+    // v0.17 Phase 8b — per-alias `secretenv.resolution` span. Carries
+    // alias.name + backend.type/instance + outcome + latency. Wrapping
+    // happens after the Default short-circuit so synthetic dry-run
+    // rows for malformed-source defaults stay span-free.
+    let (mut span, _guard) = SecretEnvSpan::start("secretenv.resolution");
+    span.record_alias_name(&alias_name)
+        .record_alias_env_var(&secret.env_var)
+        .record_backend_instance(&target.scheme);
+
     if dry_run {
         println!("{} ← {}", secret.env_var, target.raw);
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        span.record_resolution_outcome(ResolutionOutcome::DryRun)
+            .record_resolution_latency_ms(ms);
         return Ok((
             None,
             AliasTiming {
                 alias_name,
                 backend_instance: target.scheme.clone(),
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                duration_ms: ms,
                 outcome: AliasFetchOutcome::DryRun,
             },
         ));
     }
 
     let Some(backend) = backends.get(&target.scheme) else {
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        span.record_resolution_outcome(ResolutionOutcome::Failure)
+            .record_resolution_latency_ms(ms);
         let timing = AliasTiming {
             alias_name,
             backend_instance: target.scheme.clone(),
-            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            duration_ms: ms,
             outcome: AliasFetchOutcome::Failed,
         };
         return Err((
@@ -661,13 +816,49 @@ async fn fetch_one(
         ));
     };
     let backend: &dyn Backend = backend;
+    span.record_backend_type(backend.backend_type());
+
+    // Child `secretenv.backend.fetch` span scopes the actual
+    // backend.get call. Closed via Drop at end-of-scope (before the
+    // outer resolution span's outcome is set).
     let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
-    match crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await {
+    let fetch_started = std::time::Instant::now();
+    let fetch_result = {
+        let (mut fetch_span, _fetch_guard) = SecretEnvSpan::start("secretenv.backend.fetch");
+        fetch_span
+            .record_alias_name(&alias_name)
+            .record_backend_type(backend.backend_type())
+            .record_backend_instance(&target.scheme);
+        let r = crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await;
+        let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        fetch_span.record_backend_fetch_duration_ms(fetch_ms);
+        match &r {
+            Ok(_) => fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok),
+            Err(_) => fetch_span.record_backend_fetch_outcome(FetchOutcome::Error),
+        };
+        r
+    };
+
+    let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let backend_type_str = backend.backend_type();
+
+    match fetch_result {
         Ok(value) => {
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            span.record_resolution_outcome(ResolutionOutcome::Success)
+                .record_resolution_latency_ms(ms);
+            // v0.17 Phase 8b — emit the spec'd histogram points so
+            // the metrics instruments declared in Phase 4 aren't dead.
+            secretenv_telemetry::metrics::record_backend_fetch_duration(
+                fetch_ms,
+                backend_type_str,
+                &target.scheme,
+                FetchOutcome::Ok,
+            );
             let timing = AliasTiming {
                 alias_name: alias_name.clone(),
                 backend_instance: target.scheme.clone(),
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                duration_ms: ms,
                 outcome: AliasFetchOutcome::Ok,
             };
             Ok((
@@ -675,18 +866,29 @@ async fn fetch_one(
                 timing,
             ))
         }
-        Err(e) => Err((
-            e.context(format!(
-                "secret '{}': failed to fetch from '{}'",
-                secret.env_var, target.raw
-            )),
-            AliasTiming {
-                alias_name,
-                backend_instance: target.scheme.clone(),
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                outcome: AliasFetchOutcome::Failed,
-            },
-        )),
+        Err(e) => {
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            span.record_resolution_outcome(ResolutionOutcome::Failure)
+                .record_resolution_latency_ms(ms);
+            secretenv_telemetry::metrics::record_backend_fetch_duration(
+                fetch_ms,
+                backend_type_str,
+                &target.scheme,
+                FetchOutcome::Error,
+            );
+            Err((
+                e.context(format!(
+                    "secret '{}': failed to fetch from '{}'",
+                    secret.env_var, target.raw
+                )),
+                AliasTiming {
+                    alias_name,
+                    backend_instance: target.scheme.clone(),
+                    duration_ms: ms,
+                    outcome: AliasFetchOutcome::Failed,
+                },
+            ))
+        }
     }
 }
 

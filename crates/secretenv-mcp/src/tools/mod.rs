@@ -230,8 +230,11 @@ impl Server {
     pub async fn list_aliases(
         &self,
         _args: Parameters<ListAliasesArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<ListAliasesResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_aliases");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_aliases");
+        span.record_mcp_tool_name("list_aliases")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let enumeration = aliases::enumerate_all(&self.config).await;
         let total_aliases = enumeration.aliases.len();
@@ -459,8 +462,11 @@ impl Server {
         args: Parameters<SetAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<SetAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.set_alias");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.set_alias");
         let args = args.0;
+        span.record_mcp_tool_name("set_alias")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.alias);
 
         // Best-effort backend-instance extraction for the response
         // (target_uri may be invalid; the writer below will surface

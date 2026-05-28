@@ -24,7 +24,7 @@
 
 # Lock the image tag so this smoke is reproducible across operator
 # machines. Bump deliberately + re-baseline assertions.
-OTEL_JAEGER_IMAGE="${OTEL_JAEGER_IMAGE:-jaegertracing/all-in-one:1.62}"
+OTEL_JAEGER_IMAGE="${OTEL_JAEGER_IMAGE:-jaegertracing/all-in-one:1.62.0}"
 OTEL_JAEGER_CONTAINER="${OTEL_JAEGER_CONTAINER:-secretenv-smoke-jaeger}"
 
 # Ports — set so the smoke matches the build plan + the env vars the

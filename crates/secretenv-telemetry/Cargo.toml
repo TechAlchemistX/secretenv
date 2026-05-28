@@ -36,6 +36,10 @@ tracing-opentelemetry              = { version = "0.33" }
 # transitive deps. Safer than reading `/etc/hostname` directly +
 # more portable than `rustix::system::uname`.
 hostname                           = "0.4"
+# v0.17 Phase 8b — random bytes for `fresh_run_id()` (32-hex run ID
+# attached to every `secretenv.run` root span). Already a workspace
+# dep used by `secretenv-core::redact`; no new wire-protocol surface.
+getrandom.workspace                = true
 
 [dev-dependencies]
 # `trybuild` powers the SEC-INV-19 compile-fail guard at

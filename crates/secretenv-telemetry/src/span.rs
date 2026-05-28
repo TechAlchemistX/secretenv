@@ -26,6 +26,7 @@ use opentelemetry::global::{self, BoxedSpan};
 use opentelemetry::trace::{Span as _, Tracer as _};
 use opentelemetry::KeyValue;
 
+use crate::metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
 use crate::{RedactionSource, RedactionStream, SecretEnvErrorKind};
 
 /// OTel `Tracer` name. Single instance per process; the global
@@ -220,6 +221,101 @@ impl SecretEnvSpan {
         self
     }
 
+    /// `secretenv.run.dry_run`. ALLOW.
+    pub fn record_run_dry_run(&mut self, v: bool) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.run.dry_run", v));
+        self
+    }
+
+    /// `secretenv.run.verbose`. ALLOW.
+    pub fn record_run_verbose(&mut self, v: bool) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.run.verbose", v));
+        self
+    }
+
+    /// `secretenv.run.outcome` — closed enum. ALLOW.
+    pub fn record_run_outcome(&mut self, outcome: ResolutionOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.run.outcome", outcome.as_attribute_value()));
+        self
+    }
+
+    /// `secretenv.run.failed_alias_count`. ALLOW. Aggregate, never per-alias.
+    pub fn record_run_failed_alias_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.run.failed_alias_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.resolution.outcome` — closed enum. ALLOW.
+    pub fn record_resolution_outcome(&mut self, outcome: ResolutionOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.resolution.outcome",
+            outcome.as_attribute_value(),
+        ));
+        self
+    }
+
+    /// `secretenv.resolution.latency_ms`. ALLOW.
+    pub fn record_resolution_latency_ms(&mut self, ms: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.resolution.latency_ms",
+            i64::try_from(ms).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.backend.fetch.outcome` — closed enum. ALLOW.
+    pub fn record_backend_fetch_outcome(&mut self, outcome: FetchOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.backend.fetch.outcome",
+            outcome.as_attribute_value(),
+        ));
+        self
+    }
+
+    /// `secretenv.backend.fetch.duration_ms`. ALLOW.
+    pub fn record_backend_fetch_duration_ms(&mut self, ms: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.backend.fetch.duration_ms",
+            i64::try_from(ms).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.registry.name`. ALLOW.
+    pub fn record_registry_name(&mut self, name: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.registry.name", name.to_owned()));
+        self
+    }
+
+    /// `secretenv.mcp.tool_name`. ALLOW. Closed enum at the contract
+    /// level (the 14 v0.16 tool names); call sites pass the tool's
+    /// `&'static str` name from the tool registry.
+    pub fn record_mcp_tool_name(&mut self, name: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.mcp.tool_name", name.to_owned()));
+        self
+    }
+
+    /// `secretenv.mcp.client_name`. ALLOW. Closed enum of known IDE
+    /// + agent clients (`claude-code`, `cursor`, ...) plus `unknown`.
+    pub fn record_mcp_client_name(&mut self, name: &str) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.mcp.client_name", name.to_owned()));
+        self
+    }
+
+    /// `secretenv.mcp.argument_alias_name`. ALLOW. Mutation tools
+    /// (`set_alias` / `delete_alias` / `migrate_alias`) record the
+    /// alias-name argument here so the audit span carries WHICH alias
+    /// was touched. Topology (`argument_uri`, `argument_reason`)
+    /// stays DENY per SEC-INV-12.
+    pub fn record_mcp_argument_alias_name(&mut self, name: &str) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.mcp.argument_alias_name", name.to_owned()));
+        self
+    }
+
     /// `secretenv.redact.match_count`. ALLOW.
     pub fn record_redact_match_count(&mut self, n: u64) -> &mut Self {
         self.span.set_attribute(KeyValue::new(
@@ -249,6 +345,12 @@ impl SecretEnvSpan {
     // A compile-fail test at `tests/no_redact_alias_in_otel.rs`
     // verifies this method does not exist; adding it back without
     // also amending SEC-INV-19 will fail CI.
+
+    /// `secretenv.redact.mode` — closed enum. ALLOW.
+    pub fn record_redact_mode(&mut self, mode: RedactMode) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.redact.mode", mode.as_attribute_value()));
+        self
+    }
 
     /// `secretenv.redact.stream`. ALLOW.
     pub fn record_redact_stream(&mut self, s: RedactionStream) -> &mut Self {

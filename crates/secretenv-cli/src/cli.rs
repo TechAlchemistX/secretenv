@@ -1034,6 +1034,7 @@ async fn cmd_run(
         verbose: args.verbose,
         redact,
         redact_token: args.redact_token.clone(),
+        registry_name: selection.registry_label().map(str::to_owned),
     };
 
     // Capture the dispatch up front so the report reflects what we
@@ -1456,6 +1457,17 @@ async fn cmd_redact(
         rep.byte_count,
         path.display(),
     );
+    // v0.17 Phase 8c — `secretenv redact <file>` is the post-hoc
+    // path; emit one span summarising the scrub. Suppressed when no
+    // matches occurred (matches the runtime-mode contract).
+    if rep.match_count > 0 {
+        let (mut span, _guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.redact.filter_event");
+        span.record_redact_mode(secretenv_telemetry::RedactMode::PostHoc)
+            .record_redact_stream(secretenv_telemetry::RedactionStream::Stdout)
+            .record_redact_match_count(rep.match_count)
+            .record_redact_byte_count(rep.byte_count);
+    }
     Ok(crate::reports::RedactReport {
         mode: crate::reports::RedactMode::Stdout,
         match_count: rep.match_count,

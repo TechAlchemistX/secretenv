@@ -113,6 +113,29 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.process.argv", AttributeClassification::Deny),
     ("secretenv.process.command_name", AttributeClassification::Allow),
     ("secretenv.process.env_var_count", AttributeClassification::Allow),
+    // --- run (v0.17 Phase 8b) ---
+    // Top-level `secretenv.run` span attrs wired through new
+    // `SecretEnvSpan::record_run_*` setters. ALLOW per
+    // `docs/reference/opentelemetry.md` §2.5.
+    ("secretenv.run.dry_run", AttributeClassification::Allow),
+    ("secretenv.run.verbose", AttributeClassification::Allow),
+    ("secretenv.run.command_name", AttributeClassification::Allow),
+    ("secretenv.run.command_argv", AttributeClassification::Deny),
+    ("secretenv.run.env_var_count", AttributeClassification::Allow),
+    ("secretenv.run.env_var_value", AttributeClassification::Deny),
+    ("secretenv.run.outcome", AttributeClassification::Allow),
+    ("secretenv.run.failed_alias_count", AttributeClassification::Allow),
+    // --- resolution + backend fetch (v0.17 Phase 8b) ---
+    ("secretenv.resolution.outcome", AttributeClassification::Allow),
+    ("secretenv.resolution.cache_hit", AttributeClassification::Allow),
+    ("secretenv.resolution.attempt", AttributeClassification::Allow),
+    ("secretenv.resolution.latency_ms", AttributeClassification::Allow),
+    ("secretenv.backend.fetch.outcome", AttributeClassification::Allow),
+    ("secretenv.backend.fetch.timeout_ms", AttributeClassification::Allow),
+    ("secretenv.backend.fetch.attempt", AttributeClassification::Allow),
+    ("secretenv.backend.fetch.duration_ms", AttributeClassification::Allow),
+    // Registry identifier — operator-stated; ALLOW.
+    ("secretenv.registry.name", AttributeClassification::Allow),
     // --- redact ---
     ("secretenv.redact.match_count", AttributeClassification::Allow),
     ("secretenv.redact.byte_count", AttributeClassification::Allow),
@@ -123,6 +146,7 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     // position overrode otel/concept-C's ALLOW vote per the
     // invariant ledger §9).
     ("secretenv.redact.alias_name", AttributeClassification::Deny),
+    ("secretenv.redact.mode", AttributeClassification::Allow),
     ("secretenv.redact.stream", AttributeClassification::Allow),
     ("secretenv.redact.source", AttributeClassification::Allow),
     // --- migrate (v0.15) ---

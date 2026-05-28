@@ -67,6 +67,21 @@ pub enum RegistrySelection {
     Uri(BackendUri),
 }
 
+impl RegistrySelection {
+    /// Returns the operator-stated registry label when this selection
+    /// names a `[registries.<name>]` entry. Direct-URI selections have
+    /// no operator-stated name and return `None`. Used by v0.17
+    /// telemetry to attach `secretenv.registry.name` to the
+    /// `secretenv.run` span without exposing the URI body.
+    #[must_use]
+    pub fn registry_label(&self) -> Option<&str> {
+        match self {
+            Self::Name(n) => Some(n.as_str()),
+            Self::Uri(_) => None,
+        }
+    }
+}
+
 impl FromStr for RegistrySelection {
     type Err = anyhow::Error;
 

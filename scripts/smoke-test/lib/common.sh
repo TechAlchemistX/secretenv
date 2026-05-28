@@ -146,6 +146,9 @@ seed_runtime_from_fixtures() {
                  "$RUNTIME_DIR/v0.17-otel/project"
         cp -p "$FIXTURES_DIR/v0.17-otel/local-secrets/sentinel.txt" \
               "$RUNTIME_DIR/v0.17-otel/local-secrets/sentinel.txt"
+        # Phase 8c — Block C migrate source value.
+        cp -p "$FIXTURES_DIR/v0.17-otel/local-secrets/migrate-src.txt" \
+              "$RUNTIME_DIR/v0.17-otel/local-secrets/migrate-src.txt"
         render_fixture \
             "$FIXTURES_DIR/v0.17-otel/local-secrets/registry.toml" \
             "$RUNTIME_DIR/v0.17-otel/local-secrets/registry.toml"

@@ -200,21 +200,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # Order: TELEMETRY → CORE.
+      #
+      # Telemetry is the leaf crate of the workspace dep graph; nothing
+      # depends on the workspace below it. v0.14–v0.16 the order was
+      # core → telemetry because core did NOT depend on telemetry — they
+      # sat at the same layer. v0.17 Phase 8b added
+      # `secretenv-telemetry.workspace = true` to `secretenv-core`'s
+      # Cargo.toml (the runner span / metric call-sites need the typed
+      # builder + metric helpers), so core now depends on telemetry and
+      # the publish order must respect that. Swapping these two steps
+      # was the v0.17.0 release.yml fix; the v0.17.0 tag publish failed
+      # at `cargo publish -p secretenv-core` because telemetry 0.17.0
+      # wasn't on the index yet.
+      - name: Publish secretenv-telemetry
+        run: cargo publish -p secretenv-telemetry --locked
+
+      - name: Wait for crates.io to index secretenv-telemetry
+        run: sleep 45
+
       - name: Publish secretenv-core
         run: cargo publish -p secretenv-core --locked
 
       - name: Wait for crates.io to index secretenv-core
-        run: sleep 45
-
-      - name: Publish secretenv-telemetry (NEW in v0.14)
-        # The telemetry crate has zero deps on the backends; it sits at
-        # the same dep-graph layer as core. Per Phase 9 deployment
-        # audit Dep-B1: omitting this step at v0.14 ship would publish
-        # only 16 of the 17 crates, leaving the CLI's
-        # secretenv-telemetry path-dep unresolvable from crates.io.
-        run: cargo publish -p secretenv-telemetry --locked
-
-      - name: Wait for crates.io to index secretenv-telemetry
         run: sleep 45
 
       - name: Publish backend crates (parallel dep-wise; sequential here for simplicity)

@@ -459,6 +459,26 @@ Exit code is non-zero if any backend reports anything other than `Ok`. `doctor -
 
 ---
 
+## Observability
+
+SecretEnv emits OpenTelemetry traces, metrics, and logs for every resolution, backend probe, MCP tool call, and registry mutation. Telemetry is **opt-in** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, the OTel collector). With no endpoint configured, SecretEnv installs no exporter and has zero startup overhead.
+
+**Production onramp** — two env vars and you're done:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.internal:4317
+export OTEL_SERVICE_NAME=payments-secretenv   # optional; defaults to "secretenv"
+secretenv run -- ./deploy.sh
+```
+
+The first var turns telemetry on; the second overrides the default `secretenv` service name (useful when multiple teams ship SecretEnv-wrapped CI jobs to a shared collector and want per-project tagging). Every standard `OTEL_*` env var works — exporter protocol, headers, timeout, sampler, resource attributes, propagators — per [`docs/reference/opentelemetry.md`](docs/reference/opentelemetry.md) §7.
+
+The full attribute schema, span topology, metric inventory, and the audit-facing redaction taxonomy are documented in [`docs/reference/opentelemetry.md`](docs/reference/opentelemetry.md). Every emitted attribute is enumerated with an explicit ALLOW/DENY classification, enforced at compile time by the typed `SecretEnvSpan` builder — there is no `set_attribute(key, value)` escape hatch.
+
+For observability without a collector: `secretenv run --verbose` shows per-alias timing, and `secretenv doctor --trace` renders an in-process span table from a dry-run resolution pass.
+
+---
+
 ## Stability Proof
 
 Every backend tool claims stability. SecretEnv proves it.

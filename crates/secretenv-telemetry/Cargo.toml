@@ -13,20 +13,33 @@ categories.workspace   = true
 readme.workspace       = true
 
 [dependencies]
-# NOTE: `opentelemetry` / `tracing-opentelemetry` are DELIBERATELY
-# absent at v0.14. The crate defines the no-op exporter surface and
-# the typed attribute builder; v0.17 (`Phase OTel`) adds the real
-# SDK + OTLP exporter behind a feature flag without restructuring
-# any call site. CI `cargo tree -p secretenv-telemetry` should never
-# show opentelemetry as a transitive dep at this version.
-#
-# `tracing` is currently unused inside this crate's own modules
-# (verified by v0.14.x code-hygiene audit). It is retained as the
-# explicit anchor for v0.17's planned `tracing::Subscriber` impl
-# that bridges `tracing` events into the OTLP exporter — keeping
-# the dep in `[dependencies]` rather than re-adding it at v0.17
-# avoids a churn-PR on `Cargo.lock` + downstream features.
-tracing.workspace = true
+# v0.17: OTel SDK + OTLP gRPC exporter live HERE and nowhere else in
+# the workspace. `cargo tree -p secretenv-cli | grep opentelemetry`
+# must show every opentelemetry-* hit transitively under
+# secretenv-telemetry — never as a direct dep of any other crate.
+# The Phase 9 release-prep audit enforces this.
+tracing.workspace                  = true
+tracing-subscriber.workspace       = true                                              # subscriber Layer<S> bound for the tracing-otel bridge layer return type
+tokio.workspace                    = true                                              # rt + time for bounded flush
+thiserror.workspace                = true
+# v0.17 build plan was drafted against OTel 0.27; the ecosystem renamed
+# `opentelemetry-sdk` → `opentelemetry_sdk` and bumped to 0.32 in early
+# 2026. We track current crates.io versions, not the pre-rename plan.
+opentelemetry                      = { version = "0.32", features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk                  = { version = "0.32", features = ["rt-tokio", "trace", "metrics", "logs", "testing"] }
+opentelemetry-otlp                 = { version = "0.32", features = ["grpc-tonic", "metrics", "logs"] }
+opentelemetry-semantic-conventions = { version = "0.32" }
+opentelemetry-stdout               = { version = "0.32", features = ["trace", "metrics", "logs"] }
+tracing-opentelemetry              = { version = "0.33" }
+# v0.17 Phase 7b — `host.name` OTel standard resource attribute via
+# the dedicated `hostname` crate. Small (Apache-2.0 OR MIT), zero
+# transitive deps. Safer than reading `/etc/hostname` directly +
+# more portable than `rustix::system::uname`.
+hostname                           = "0.4"
+# v0.17 Phase 8b — random bytes for `fresh_run_id()` (32-hex run ID
+# attached to every `secretenv.run` root span). Already a workspace
+# dep used by `secretenv-core::redact`; no new wire-protocol surface.
+getrandom.workspace                = true
 
 [dev-dependencies]
 # `trybuild` powers the SEC-INV-19 compile-fail guard at

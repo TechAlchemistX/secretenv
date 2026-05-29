@@ -85,6 +85,19 @@ See `docs/security.md` for the full Limits matrix.
     /// before printing to stdout.
     Get(GetArgs),
     /// Diagnose backend installation and auth state (Phase 10).
+    #[command(long_about = "\
+Diagnose backend installation and auth state across every configured \
+registry and backend.
+
+Runs three probe levels: L1 = CLI installed, L2 = backend authenticated, \
+L3 = registry readable (--extensive).
+
+OpenTelemetry: SecretEnv emits OTel traces, metrics, and logs when \
+OTEL_EXPORTER_OTLP_ENDPOINT is set. See docs/reference/opentelemetry.md for \
+the full attribute schema, span topology, and the audit-facing ALLOW/DENY \
+classification of every emitted attribute. With no endpoint configured \
+SecretEnv installs no exporter (zero startup overhead).\
+")]
     Doctor(DoctorArgs),
     /// Initialize `config.toml` for a registry URI (Phase 11).
     Setup(SetupArgs),
@@ -523,8 +536,15 @@ pub struct GetArgs {
     pub yes: bool,
 }
 
-/// `secretenv doctor [--json] [--fix] [--extensive]`.
+/// `secretenv doctor [--json] [--fix] [--extensive] [--trace]`.
+///
+/// Four independent operator knobs deliberately modelled as bools
+/// rather than a single enum: each flag composes orthogonally
+/// (`--fix --extensive --trace --json` is a meaningful combo); an
+/// enum would either force the operator to remember a Cartesian
+/// product of variants or split into multiple subcommands.
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DoctorArgs {
     /// Emit machine-readable JSON instead of human output.
     #[arg(long)]
@@ -540,6 +560,12 @@ pub struct DoctorArgs {
     /// permission scope ("can read" vs "denied").
     #[arg(long)]
     pub extensive: bool,
+    /// Capture spans emitted during the doctor pass into a local
+    /// in-memory exporter and render them as a chronologically-sorted
+    /// table. No OTLP collector required — useful for operator
+    /// observability without standing up infrastructure.
+    #[arg(long)]
+    pub trace: bool,
 }
 
 /// `secretenv setup <registry-uri>` — bootstrap a fresh config.toml.
@@ -659,6 +685,7 @@ impl Cli {
                         json: args.json,
                         fix: args.fix,
                         extensive: args.extensive,
+                        trace: args.trace,
                     },
                 )
                 .await
@@ -1002,12 +1029,16 @@ async fn cmd_run(
     } else {
         RedactMode::Auto
     };
-    let options = RunOptions {
-        dry_run: args.dry_run,
-        verbose: args.verbose,
-        redact,
-        redact_token: args.redact_token.clone(),
-    };
+    // RunOptions is `#[non_exhaustive]` (Phase 9b Code-H3 / Arch-L1)
+    // so external constructions go through Default + field mutation
+    // rather than a struct expression. Within-crate callers (e.g.
+    // future builder methods) can still construct directly.
+    let mut options = RunOptions::default();
+    options.dry_run = args.dry_run;
+    options.verbose = args.verbose;
+    options.redact = redact;
+    options.redact_token = args.redact_token.clone();
+    options.registry_name = selection.registry_label().map(str::to_owned);
 
     // Capture the dispatch up front so the report reflects what we
     // actually did, not what we requested. `Auto` may degrade to
@@ -1429,6 +1460,17 @@ async fn cmd_redact(
         rep.byte_count,
         path.display(),
     );
+    // v0.17 Phase 8c — `secretenv redact <file>` is the post-hoc
+    // path; emit one span summarising the scrub. Suppressed when no
+    // matches occurred (matches the runtime-mode contract).
+    if rep.match_count > 0 {
+        let (mut span, _guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.redact.filter_event");
+        span.record_redact_mode(secretenv_telemetry::RedactMode::PostHoc)
+            .record_redact_stream(secretenv_telemetry::RedactionStream::Stdout)
+            .record_redact_match_count(rep.match_count)
+            .record_redact_byte_count(rep.byte_count);
+    }
     Ok(crate::reports::RedactReport {
         mode: crate::reports::RedactMode::Stdout,
         match_count: rep.match_count,

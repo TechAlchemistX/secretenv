@@ -48,12 +48,64 @@
 
 pub mod error_kind;
 pub mod event;
+pub mod init;
+pub mod local_trace;
+pub mod metrics;
 pub mod policy;
+pub mod sampler;
 pub mod sink;
 pub mod span;
 
 pub use error_kind::SecretEnvErrorKind;
 pub use event::{RedactionEvent, RedactionSource, RedactionStream};
+pub use init::{
+    flush_before_exec, init, init_with_env, tracing_bridge_layer, InitError, TelemetryGuard,
+};
+pub use local_trace::{LocalTraceCapture, LocalTraceSpan};
+pub use metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
 pub use policy::{AttributeClassification, RedactionPolicy};
+pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
-pub use span::{SecretEnvSpan, SpanGuard};
+pub use span::{AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, SecretEnvSpan, SpanGuard};
+
+/// Generate a fresh per-invocation run ID.
+///
+/// Returns a 32-char lowercase hex string sourced from 16 random
+/// bytes via `getrandom`. The shape matches a `UUIDv4` rendered
+/// without hyphens, satisfying the `docs/reference/opentelemetry.md`
+/// §2.1 contract that `secretenv.run_id` is a `UUIDv4`-equivalent
+/// random identifier.
+///
+/// If the OS RNG is unavailable (extremely rare on supported
+/// platforms) the function falls back to a zero string rather than
+/// panicking — the run_id is an audit aid, not a security boundary.
+#[must_use]
+pub fn fresh_run_id() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        return "00000000000000000000000000000000".to_owned();
+    }
+    let mut s = String::with_capacity(32);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+#[cfg(test)]
+mod run_id_tests {
+    use super::fresh_run_id;
+
+    #[test]
+    fn run_id_is_32_hex_chars() {
+        let id = fresh_run_id();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn run_ids_are_distinct() {
+        assert_ne!(fresh_run_id(), fresh_run_id());
+    }
+}

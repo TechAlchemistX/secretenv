@@ -81,7 +81,12 @@ pub enum RedactMode {
 /// Constructed by the CLI from `--dry-run` / `--verbose` /
 /// `--redact` / `--no-redact` flags. Defaults match v0.13
 /// behavior except `redact` which is `Auto` (the v0.14 default).
+// v0.17 Phase 9b — Code H3 / Arch L1. Mark non-exhaustive so adding a
+// new option (a likely scenario for v0.17.x: telemetry-include-error-detail,
+// signed-attribute opt-in, etc.) doesn't silently break downstream
+// integrators constructing this struct via record-update syntax.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct RunOptions {
     /// Print what would happen without fetching or executing.
     pub dry_run: bool,
@@ -91,6 +96,11 @@ pub struct RunOptions {
     pub redact: RedactMode,
     /// Override the substitution token. `None` → alias-aware default.
     pub redact_token: Option<String>,
+    /// v0.17 Phase 8b — registry name to attach to the
+    /// `secretenv.run` `OTel` span as `secretenv.registry.name`.
+    /// `None` skips the attribute; operator-stated identifier per
+    /// `docs/reference/opentelemetry.md` §2.5.
+    pub registry_name: Option<String>,
 }
 
 /// A fully-resolved env-var pair, ready for injection into the child
@@ -172,26 +182,120 @@ pub async fn run(
 /// # Errors
 /// Same set as [`run`], plus a redact-mode-A startup error if any
 /// tainted value exceeds the 64 KiB tail-window cap.
+// Phase 8b + 9b added inline span lifecycle, metric emission, and
+// path-stripping for command_name, pushing this function over the
+// 100-line clippy threshold. The function is still a single linear
+// story (start root span → resolve → emit metrics → dispatch to
+// exec / pipe-redact / dry-run paths). Splitting would mean dragging
+// the run_span guard across helper boundaries.
+#[allow(clippy::too_many_lines)]
 pub async fn run_with_options(
     resolved: &[ResolvedSecret],
     backends: &BackendRegistry,
     command: &[String],
     options: &RunOptions,
 ) -> Result<()> {
+    use secretenv_telemetry::{ResolutionOutcome, SecretEnvSpan};
+
     if command.is_empty() {
         bail!("no command specified — 'secretenv run' needs a program to execute");
     }
 
-    let env = build_env(resolved, backends, options.dry_run, options.verbose).await?;
+    // v0.17 Phase 8b — root `secretenv.run` span. Wraps the entire
+    // resolution + exec lifecycle. Held in a scoped block so the
+    // exec() path can end it explicitly before handoff (Drop won't
+    // fire across an execve()); the pipe-redact + dry-run paths
+    // return normally and the span drops at end-of-function.
+    let (mut run_span, run_guard) = SecretEnvSpan::start("secretenv.run");
+    // v0.17 Phase 9b — Sec F-1. Strip any path prefix from argv[0]
+    // before emission: operators routinely run
+    // `secretenv run -- /usr/local/bin/deploy.sh` and the absolute
+    // path leaks host filesystem layout (incl. `/home/<user>/...` on
+    // dev workstations) to whatever OTel backend is configured.
+    // Spec §2.5 contracts this as "argv[0] only" — basename only.
+    let argv0_raw = command.first().map_or("<empty>", String::as_str);
+    let argv0 =
+        std::path::Path::new(argv0_raw).file_name().and_then(|s| s.to_str()).unwrap_or(argv0_raw);
+    run_span
+        .record_run_id(&secretenv_telemetry::fresh_run_id())
+        .record_command("run")
+        .record_process_command_name(argv0)
+        .record_process_env_var_count(resolved.len() as u64)
+        .record_run_dry_run(options.dry_run)
+        .record_run_verbose(options.verbose);
+    if let Some(name) = options.registry_name.as_deref() {
+        run_span.record_registry_name(name);
+    }
+
+    let resolution_started = std::time::Instant::now();
+    let env = match build_env(resolved, backends, options.dry_run, options.verbose).await {
+        Ok(env) => {
+            run_span.record_run_failed_alias_count(0);
+            env
+        }
+        Err(err) => {
+            // build_env aggregates per-alias failures into one error; the
+            // per-resolution spans already carry the precise count
+            // (`outcome=failure`). Setting failed=alias_count at the
+            // run level is the conservative aggregate.
+            run_span
+                .record_run_outcome(ResolutionOutcome::Failure)
+                .record_run_failed_alias_count(resolved.len() as u64);
+            // Emit the spec's run-level histogram point on the failure
+            // branch too so the operator sees the latency distribution.
+            let registry = options.registry_name.as_deref().unwrap_or("<direct-uri>");
+            let resolution_ms =
+                u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let bucket =
+                secretenv_telemetry::metrics::AliasCountBucket::from_count(resolved.len() as u64);
+            secretenv_telemetry::metrics::record_resolution_duration(
+                resolution_ms,
+                registry,
+                ResolutionOutcome::Failure,
+                bucket,
+            );
+            secretenv_telemetry::metrics::increment_resolution_count(
+                registry,
+                ResolutionOutcome::Failure,
+            );
+            return Err(err);
+        }
+    };
+
+    let resolution_ms = u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let registry_for_metrics = options.registry_name.as_deref().unwrap_or("<direct-uri>");
+    let alias_bucket =
+        secretenv_telemetry::metrics::AliasCountBucket::from_count(resolved.len() as u64);
+    let outcome_for_metric =
+        if options.dry_run { ResolutionOutcome::DryRun } else { ResolutionOutcome::Success };
+    secretenv_telemetry::metrics::record_resolution_duration(
+        resolution_ms,
+        registry_for_metrics,
+        outcome_for_metric,
+        alias_bucket,
+    );
+    secretenv_telemetry::metrics::increment_resolution_count(
+        registry_for_metrics,
+        outcome_for_metric,
+    );
 
     if options.dry_run {
+        run_span.record_run_outcome(ResolutionOutcome::DryRun);
         return Ok(());
     }
 
     // Decide redact dispatch.
     let mode = effective_redact_mode(options.redact);
     match mode {
-        RedactMode::ForceExec => exec_with_env(command, &env),
+        RedactMode::ForceExec => {
+            // Set success + end the span explicitly — execve() bypasses
+            // Drop, so without this the BatchProcessor's flush would
+            // ship an unended span and Jaeger drops it.
+            run_span.record_run_outcome(ResolutionOutcome::Success);
+            drop(run_span);
+            drop(run_guard);
+            exec_with_env(command, &env)
+        }
         RedactMode::ForcePipe | RedactMode::Auto => {
             // For Auto, we've already decided via effective_redact_mode
             // whether to fall back to exec. Build the tainted set here.
@@ -211,7 +315,13 @@ pub async fn run_with_options(
                 .redact_token
                 .as_ref()
                 .map_or(SubstitutionToken::AliasAware, |s| SubstitutionToken::Fixed(s.clone()));
-            run_with_pipe_redaction(command, &env, &tainted, token).await
+            let result = run_with_pipe_redaction(command, &env, &tainted, token).await;
+            // Span ends normally via Drop here; record outcome first.
+            match &result {
+                Ok(()) => run_span.record_run_outcome(ResolutionOutcome::Success),
+                Err(_) => run_span.record_run_outcome(ResolutionOutcome::Failure),
+            };
+            result
         }
     }
 }
@@ -322,11 +432,40 @@ async fn run_with_pipe_redaction(
     let stdout_res = stdout_task.await.context("redact stdout relay panicked")?;
     let stderr_res = stderr_task.await.context("redact stderr relay panicked")?;
     signal_task.abort();
-    stdout_res.context("redact stdout relay failed")?;
-    stderr_res.context("redact stderr relay failed")?;
+    let stdout_report = stdout_res.context("redact stdout relay failed")?;
+    let stderr_report = stderr_res.context("redact stderr relay failed")?;
+
+    // v0.17 Phase 8c — emit one `secretenv.redact.filter_event` span
+    // per stream with the aggregated match/byte counts. Emission is
+    // suppressed when match_count == 0 so quiet runs don't add empty
+    // spans (the contract is "report what was scrubbed").
+    emit_redact_event_span(secretenv_telemetry::RedactionStream::Stdout, &stdout_report);
+    emit_redact_event_span(secretenv_telemetry::RedactionStream::Stderr, &stderr_report);
+    secretenv_telemetry::flush_before_exec(std::time::Duration::from_secs(1));
 
     let code = exit_status.code().unwrap_or(128);
     std::process::exit(code);
+}
+
+/// v0.17 Phase 8c — emit one `secretenv.redact.filter_event` span
+/// summarising a single stream's runtime-mode redact pass.
+///
+/// Quiet streams (`match_count == 0`) get no span. The recorded
+/// attributes (`mode=runtime`, `stream`, aggregate counts) match
+/// `docs/reference/opentelemetry.md` §2.6.
+fn emit_redact_event_span(
+    stream: secretenv_telemetry::RedactionStream,
+    report: &crate::redact::ScrubReport,
+) {
+    if report.match_count == 0 {
+        return;
+    }
+    let (mut span, _guard) =
+        secretenv_telemetry::SecretEnvSpan::start("secretenv.redact.filter_event");
+    span.record_redact_mode(secretenv_telemetry::RedactMode::Runtime)
+        .record_redact_stream(stream)
+        .record_redact_match_count(report.match_count)
+        .record_redact_byte_count(report.byte_count);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,7 +480,7 @@ async fn relay_stream<R>(
     mut scrubber: StreamingScrubber,
     mut reader: R,
     kind: StreamKind,
-) -> Result<()>
+) -> Result<crate::redact::ScrubReport>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -349,31 +488,37 @@ where
 
     let mut buf = vec![0u8; 8 * 1024];
     let mut out_buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut total = crate::redact::ScrubReport::zero();
     loop {
         let n = reader.read(&mut buf).await.context("redact stream: reading from child pipe")?;
         if n == 0 {
             break;
         }
         out_buf.clear();
-        let _ = scrubber.push(&buf[..n], &mut out_buf)?;
+        let chunk_rep = scrubber.push(&buf[..n], &mut out_buf)?;
+        total = total + chunk_rep;
         if let Err(err) = write_kind(kind, &out_buf) {
             if is_broken_pipe(&err) {
-                return Ok(()); // parent's stdout was closed early — clean exit.
+                // parent's stdout was closed early — clean exit; return
+                // whatever scrub totals we accumulated so the caller's
+                // span still carries truthful aggregates.
+                return Ok(total);
             }
             return Err(err);
         }
     }
     out_buf.clear();
-    let _ = scrubber.flush(&mut out_buf)?;
+    let flush_rep = scrubber.flush(&mut out_buf)?;
+    total = total + flush_rep;
     if !out_buf.is_empty() {
         if let Err(err) = write_kind(kind, &out_buf) {
             if is_broken_pipe(&err) {
-                return Ok(());
+                return Ok(total);
             }
             return Err(err);
         }
     }
-    Ok(())
+    Ok(total)
 }
 
 /// Whether the error chain at `err` includes a `BrokenPipe` io error.
@@ -495,23 +640,51 @@ pub async fn build_env(
         }
     }
 
+    // v0.17 Phase 6.1: pre-fetch header for --verbose. Counts only
+    // the uri-backed aliases — manifest defaults don't run an
+    // observable fetch.
+    if verbose && !dry_run && !uri_indices.is_empty() {
+        eprintln!("[secretenv] resolving {} aliases...", uri_indices.len());
+    }
+
     // Second pass: dispatch all URI fetches concurrently. `fetch_one`
     // returns `Ok(None)` in dry-run mode (printed the placeholder,
-    // nothing to inject), `Ok(Some(entry))` on success.
-    let fetches =
-        uri_indices.iter().map(|&idx| fetch_one(&resolved[idx], backends, dry_run, verbose));
+    // nothing to inject), `Ok(Some(entry, timing))` on success. The
+    // `AliasTiming` lets us print a per-alias summary table after all
+    // fetches return.
+    let fetches = uri_indices.iter().map(|&idx| fetch_one(&resolved[idx], backends, dry_run));
     let results = futures::future::join_all(fetches).await;
 
     // Collect successes into their original slots; aggregate every
     // failure's error message. Multi-failure returns a single joined
     // anyhow error so one CLI run surfaces every broken alias.
     let mut errors: Vec<anyhow::Error> = Vec::new();
+    let mut timings: Vec<AliasTiming> = Vec::new();
     for (idx, result) in uri_indices.iter().zip(results) {
         match result {
-            Ok(Some(entry)) => slots[*idx] = Some(entry),
-            Ok(None) => { /* dry-run; nothing to place */ }
-            Err(err) => errors.push(err),
+            Ok((Some(entry), timing)) => {
+                timings.push(timing);
+                slots[*idx] = Some(entry);
+            }
+            Ok((None, timing)) => {
+                // dry-run path; still capture timing so the table
+                // sees the alias even though no fetch ran.
+                timings.push(timing);
+            }
+            Err((err, timing)) => {
+                timings.push(timing);
+                errors.push(err);
+            }
         }
+    }
+
+    // v0.17 Phase 6.1: per-alias summary table on stderr. Sorted by
+    // declaration order via uri_indices; the table NEVER includes a
+    // backend URI (only the alias name + the backend instance
+    // scheme) so --verbose can stay on in CI builds without leaking
+    // registry topology.
+    if verbose && !dry_run && !timings.is_empty() {
+        render_alias_timing_table(&timings);
     }
 
     if !errors.is_empty() {
@@ -521,56 +694,214 @@ pub async fn build_env(
     Ok(slots.into_iter().flatten().collect())
 }
 
-/// Fetch a single `Uri`-sourced secret. Returns `Ok(None)` in dry-run
-/// (placeholder printed, caller should not inject anything). Returns
-/// `Ok(Some(entry))` on a successful fetch.
+/// Per-alias timing captured during the parallel fetch pass, used to
+/// render the `--verbose` summary table (v0.17 Phase 6.1).
+#[derive(Debug, Clone)]
+struct AliasTiming {
+    alias_name: String,
+    backend_instance: String,
+    duration_ms: u64,
+    outcome: AliasFetchOutcome,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AliasFetchOutcome {
+    Ok,
+    Failed,
+    DryRun,
+}
+
+impl AliasFetchOutcome {
+    const fn as_label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+            Self::DryRun => "dry-run",
+        }
+    }
+}
+
+fn render_alias_timing_table(timings: &[AliasTiming]) {
+    let alias_w = timings.iter().map(|t| t.alias_name.len()).max().unwrap_or(0).max(5);
+    let backend_w = timings.iter().map(|t| t.backend_instance.len()).max().unwrap_or(0).max(7);
+    for t in timings {
+        eprintln!(
+            "  {:<alias_w$} {:<backend_w$} {:>5}ms   {}",
+            t.alias_name,
+            t.backend_instance,
+            t.duration_ms,
+            t.outcome.as_label(),
+            alias_w = alias_w,
+            backend_w = backend_w,
+        );
+    }
+}
+
+/// Fetch a single `Uri`-sourced secret. Returns `Ok((None, _))` in
+/// dry-run (placeholder printed, caller should not inject anything).
+/// Returns `Ok((Some(entry), timing))` on a successful fetch.
+///
+/// The tuple's second element is the per-alias timing captured for
+/// the v0.17 Phase 6.1 `--verbose` summary table. Errors carry the
+/// timing too so a failed fetch still shows up as a row with `failed`
+/// outcome, not silently absent from the table.
 ///
 /// Runs under the global `DEFAULT_GET_TIMEOUT` via
 /// [`crate::with_timeout`].
+type FetchOk = (Option<EnvEntry>, AliasTiming);
+
+// v0.17 Phase 8b adds span + metric emission, pushing this function
+// over the 100-line clippy threshold. Splitting would mean dragging
+// the AliasTiming + span/metric pair through tuple-passing across an
+// arbitrary helper; the function is still a single linear story
+// (start span → dispatch dry-run / no-backend / fetch → record
+// outcome + timing). Allow it locally rather than fragment the flow.
+#[allow(clippy::too_many_lines)]
 async fn fetch_one(
     secret: &ResolvedSecret,
     backends: &BackendRegistry,
     dry_run: bool,
-    verbose: bool,
-) -> Result<Option<EnvEntry>> {
+) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
+    use secretenv_telemetry::{FetchOutcome, ResolutionOutcome, SecretEnvSpan};
+
+    let started = std::time::Instant::now();
     let (target, alias_name) = match &secret.source {
         ResolvedSource::Uri { target, alias_name, .. } => (target, alias_name.clone()),
         ResolvedSource::Default(_) => {
             // Unreachable: `build_env` only calls `fetch_one` for
             // `Uri` entries. Kept as defensive no-op rather than a
             // panic because one-shot helper misuse should not abort.
-            return Ok(None);
+            return Ok((
+                None,
+                AliasTiming {
+                    alias_name: secret.env_var.clone(),
+                    backend_instance: String::new(),
+                    duration_ms: 0,
+                    outcome: AliasFetchOutcome::DryRun,
+                },
+            ));
         }
     };
 
+    // v0.17 Phase 8b — per-alias `secretenv.resolution` span. Carries
+    // alias.name + backend.type/instance + outcome + latency. Wrapping
+    // happens after the Default short-circuit so synthetic dry-run
+    // rows for malformed-source defaults stay span-free.
+    let (mut span, _guard) = SecretEnvSpan::start("secretenv.resolution");
+    span.record_alias_name(&alias_name)
+        .record_alias_env_var(&secret.env_var)
+        .record_backend_instance(&target.scheme);
+
     if dry_run {
         println!("{} ← {}", secret.env_var, target.raw);
-        return Ok(None);
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        span.record_resolution_outcome(ResolutionOutcome::DryRun).record_resolution_latency_ms(ms);
+        return Ok((
+            None,
+            AliasTiming {
+                alias_name,
+                backend_instance: target.scheme.clone(),
+                duration_ms: ms,
+                outcome: AliasFetchOutcome::DryRun,
+            },
+        ));
     }
 
-    if verbose {
-        // Log scheme (instance name) only — never `target.raw`, which
-        // contains the full backend path and would leak registry
-        // topology into CI build logs on any `--verbose` run. Full
-        // URI is reserved for `--dry-run` output, which is explicit.
-        eprintln!("secretenv: fetching {} from instance '{}'", secret.env_var, target.scheme);
-    }
+    let Some(backend) = backends.get(&target.scheme) else {
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        span.record_resolution_outcome(ResolutionOutcome::Failure).record_resolution_latency_ms(ms);
+        let timing = AliasTiming {
+            alias_name,
+            backend_instance: target.scheme.clone(),
+            duration_ms: ms,
+            outcome: AliasFetchOutcome::Failed,
+        };
+        return Err((
+            anyhow!(
+                "secret '{}': no backend instance '{}' is registered — \
+                 add it to [backends.{}] in config.toml",
+                secret.env_var,
+                target.scheme,
+                target.scheme
+            ),
+            timing,
+        ));
+    };
+    let backend: &dyn Backend = backend;
+    span.record_backend_type(backend.backend_type());
 
-    let backend: &dyn Backend = backends.get(&target.scheme).ok_or_else(|| {
-        anyhow!(
-            "secret '{}': no backend instance '{}' is registered — \
-             add it to [backends.{}] in config.toml",
-            secret.env_var,
-            target.scheme,
-            target.scheme
-        )
-    })?;
+    // Child `secretenv.backend.fetch` span scopes the actual
+    // backend.get call. Closed via Drop at end-of-scope (before the
+    // outer resolution span's outcome is set).
     let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
-    let value =
-        crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await.with_context(
-            || format!("secret '{}': failed to fetch from '{}'", secret.env_var, target.raw),
-        )?;
-    Ok(Some(EnvEntry { key: secret.env_var.clone(), alias_name: Some(alias_name), value }))
+    let fetch_started = std::time::Instant::now();
+    let fetch_result = {
+        let (mut fetch_span, _fetch_guard) = SecretEnvSpan::start("secretenv.backend.fetch");
+        fetch_span
+            .record_alias_name(&alias_name)
+            .record_backend_type(backend.backend_type())
+            .record_backend_instance(&target.scheme);
+        let r = crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await;
+        let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        fetch_span.record_backend_fetch_duration_ms(fetch_ms);
+        match &r {
+            Ok(_) => fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok),
+            Err(_) => fetch_span.record_backend_fetch_outcome(FetchOutcome::Error),
+        };
+        r
+    };
+
+    let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let backend_type_str = backend.backend_type();
+
+    match fetch_result {
+        Ok(value) => {
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            span.record_resolution_outcome(ResolutionOutcome::Success)
+                .record_resolution_latency_ms(ms);
+            // v0.17 Phase 8b — emit the spec'd histogram points so
+            // the metrics instruments declared in Phase 4 aren't dead.
+            secretenv_telemetry::metrics::record_backend_fetch_duration(
+                fetch_ms,
+                backend_type_str,
+                &target.scheme,
+                FetchOutcome::Ok,
+            );
+            let timing = AliasTiming {
+                alias_name: alias_name.clone(),
+                backend_instance: target.scheme.clone(),
+                duration_ms: ms,
+                outcome: AliasFetchOutcome::Ok,
+            };
+            Ok((
+                Some(EnvEntry { key: secret.env_var.clone(), alias_name: Some(alias_name), value }),
+                timing,
+            ))
+        }
+        Err(e) => {
+            let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            span.record_resolution_outcome(ResolutionOutcome::Failure)
+                .record_resolution_latency_ms(ms);
+            secretenv_telemetry::metrics::record_backend_fetch_duration(
+                fetch_ms,
+                backend_type_str,
+                &target.scheme,
+                FetchOutcome::Error,
+            );
+            Err((
+                e.context(format!(
+                    "secret '{}': failed to fetch from '{}'",
+                    secret.env_var, target.raw
+                )),
+                AliasTiming {
+                    alias_name,
+                    backend_instance: target.scheme.clone(),
+                    duration_ms: ms,
+                    outcome: AliasFetchOutcome::Failed,
+                },
+            ))
+        }
+    }
 }
 
 /// Combine N>1 fetch failures into a single anyhow error whose
@@ -664,6 +995,11 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     inject_env_entries(env, |k, v| {
         cmd.env(k, v);
     });
+    // SEC-INV-22: flush pending OTel spans before `execve` replaces this
+    // process — Drop on the CLI's TelemetryGuard would otherwise never
+    // run. Bounded at 1s so a slow collector can't turn `secretenv run`
+    // into a latency cliff; on timeout, pending spans drop.
+    secretenv_telemetry::flush_before_exec(std::time::Duration::from_secs(1));
     // exec() replaces the current process on success and only returns
     // on failure — so the io::Error it produces is always a real one.
     let err = cmd.exec();
@@ -683,6 +1019,9 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
         cmd.env(k, v);
     });
     let status = cmd.status().with_context(|| format!("failed to spawn '{program}'"))?;
+    // std::process::exit skips destructors — flush before exit so the
+    // CLI's TelemetryGuard doesn't strand pending spans.
+    secretenv_telemetry::flush_before_exec(std::time::Duration::from_secs(1));
     std::process::exit(status.code().unwrap_or(1));
 }
 

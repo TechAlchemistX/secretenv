@@ -52,6 +52,13 @@ tokio.workspace       = true
 toml.workspace        = true
 tracing.workspace     = true
 zeroize.workspace     = true
+# v0.17: `runner::exec_with_env` calls the free function
+# `secretenv_telemetry::flush_before_exec(Duration)` immediately before
+# `execve()` (and before the `cfg(not(unix))` `std::process::exit`) so
+# SEC-INV-22's bounded-flush guarantee holds. No-op when telemetry was
+# never `init()`-ed — the OTel deps live entirely behind that gate.
+# The RAII `TelemetryGuard` itself lives in `secretenv-cli`, not here.
+secretenv-telemetry.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # `rustix` is the only legitimate Unix-only dep here — it provides

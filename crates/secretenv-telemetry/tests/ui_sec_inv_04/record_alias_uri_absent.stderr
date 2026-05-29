@@ -1,0 +1,47 @@
+error[E0599]: no method named `record_alias_uri` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/record_alias_uri_absent.rs:15:10
+   |
+15 |     span.record_alias_uri("aws-ssm:///payments/stripe");
+   |          ^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_alias_count` with a similar name
+   |
+15 -     span.record_alias_uri("aws-ssm:///payments/stripe");
+15 +     span.record_alias_count("aws-ssm:///payments/stripe");
+   |
+
+error[E0599]: no method named `record_alias_uri_raw` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/record_alias_uri_absent.rs:16:10
+   |
+16 |     span.record_alias_uri_raw("aws-ssm:///payments/stripe");
+   |          ^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_alias_env_var` with a similar name
+   |
+16 -     span.record_alias_uri_raw("aws-ssm:///payments/stripe");
+16 +     span.record_alias_env_var("aws-ssm:///payments/stripe");
+   |
+
+error[E0599]: no method named `record_alias_uri_path` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/record_alias_uri_absent.rs:17:10
+   |
+17 |     span.record_alias_uri_path("/payments/stripe");
+   |          ^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_alias_name` with a similar name
+   |
+17 -     span.record_alias_uri_path("/payments/stripe");
+17 +     span.record_alias_name("/payments/stripe");
+   |
+
+error[E0599]: no method named `record_alias_uri_scheme` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_04/record_alias_uri_absent.rs:18:10
+   |
+18 |     span.record_alias_uri_scheme("aws-ssm");
+   |          ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_alias_name` with a similar name
+   |
+18 -     span.record_alias_uri_scheme("aws-ssm");
+18 +     span.record_alias_name("aws-ssm");
+   |

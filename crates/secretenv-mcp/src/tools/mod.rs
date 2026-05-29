@@ -164,8 +164,11 @@ impl Server {
     pub async fn getting_started(
         &self,
         _args: Parameters<GettingStartedArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<GettingStartedResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.getting_started");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.getting_started");
+        span.record_mcp_tool_name("getting_started")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let registries = self.config.registries.len();
         let backends = self.config.backends.len();
@@ -199,8 +202,11 @@ impl Server {
     pub async fn version_info(
         &self,
         _args: Parameters<VersionInfoArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<VersionInfoResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.version_info");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.version_info");
+        span.record_mcp_tool_name("version_info")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let tools = self
             .tool_router
@@ -230,8 +236,11 @@ impl Server {
     pub async fn list_aliases(
         &self,
         _args: Parameters<ListAliasesArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<ListAliasesResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.list_aliases");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_aliases");
+        span.record_mcp_tool_name("list_aliases")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let enumeration = aliases::enumerate_all(&self.config).await;
         let total_aliases = enumeration.aliases.len();
@@ -254,8 +263,11 @@ impl Server {
     pub async fn list_backends(
         &self,
         _args: Parameters<ListBackendsArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<ListBackendsResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.list_backends");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.list_backends");
+        span.record_mcp_tool_name("list_backends")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let mut backends: Vec<BackendListing> = self
             .config
@@ -287,8 +299,11 @@ impl Server {
     pub async fn resolve_status(
         &self,
         _args: Parameters<ResolveStatusArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<ResolveStatusResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.resolve_status");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.resolve_status");
+        span.record_mcp_tool_name("resolve_status")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         // Run a single doctor probe and reuse its per-instance status
         // map; cheaper than re-probing each backend per registry.
@@ -377,8 +392,12 @@ impl Server {
     pub async fn detect_password_managers(
         &self,
         _args: Parameters<DetectPasswordManagersArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<DetectPasswordManagersResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.detect_password_managers");
+        let (mut span, _guard) =
+            SecretEnvSpan::start("secretenv.mcp.tool.detect_password_managers");
+        span.record_mcp_tool_name("detect_password_managers")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let detections = password_managers::run_all_probes().await;
         let total_supported = detections.len();
@@ -407,8 +426,14 @@ impl Server {
                        remediation hints; no --fix flag — the agent + operator decide \
                        whether to act on the hints."
     )]
-    pub async fn doctor(&self, _args: Parameters<DoctorArgs>) -> Json<DoctorResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.doctor");
+    pub async fn doctor(
+        &self,
+        _args: Parameters<DoctorArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Json<DoctorResponse> {
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.doctor");
+        span.record_mcp_tool_name("doctor")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         let backends = doctor::probe_all_backends(&self.config).await;
         let total = backends.len();
@@ -426,8 +451,11 @@ impl Server {
     pub async fn redact_status(
         &self,
         _args: Parameters<RedactStatusArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Json<RedactStatusResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_status");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_status");
+        span.record_mcp_tool_name("redact_status")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
 
         Json(RedactStatusResponse {
             default_redact_mode: DEFAULT_REDACT_MODE.to_owned(),
@@ -459,8 +487,11 @@ impl Server {
         args: Parameters<SetAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<SetAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.set_alias");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.set_alias");
         let args = args.0;
+        span.record_mcp_tool_name("set_alias")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.alias);
 
         // Best-effort backend-instance extraction for the response
         // (target_uri may be invalid; the writer below will surface
@@ -487,7 +518,7 @@ impl Server {
             mutation_runner::AuditMeta {
                 alias_name: Some(args.alias.clone()),
                 backend_instance: Some(backend_instance.clone()),
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             },
             args.reason.clone(),
             || async {
@@ -528,8 +559,11 @@ impl Server {
         args: Parameters<DeleteAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<DeleteAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.delete_alias");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.delete_alias");
         let args = args.0;
+        span.record_mcp_tool_name("delete_alias")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.alias);
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let summary = format!("remove alias `{}` from registry `{}`", args.alias, registry_name);
 
@@ -547,7 +581,7 @@ impl Server {
             mutation_runner::AuditMeta {
                 alias_name: Some(args.alias.clone()),
                 backend_instance: None,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             },
             args.reason.clone(),
             || async {
@@ -586,7 +620,9 @@ impl Server {
         args: Parameters<InitProjectArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<InitProjectResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.init_project");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.init_project");
+        span.record_mcp_tool_name("init_project")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
         let args = args.0;
         let cwd = args
             .cwd
@@ -652,7 +688,7 @@ impl Server {
             mutation_runner::AuditMeta {
                 alias_name: None,
                 backend_instance: None,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             },
             args.reason.clone(),
             || async move {
@@ -698,7 +734,9 @@ impl Server {
         args: Parameters<RedactFileArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<RedactFileResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.redact_file");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.redact_file");
+        span.record_mcp_tool_name("redact_file")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer));
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let file_path = std::path::PathBuf::from(&args.file_path);
@@ -741,9 +779,11 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: OperatorDecision::Denied,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
@@ -762,9 +802,11 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: decision,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = outcome;
                     response.decision = helpers::echo_decision(decision);
                     return Json(response);
@@ -800,9 +842,11 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: allowed_decision,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                 }
                 return Json(response);
             }
@@ -829,9 +873,11 @@ impl Server {
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
                         operator_decision: allowed_decision,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                 }
                 return Json(response);
             }
@@ -875,9 +921,11 @@ impl Server {
                 backend_instance: None,
                 agent_reason: args.reason.clone(),
                 operator_decision: allowed_decision,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
-            let _ = self.mutation_log.append(&entry);
+            if let Err(append_err) = self.mutation_log.append(&entry) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
         }
 
         Json(response)
@@ -909,7 +957,10 @@ impl Server {
         args: Parameters<GenPasswordArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<GenPasswordResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.gen_password");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.gen_password");
+        span.record_mcp_tool_name("gen_password")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.0.alias);
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let backend_instance = secretenv_core::BackendUri::parse(&args.target_uri)
@@ -948,9 +999,11 @@ impl Server {
                         backend_instance: Some(backend_instance.clone()),
                         agent_reason: args.reason.clone(),
                         operator_decision: OperatorDecision::Denied,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
@@ -964,9 +1017,11 @@ impl Server {
                         backend_instance: Some(backend_instance.clone()),
                         agent_reason: args.reason.clone(),
                         operator_decision: d,
-                        mcp_client_id: "unknown".to_owned(),
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
-                    let _ = self.mutation_log.append(&entry);
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = if d == OperatorDecision::Timeout {
                         MutationOutcome::Timeout
                     } else {
@@ -993,9 +1048,11 @@ impl Server {
                     backend_instance: Some(backend_instance.clone()),
                     agent_reason: args.reason.clone(),
                     operator_decision: decision,
-                    mcp_client_id: "unknown".to_owned(),
+                    mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
-                let _ = self.mutation_log.append(&entry);
+                if let Err(append_err) = self.mutation_log.append(&entry) {
+                    tracing::error!(error = ?append_err, "audit-log append failed");
+                }
                 return Json(response);
             }
         };
@@ -1019,9 +1076,11 @@ impl Server {
                     backend_instance: Some(backend_instance.clone()),
                     agent_reason: args.reason.clone(),
                     operator_decision: decision,
-                    mcp_client_id: "unknown".to_owned(),
+                    mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
-                let _ = self.mutation_log.append(&entry);
+                if let Err(append_err) = self.mutation_log.append(&entry) {
+                    tracing::error!(error = ?append_err, "audit-log append failed");
+                }
                 return Json(response);
             }
         };
@@ -1039,9 +1098,11 @@ impl Server {
                     backend_instance: Some(backend_instance.clone()),
                     agent_reason: args.reason.clone(),
                     operator_decision: decision,
-                    mcp_client_id: "unknown".to_owned(),
+                    mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                 };
-                let _ = self.mutation_log.append(&entry);
+                if let Err(append_err) = self.mutation_log.append(&entry) {
+                    tracing::error!(error = ?append_err, "audit-log append failed");
+                }
                 return Json(response);
             }
         };
@@ -1060,9 +1121,11 @@ impl Server {
                 backend_instance: Some(backend_instance.clone()),
                 agent_reason: args.reason.clone(),
                 operator_decision: decision,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
-            let _ = self.mutation_log.append(&entry);
+            if let Err(append_err) = self.mutation_log.append(&entry) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             return Json(response);
         };
 
@@ -1081,9 +1144,11 @@ impl Server {
                 backend_instance: Some(backend_instance.clone()),
                 agent_reason: args.reason.clone(),
                 operator_decision: decision,
-                mcp_client_id: "unknown".to_owned(),
+                mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
             };
-            let _ = self.mutation_log.append(&entry);
+            if let Err(append_err) = self.mutation_log.append(&entry) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             return Json(response);
         }
 
@@ -1122,9 +1187,12 @@ impl Server {
             backend_instance: Some(backend_instance.clone()),
             agent_reason: args.reason.clone(),
             operator_decision: decision,
-            mcp_client_id: "unknown".to_owned(),
+            mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
         };
-        let _ = self.mutation_log.append(&entry);
+        // v0.16.2 audit Sec F-1: surface audit-log append failures.
+        if let Err(append_err) = self.mutation_log.append(&entry) {
+            tracing::error!(error = ?append_err, "audit-log append failed");
+        }
 
         Json(response)
     }
@@ -1153,11 +1221,17 @@ impl Server {
         args: Parameters<MigrateAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<MigrateAliasResponse> {
-        let (_span, _guard) = SecretEnvSpan::start("mcp.tool.migrate_alias");
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.migrate_alias");
+        span.record_mcp_tool_name("migrate_alias")
+            .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
+            .record_mcp_argument_alias_name(&args.0.alias);
         let args = args.0;
         let registry_name = args.registry.clone().unwrap_or_else(|| "default".to_owned());
         let dest_backend_instance = secretenv_core::BackendUri::parse(&args.dest_uri)
             .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme);
+        // v0.16.0 F-7: resolve once at the top of the handler and
+        // reuse across the 5 audit-log call sites below.
+        let client_id = helpers::client_id_from_peer(&ctx.peer);
 
         let mut response = MigrateAliasResponse {
             alias_name: args.alias.clone(),
@@ -1186,6 +1260,7 @@ impl Server {
                         &self.mutation_log,
                         &args,
                         OperatorDecision::AutoApproved,
+                        &client_id,
                     );
                 }
                 return Json(response);
@@ -1217,6 +1292,7 @@ impl Server {
                             &self.mutation_log,
                             &args,
                             OperatorDecision::AutoApproved,
+                            &client_id,
                         );
                     }
                     return Json(response);
@@ -1247,7 +1323,12 @@ impl Server {
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
                     response.error_message = Some(safe_error_message(&e));
-                    helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::Denied);
+                    helpers::audit_migrate(
+                        &self.mutation_log,
+                        &args,
+                        OperatorDecision::Denied,
+                        &client_id,
+                    );
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
@@ -1257,7 +1338,7 @@ impl Server {
                         MutationOutcome::Refused
                     };
                     response.decision = helpers::echo_decision(d);
-                    helpers::audit_migrate(&self.mutation_log, &args, d);
+                    helpers::audit_migrate(&self.mutation_log, &args, d, &client_id);
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
@@ -1327,7 +1408,7 @@ impl Server {
         }
 
         if !args.dry_run {
-            helpers::audit_migrate(&self.mutation_log, &args, decision);
+            helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
         }
         Json(response)
     }

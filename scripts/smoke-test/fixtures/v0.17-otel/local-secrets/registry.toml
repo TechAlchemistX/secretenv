@@ -1,0 +1,6 @@
+otel_sentinel = "local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/sentinel.txt"
+# Phase 8c — second alias used as the Block C migrate source. Starts
+# pointing at `local-otel` and is migrated to `local-otel-dst` during
+# the smoke; the seed value distinguishes a successful pointer flip
+# from a no-op.
+otel_migrate_src = "local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/migrate-src.txt"

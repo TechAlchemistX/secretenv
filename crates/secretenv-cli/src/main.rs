@@ -11,6 +11,8 @@
 use anyhow::Result;
 use clap::Parser;
 use secretenv_core::Config;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::EnvFilter;
 
 use secretenv_backends_init as backends_init;
@@ -29,10 +31,26 @@ async fn main() -> Result<()> {
     // Defaults to warn-level so the CLI stays quiet by default.
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("secretenv=warn"));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr)
-        .without_time()
+
+    // Init telemetry FIRST so the global TracerProvider is live when
+    // the tracing-otel bridge layer installs below — otherwise the
+    // bridge would capture a noop tracer reference. No-op when none
+    // of `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, etc.
+    // is set — zero startup cost for operators without a collector.
+    // Drop flushes and shuts down; the `exec()` path bypasses Drop
+    // and calls `secretenv_telemetry::flush_before_exec` explicitly.
+    let _telemetry = secretenv_telemetry::init()?;
+
+    // v0.17 Phase 7b — arch F-1. Compose subscriber stack: env-filter
+    // → stderr fmt layer → tracing-otel bridge. The bridge converts
+    // every `tracing::info_span!()` / `event!()` call in v0.14-v0.16
+    // hook sites (backend get/set/list/check, migrate phases, MCP
+    // tool handlers) into OTel spans on the global TracerProvider.
+    // Without the bridge those hooks emit as stderr log only.
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).without_time())
+        .with(secretenv_telemetry::tracing_bridge_layer())
         .init();
 
     let cli = Cli::parse();

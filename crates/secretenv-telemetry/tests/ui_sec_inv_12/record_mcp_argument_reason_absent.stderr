@@ -1,0 +1,35 @@
+error[E0599]: no method named `record_mcp_argument_reason` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_12/record_mcp_argument_reason_absent.rs:23:10
+   |
+23 |     span.record_mcp_argument_reason("operator rationale string");
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_mcp_argument_alias_name` with a similar name
+   |
+23 -     span.record_mcp_argument_reason("operator rationale string");
+23 +     span.record_mcp_argument_alias_name("operator rationale string");
+   |
+
+error[E0599]: no method named `record_mcp_resolved_value` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_12/record_mcp_argument_reason_absent.rs:24:10
+   |
+24 |     span.record_mcp_resolved_value("sk_live_abc123...");
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_mcp_tool_name` with a similar name
+   |
+24 -     span.record_mcp_resolved_value("sk_live_abc123...");
+24 +     span.record_mcp_tool_name("sk_live_abc123...");
+   |
+
+error[E0599]: no method named `record_mcp_tool_output_raw` found for struct `SecretEnvSpan` in the current scope
+  --> tests/ui_sec_inv_12/record_mcp_argument_reason_absent.rs:25:10
+   |
+25 |     span.record_mcp_tool_output_raw("{\"value\":\"sk_live_abc123\"}");
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `record_mcp_tool_name` with a similar name
+   |
+25 -     span.record_mcp_tool_output_raw("{\"value\":\"sk_live_abc123\"}");
+25 +     span.record_mcp_tool_name("{\"value\":\"sk_live_abc123\"}");
+   |

@@ -164,7 +164,16 @@ where
 
     match enforce_mutation_policy(ctx.mcp_config, &request, ctx.peer).await {
         Err(e) => {
-            let _ = ctx.mutation_log.append(&mk_entry(OperatorDecision::Denied));
+            // v0.16.2 audit Sec F-1: surface audit-log append failures
+            // via tracing instead of silently swallowing. Agent-visible
+            // behavior is unchanged (the error is operator-side only);
+            // SEC-INV-12 still satisfied because no agent_reason or
+            // adjacent prompt-injection-shaped context appears in the
+            // tracing call. Same pattern at the other two call sites
+            // in this function.
+            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(OperatorDecision::Denied)) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             MutationResolution {
                 outcome: MutationOutcome::Refused,
                 decision: OperatorDecisionEcho::PolicyRefusal,
@@ -177,7 +186,9 @@ where
             } else {
                 MutationOutcome::Refused
             };
-            let _ = ctx.mutation_log.append(&mk_entry(decision));
+            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(decision)) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             MutationResolution {
                 outcome,
                 decision: helpers::echo_decision(decision),
@@ -190,7 +201,9 @@ where
                 Ok(()) => (MutationOutcome::Applied, None),
                 Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
             };
-            let _ = ctx.mutation_log.append(&mk_entry(decision));
+            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(decision)) {
+                tracing::error!(error = ?append_err, "audit-log append failed");
+            }
             MutationResolution {
                 outcome,
                 decision: helpers::echo_decision(decision),

@@ -8,6 +8,19 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # `workflow_dispatch` lets the operator manually re-trigger ONLY the
+  # crates.io publish job against a previously-pushed tag — recovers
+  # from a half-shipped release where binary builds + GH Release +
+  # Homebrew bump all succeeded but a crates.io step failed (e.g. a
+  # dep-order bug introduced by a new inter-crate edge in this cycle).
+  # The build/release/homebrew jobs are gated to `github.event_name ==
+  # 'push'` below so they don't re-run; the publish-crates job runs in
+  # both modes and reads the tag from the input.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to re-publish to crates.io (e.g. v0.17.0). The publish-crates job runs against this tag; binary build + GH Release + Homebrew steps are skipped.'
+        required: true
 
 permissions:
   contents: write      # create GitHub Release + upload artifacts
@@ -22,6 +35,9 @@ jobs:
   # ------------------------------------------------------------------
   build:
     name: Build ${{ matrix.target }}
+    # Binary builds only run on tag push; the workflow_dispatch path is
+    # a publish-crates-only recovery for half-shipped releases.
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -142,6 +158,9 @@ jobs:
   # ------------------------------------------------------------------
   release:
     name: Create GitHub Release
+    # Tag-push only — workflow_dispatch is a publish-crates recovery
+    # path and the GitHub Release already exists in that scenario.
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -191,12 +210,22 @@ jobs:
   # ------------------------------------------------------------------
   publish-crates:
     name: Publish to crates.io
+    # On tag push: wait for the GH Release job (binaries first; gives
+    # ops a chance to abort before crates.io publishes are permanent).
+    # On workflow_dispatch: run standalone against the operator-supplied
+    # tag input. `always()` lets this job run even when `release` is
+    # skipped (workflow_dispatch path).
     needs: release
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
+      # On workflow_dispatch the operator names the tag to (re-)publish
+      # against; on tag push `github.ref` already points at the tag.
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -311,6 +340,10 @@ jobs:
   # ------------------------------------------------------------------
   homebrew:
     name: Update Homebrew formula
+    # Tag-push only. The Homebrew tap formula was bumped during the
+    # original tag-push run; re-triggering via workflow_dispatch would
+    # push a redundant no-op formula commit.
+    if: github.event_name == 'push'
     needs: release
     runs-on: ubuntu-latest
     steps:

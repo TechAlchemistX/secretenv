@@ -16,7 +16,42 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
-(Empty — pending v0.17.x carry-forwards.)
+(Empty — v0.18.0-alpha.0 development in progress; see `[0.18.0-alpha.0]` below.)
+
+## [0.18.0-alpha.0] - 2026-05-30
+
+**Headline (pre-release scaffold):** v0.18 is the **named non-backend hardening minor** consuming the ~25-item carry-forward queue from the v0.17 OpenTelemetry cycle. Modeled on v0.4 (functionality-only release between v0.3 cloud trio and v0.5 Keychain). No new backends. Authoritative plan: [`kb/wiki/build-plan-v0.18-hardening.md`](kb/wiki/build-plan-v0.18-hardening.md). Carry-forward ledger: [`kb/wiki/v0.17-deferred-items.md`](kb/wiki/v0.17-deferred-items.md). Each closure flips its ledger entry in the same commit (build plan Rule 31).
+
+### Added
+
+(Phases 1–6 populate this section.)
+
+### Changed
+
+(Phases 1–6 populate this section.)
+
+### Fixed
+
+(Phases 1–6 populate this section.)
+
+### Security
+
+(Phase 1 + Phase 2 populate this section.)
+
+### Hardening
+
+(Phase 6 populates this section.)
+
+### Documentation
+
+(Phase 10 populates this section.)
+
+### Known limitations
+
+- **OTel `LoggerProvider` not installed** — `tracing::*!` events still surface as span events via the `tracing-opentelemetry` bridge, not as native OTel `LogRecord` instances. Deferred to v0.19+ per [`v0.17-deferred-items`](kb/wiki/v0.17-deferred-items.md#phase-7-m-3--loggerprovider-not-installed).
+- **Flat span topology** — `secretenv.run` and its children emit as siblings rather than a parent-child tree. Trace UIs show all spans at root level. Deferred to v0.20 cycle pending a deliberate `BoxedSpan` exposure decision.
+- **`secretenv.exec.flush` schema-reserved span not emitted** — Drop cannot fire across `execve`; emitting this span correctly requires `pre_exec` hook + manual flush sequencing. Deferred to v0.20 cycle. The other five Phase 4 schema-reserved spans (`manifest.load`, `registry.load`, `backend.probe`, `exec.prepare`, `doctor.registry`) ship in v0.18.
+- **D-3.1 typed-setter coverage** — ~13 of the spec's ALLOW attributes still have no `SecretEnvSpan` setter; each lands in the cycle that wires its first caller (rolling convention from v0.17).
 
 ## [0.17.0] - 2026-05-28
 

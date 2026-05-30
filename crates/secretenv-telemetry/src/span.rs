@@ -159,6 +159,156 @@ impl MutationSpanName {
     }
 }
 
+/// Closed enum of the CLI subcommands that emit a `secretenv.command`
+/// attribute. v0.18 Phase 7 M-4: structural type safety in place of
+/// the v0.17 `&str` interface to [`SecretEnvSpan::record_command`].
+///
+/// `#[non_exhaustive]` so adding a future subcommand variant is
+/// non-breaking for external consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SecretEnvCommand {
+    /// `secretenv run` — resolve + execve.
+    Run,
+    /// `secretenv get` — resolve + print to stdout.
+    Get,
+    /// `secretenv migrate` (top-level) and `secretenv registry migrate`.
+    Migrate,
+    /// `secretenv doctor` — diagnostic / fix.
+    Doctor,
+    /// `secretenv redact` — post-hoc scrubber.
+    Redact,
+    /// `secretenv mcp` — model context protocol server.
+    Mcp,
+    /// `secretenv registry` — registry management subcommands
+    /// (set / unset / list / history / etc.).
+    Registry,
+}
+
+impl SecretEnvCommand {
+    /// Canonical attribute value for the `secretenv.command` OTel
+    /// attribute. Matches the kebab-case CLI subcommand name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Get => "get",
+            Self::Migrate => "migrate",
+            Self::Doctor => "doctor",
+            Self::Redact => "redact",
+            Self::Mcp => "mcp",
+            Self::Registry => "registry",
+        }
+    }
+}
+
+/// Closed enum of the 15 known backend types.
+///
+/// Has an `Unknown` fallback for forward-compatibility. v0.18 Phase 7
+/// M-4: structural type safety in place of the v0.17 `&str` interface
+/// to [`SecretEnvSpan::record_backend_type`].
+///
+/// Construction from a runtime string (the value returned by a
+/// `Backend::backend_type()` impl) goes through [`Self::from_runtime_str`]
+/// so call sites can wrap a one-liner around the existing trait method.
+/// An unrecognised string lands in [`Self::Unknown`] preserving the
+/// original text — never panics, never drops the value silently.
+///
+/// `#[non_exhaustive]` so a future backend type can join the closed
+/// set without breaking external consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendType {
+    /// `local` — file-system backend.
+    Local,
+    /// `aws-ssm` — AWS Systems Manager Parameter Store.
+    AwsSsm,
+    /// `aws-secrets` — AWS Secrets Manager.
+    AwsSecrets,
+    /// `1password` — 1Password CLI (`op`).
+    OnePassword,
+    /// `vault` — HashiCorp Vault.
+    Vault,
+    /// `gcp` — Google Cloud Secret Manager.
+    Gcp,
+    /// `azure` — Azure Key Vault.
+    Azure,
+    /// `keychain` — macOS Keychain (`security`).
+    Keychain,
+    /// `doppler` — Doppler.
+    Doppler,
+    /// `infisical` — Infisical CLI.
+    Infisical,
+    /// `keeper` — Keeper Commander CLI.
+    Keeper,
+    /// `cf-kv` — Cloudflare Workers KV.
+    CfKv,
+    /// `openbao` — OpenBao (Vault fork).
+    OpenBao,
+    /// `conjur` — CyberArk Conjur.
+    Conjur,
+    /// `bitwarden-sm` — Bitwarden Secrets Manager.
+    BitwardenSm,
+    /// Forward-compat fallback for a backend type string that the
+    /// closed set above doesn't recognise. Preserves the original
+    /// runtime string so the attribute still emits accurately. Should
+    /// never fire for shipping backends; a future backend should add
+    /// a real variant and update [`Self::from_runtime_str`].
+    Unknown(String),
+}
+
+impl BackendType {
+    /// Parse a runtime `backend_type()` string (returned by the
+    /// `Backend` trait method on each backend impl) into the closed
+    /// enum. Falls back to [`Self::Unknown`] preserving the original
+    /// string for any value not in the canonical set.
+    #[must_use]
+    pub fn from_runtime_str(s: &str) -> Self {
+        match s {
+            "local" => Self::Local,
+            "aws-ssm" => Self::AwsSsm,
+            "aws-secrets" => Self::AwsSecrets,
+            "1password" => Self::OnePassword,
+            "vault" => Self::Vault,
+            "gcp" => Self::Gcp,
+            "azure" => Self::Azure,
+            "keychain" => Self::Keychain,
+            "doppler" => Self::Doppler,
+            "infisical" => Self::Infisical,
+            "keeper" => Self::Keeper,
+            "cf-kv" => Self::CfKv,
+            "openbao" => Self::OpenBao,
+            "conjur" => Self::Conjur,
+            "bitwarden-sm" => Self::BitwardenSm,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+
+    /// Render as the canonical OTel attribute value. Owned `String`
+    /// because the `Unknown` variant carries one.
+    #[must_use]
+    pub fn into_attribute_value(self) -> String {
+        match self {
+            Self::Local => "local".to_owned(),
+            Self::AwsSsm => "aws-ssm".to_owned(),
+            Self::AwsSecrets => "aws-secrets".to_owned(),
+            Self::OnePassword => "1password".to_owned(),
+            Self::Vault => "vault".to_owned(),
+            Self::Gcp => "gcp".to_owned(),
+            Self::Azure => "azure".to_owned(),
+            Self::Keychain => "keychain".to_owned(),
+            Self::Doppler => "doppler".to_owned(),
+            Self::Infisical => "infisical".to_owned(),
+            Self::Keeper => "keeper".to_owned(),
+            Self::CfKv => "cf-kv".to_owned(),
+            Self::OpenBao => "openbao".to_owned(),
+            Self::Conjur => "conjur".to_owned(),
+            Self::BitwardenSm => "bitwarden-sm".to_owned(),
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
 impl SecretEnvSpan {
     /// Start a new span with a static-str name (e.g. `"redact.match"`,
     /// `"resolve.alias"`, `"backend.get"`). Returns the typed builder
@@ -206,10 +356,12 @@ impl SecretEnvSpan {
         self
     }
 
-    /// `secretenv.command` — `run` / `get` / `migrate` / `doctor` /
-    /// `mcp` / `redact`. ALLOW.
-    pub fn record_command(&mut self, cmd: &str) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.command", cmd.to_owned()));
+    /// `secretenv.command` — closed enum of CLI subcommands. ALLOW.
+    /// v0.18 Phase 7 M-4: was `&str`; closed enum now binds the
+    /// attribute value to a compile-checked set so call sites
+    /// cannot smuggle a typo.
+    pub fn record_command(&mut self, cmd: SecretEnvCommand) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.command", cmd.as_str()));
         self
     }
 
@@ -265,9 +417,14 @@ impl SecretEnvSpan {
         self
     }
 
-    /// `secretenv.backend.type`. ALLOW.
-    pub fn record_backend_type(&mut self, ty: &str) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.backend.type", ty.to_owned()));
+    /// `secretenv.backend.type`. ALLOW. v0.18 Phase 7 M-4: was
+    /// `&str`; now consumes [`BackendType`], a closed enum of the
+    /// 15 known backend types with an `Unknown(String)` fallback
+    /// for forward compatibility (a future backend's `backend_type()`
+    /// string that hasn't been added to the enum yet still emits
+    /// without panicking).
+    pub fn record_backend_type(&mut self, ty: BackendType) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.type", ty.into_attribute_value()));
         self
     }
 
@@ -731,7 +888,7 @@ mod tests {
         let (mut span, _guard) = SecretEnvSpan::start("redact.match");
         span.record_version("0.17.0")
             .record_run_id("11111111-1111-1111-1111-111111111111")
-            .record_command("run")
+            .record_command(SecretEnvCommand::Run)
             .record_redact_match_count(3)
             .record_alias_outcome(AliasOutcome::Ok);
         assert_eq!(span.name(), "redact.match");

@@ -52,12 +52,18 @@ enum ExporterMode {
     OtlpGrpc,
 }
 
-/// Error surface from [`init`]. Wraps the OTel SDK's builder error.
+/// Error surface from [`init`].
+///
+/// Wraps the OTel SDK's builder error with the structured cause
+/// preserved so downstream `?` propagates the chain. v0.18 Arch-F-7
+/// / Arch-L-2: was `Exporter(String)` in v0.17, which threw away the
+/// source error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum InitError {
     /// The configured OTLP exporter failed to build.
-    #[error("failed to build OTLP exporter: {0}")]
-    Exporter(String),
+    #[error("failed to build OTLP exporter")]
+    Exporter(#[from] opentelemetry_otlp::ExporterBuildError),
 }
 
 /// Inspect env vars and decide which exporter to install.
@@ -103,14 +109,18 @@ where
 ///
 /// Per `docs/reference/opentelemetry.md` §7 and §2.10:
 /// - `service.name` defaults to `secretenv`; overridden by `OTEL_SERVICE_NAME`.
-/// - `service.version` comes from `CARGO_PKG_VERSION`.
+/// - `service.version` comes from the per-binary `service_version` arg
+///   passed in by the call site. v0.17 hard-coded
+///   `env!("CARGO_PKG_VERSION")` of the telemetry crate; v0.18 Arch-F-5
+///   accepts the binary's own version so library embedders can set
+///   their own.
 /// - `host.name`, `host.arch`, `os.type`, `process.pid` are emitted from
 ///   the OTel standard resource conventions (v0.17 Phase 7b arch F-3).
 /// - `OTEL_RESOURCE_ATTRIBUTES` is honored as additional k=v pairs.
 ///   Operator-supplied attributes override our defaults — `Resource::builder`'s
 ///   `with_attributes` semantics already do last-write-wins, so we
 ///   apply the parsed pairs after the defaults to get override behavior.
-fn build_resource<F>(env: F) -> Resource
+fn build_resource<F>(env: F, service_version: &str) -> Resource
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -124,7 +134,7 @@ where
 
     let mut builder = Resource::builder()
         .with_service_name(service_name)
-        .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+        .with_attribute(KeyValue::new("service.version", service_version.to_owned()))
         .with_attribute(KeyValue::new("host.name", host_name))
         .with_attribute(KeyValue::new("host.arch", std::env::consts::ARCH))
         .with_attribute(KeyValue::new("os.type", std::env::consts::OS))
@@ -254,21 +264,30 @@ fn percent_decode(s: &str) -> String {
 /// No-op when no `OTEL_*` env var is set: zero overhead, no global
 /// state mutated, no tonic/grpc connection attempted.
 ///
+/// `service_version` is the binary's own version string (typically
+/// `env!("CARGO_PKG_VERSION")` at the call site). v0.18 Arch-F-5
+/// makes this per-binary instead of v0.17's hard-coded
+/// `CARGO_PKG_VERSION` of the telemetry crate, so library embedders
+/// can set their own `service.version` resource attribute.
+///
 /// # Errors
 ///
 /// Returns [`InitError::Exporter`] when an OTLP exporter is requested
 /// (endpoint set or `OTEL_TRACES_EXPORTER=otlp`) but the SDK fails to
 /// build it — for example, a malformed endpoint URL.
-pub fn init() -> Result<TelemetryGuard, InitError> {
-    init_with_env(|k| std::env::var(k).ok())
+pub fn init(service_version: &str) -> Result<TelemetryGuard, InitError> {
+    init_with_env(|k| std::env::var(k).ok(), service_version)
 }
 
-/// `init` with a pluggable env reader for tests.
+/// `init` with a pluggable env reader for tests. Hidden from public
+/// docs — test-injection seam, not part of the supported API surface.
+/// v0.18 Arch-L-3.
 ///
 /// # Errors
 ///
 /// Same as [`init`].
-pub fn init_with_env<F>(env: F) -> Result<TelemetryGuard, InitError>
+#[doc(hidden)]
+pub fn init_with_env<F>(env: F, service_version: &str) -> Result<TelemetryGuard, InitError>
 where
     F: Fn(&str) -> Option<String> + Copy,
 {
@@ -285,12 +304,12 @@ where
             // operator-configured ratio sampling can never silently
             // drop a registry mutation from the audit stream.
             let tracer_provider = SdkTracerProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_sampler(sampler_from_env(env))
                 .with_batch_exporter(opentelemetry_stdout::SpanExporter::default())
                 .build();
             let meter_provider = SdkMeterProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_reader(
                     PeriodicReader::builder(opentelemetry_stdout::MetricExporter::default())
                         .build(),
@@ -311,8 +330,7 @@ where
             {
                 span_builder = span_builder.with_timeout(Duration::from_millis(timeout_ms));
             }
-            let span_exporter =
-                span_builder.build().map_err(|e| InitError::Exporter(format!("{e}")))?;
+            let span_exporter = span_builder.build().map_err(InitError::from)?;
 
             // Metric exporter — same endpoint family, with its own
             // per-signal override if the operator set one.
@@ -327,16 +345,15 @@ where
             {
                 metric_builder = metric_builder.with_timeout(Duration::from_millis(timeout_ms));
             }
-            let metric_exporter =
-                metric_builder.build().map_err(|e| InitError::Exporter(format!("{e}")))?;
+            let metric_exporter = metric_builder.build().map_err(InitError::from)?;
 
             let tracer_provider = SdkTracerProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_sampler(sampler_from_env(env))
                 .with_batch_exporter(span_exporter)
                 .build();
             let meter_provider = SdkMeterProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_reader(PeriodicReader::builder(metric_exporter).build())
                 .build();
             Ok(install(tracer_provider, meter_provider, env))
@@ -623,7 +640,7 @@ mod tests {
     #[test]
     fn noop_init_returns_guard_without_provider() {
         let env = |_: &str| None;
-        let Ok(guard) = init_with_env(env) else {
+        let Ok(guard) = init_with_env(env, "0.0.0-test") else {
             panic!("noop init never fails");
         };
         assert!(guard.tracer_provider.is_none());

@@ -430,7 +430,10 @@ async fn check_all_backends(list: &[&dyn Backend]) -> Vec<BackendStatus> {
         let started = std::time::Instant::now();
         let (mut span, _guard) =
             secretenv_telemetry::SecretEnvSpan::start("secretenv.doctor.backend");
-        span.record_backend_type(b.backend_type()).record_backend_instance(b.instance_name());
+        span.record_backend_type(secretenv_telemetry::BackendType::from_runtime_str(
+            b.backend_type(),
+        ))
+        .record_backend_instance(b.instance_name());
         let label = format!("{}::check", b.instance_name());
         let status = match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async {
             Ok(b.check().await)

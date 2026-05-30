@@ -39,7 +39,10 @@ async fn main() -> Result<()> {
     // is set — zero startup cost for operators without a collector.
     // Drop flushes and shuts down; the `exec()` path bypasses Drop
     // and calls `secretenv_telemetry::flush_before_exec` explicitly.
-    let _telemetry = secretenv_telemetry::init()?;
+    // v0.18 Arch-F-5: pass the CLI binary's own CARGO_PKG_VERSION
+    // (not the telemetry crate's) so `service.version` on every
+    // emitted span reflects the binary in use.
+    let _telemetry = secretenv_telemetry::init(env!("CARGO_PKG_VERSION"))?;
 
     // v0.17 Phase 7b — arch F-1. Compose subscriber stack: env-filter
     // → stderr fmt layer → tracing-otel bridge. The bridge converts

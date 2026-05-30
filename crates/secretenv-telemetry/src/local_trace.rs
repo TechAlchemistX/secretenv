@@ -43,7 +43,14 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// One captured span, surfaced to non-OTel callers as a plain struct
 /// so the CLI can render without depending on `opentelemetry_sdk`.
+///
+/// v0.18 Code-M1: `#[non_exhaustive]` so future fields (e.g.
+/// `trace_id: String` for cross-process correlation) can be added
+/// without breaking external consumers. Construction outside this
+/// crate goes through `LocalTraceCapture::drain` rather than a
+/// record literal.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LocalTraceSpan {
     /// Span name (e.g. `"secretenv.doctor.backend"`).
     pub name: String,

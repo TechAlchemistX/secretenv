@@ -430,7 +430,7 @@ where
     // non-droppable sampler keeps every child + root in the trace
     // stream even under aggressive ratio sampling (SEC-INV-22).
     let (mut span, _guard) = SecretEnvSpan::start("secretenv.registry.migrate");
-    span.record_command("migrate")
+    span.record_command(secretenv_telemetry::SecretEnvCommand::Migrate)
         .record_alias_name(&plan.alias)
         .record_migrate_transaction_id(&plan.transaction_id);
 

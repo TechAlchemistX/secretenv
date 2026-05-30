@@ -69,8 +69,8 @@ pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
 pub use span::{
-    AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, MutationSpanName, SecretEnvSpan,
-    SpanGuard,
+    AliasOutcome, AuthMethod, BackendType, MigrateOutcome, MigratePhase, MutationSpanName,
+    SecretEnvCommand, SecretEnvSpan, SpanGuard,
 };
 
 /// Generate a fresh per-invocation run ID.
@@ -81,15 +81,67 @@ pub use span::{
 /// §2.1 contract that `secretenv.run_id` is a `UUIDv4`-equivalent
 /// random identifier.
 ///
+/// # v0.18 Arch-M3 fallback
+///
 /// If the OS RNG is unavailable (extremely rare on supported
-/// platforms) the function falls back to a zero string rather than
-/// panicking — the run_id is an audit aid, not a security boundary.
+/// platforms — never observed in production through v0.17) the
+/// function emits a `tracing::warn!` event ONCE per process and
+/// falls back to a process+time-derived non-zero ID rather than
+/// the v0.17 all-zero string. The all-zero fallback was operator-
+/// visible as `run_id=00000...0` without any explanation; the new
+/// fallback (a) makes the failure visible in the trace pipeline at
+/// init time, (b) returns a non-zero hex string so cross-correlation
+/// against e.g. CI job ID still works at the operator level. Run IDs
+/// derived this way are NOT unique across rapid invocations on the
+/// same PID, but the warning makes the degraded state obvious.
 #[must_use]
 pub fn fresh_run_id() -> String {
     let mut bytes = [0u8; 16];
     if getrandom::getrandom(&mut bytes).is_err() {
-        return "00000000000000000000000000000000".to_owned();
+        run_id_fallback_warn_once();
+        return fresh_run_id_fallback();
     }
+    format_run_id(&bytes)
+}
+
+/// Warn once per process when `getrandom` fails. v0.18 Arch-M3.
+fn run_id_fallback_warn_once() {
+    use std::sync::Once;
+    static WARN: Once = Once::new();
+    WARN.call_once(|| {
+        tracing::warn!(
+            target: "secretenv_telemetry",
+            "fresh_run_id: getrandom failed; falling back to process+time derived ID. \
+             run_id correlation across rapid invocations may be ambiguous on this host."
+        );
+    });
+}
+
+/// Non-zero deterministic fallback when `getrandom` is unavailable.
+/// v0.18 Arch-M3 + Code-L2: derive 16 bytes from `process::id()` XOR
+/// the low bits of `SystemTime::now().duration_since(UNIX_EPOCH)`.
+/// Format identically to the happy path so callers cannot tell the
+/// difference at the string level — only the `tracing::warn!` event
+/// surfaces the degraded state.
+fn fresh_run_id_fallback() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let pid = u64::from(std::process::id());
+    let now_nanos =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    // Mix pid into the low and high 64 bits of the nanos-since-epoch
+    // value. The `as u64` casts deliberately truncate — we want the
+    // bottom 64 bits and the next 64 bits separately to fill 16 bytes.
+    #[allow(clippy::cast_possible_truncation)]
+    let low = (now_nanos as u64) ^ pid;
+    #[allow(clippy::cast_possible_truncation)]
+    let high = (now_nanos >> 64) as u64 ^ pid.rotate_left(7);
+    let mut bytes = [0u8; 16];
+    bytes[0..8].copy_from_slice(&high.to_be_bytes());
+    bytes[8..16].copy_from_slice(&low.to_be_bytes());
+    format_run_id(&bytes)
+}
+
+fn format_run_id(bytes: &[u8; 16]) -> String {
     let mut s = String::with_capacity(32);
     for b in bytes {
         use std::fmt::Write as _;
@@ -100,7 +152,7 @@ pub fn fresh_run_id() -> String {
 
 #[cfg(test)]
 mod run_id_tests {
-    use super::fresh_run_id;
+    use super::{format_run_id, fresh_run_id, fresh_run_id_fallback};
 
     #[test]
     fn run_id_is_32_hex_chars() {
@@ -112,5 +164,30 @@ mod run_id_tests {
     #[test]
     fn run_ids_are_distinct() {
         assert_ne!(fresh_run_id(), fresh_run_id());
+    }
+
+    // v0.18 Arch-L-4: exercise the fallback branch directly. The
+    // branch is unreachable on supported platforms via the public
+    // `fresh_run_id` entry point, so we test the helper that the
+    // failure path delegates to.
+    #[test]
+    fn fallback_produces_non_zero_hex_string() {
+        let id = fresh_run_id_fallback();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(
+            id, "00000000000000000000000000000000",
+            "Arch-M3: fallback must not emit the v0.17 zero-string sentinel"
+        );
+    }
+
+    #[test]
+    fn format_run_id_round_trip_is_lowercase_hex() {
+        let bytes = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+            0xAA, 0xBB,
+        ];
+        let s = format_run_id(&bytes);
+        assert_eq!(s, "deadbeef00112233445566778899aabb");
     }
 }

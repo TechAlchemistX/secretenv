@@ -15,8 +15,8 @@ use opentelemetry::Value;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
 
 use secretenv_telemetry::{
-    AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, RedactionSource, RedactionStream,
-    SecretEnvErrorKind, SecretEnvSpan,
+    AliasOutcome, AuthMethod, BackendType, MigrateOutcome, MigratePhase, RedactionSource,
+    RedactionStream, SecretEnvCommand, SecretEnvErrorKind, SecretEnvSpan,
 };
 
 /// Build + install an exporter-backed global `TracerProvider`,
@@ -46,7 +46,7 @@ fn every_active_setter_emits_its_typed_attribute() {
         let (mut span, _guard) = SecretEnvSpan::start("secretenv.test");
         span.record_version("0.17.0")
             .record_run_id("11111111-1111-1111-1111-111111111111")
-            .record_command("run")
+            .record_command(SecretEnvCommand::Run)
             .record_exit_code(42)
             .record_duration_ms(1500)
             .record_alias_name("STRIPE_KEY")
@@ -54,7 +54,7 @@ fn every_active_setter_emits_its_typed_attribute() {
             .record_alias_count(7)
             .record_cascade_layer_index(2)
             .record_alias_outcome(AliasOutcome::Ok)
-            .record_backend_type("aws-ssm")
+            .record_backend_type(BackendType::AwsSsm)
             .record_backend_instance("payments")
             .record_backend_region("us-east-1")
             .record_backend_cli_name("aws")

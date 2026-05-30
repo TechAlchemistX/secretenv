@@ -203,7 +203,7 @@ pub async fn run_with_options(
     command: &[String],
     options: &RunOptions,
 ) -> Result<()> {
-    use secretenv_telemetry::{ResolutionOutcome, SecretEnvSpan};
+    use secretenv_telemetry::{ResolutionOutcome, SecretEnvCommand, SecretEnvSpan};
 
     if command.is_empty() {
         bail!("no command specified — 'secretenv run' needs a program to execute");
@@ -226,7 +226,7 @@ pub async fn run_with_options(
         std::path::Path::new(argv0_raw).file_name().and_then(|s| s.to_str()).unwrap_or(argv0_raw);
     run_span
         .record_run_id(&secretenv_telemetry::fresh_run_id())
-        .record_command("run")
+        .record_command(SecretEnvCommand::Run)
         .record_process_command_name(argv0)
         .record_process_env_var_count(resolved.len() as u64)
         .record_run_dry_run(options.dry_run)
@@ -770,7 +770,7 @@ async fn fetch_one(
     backends: &BackendRegistry,
     dry_run: bool,
 ) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
-    use secretenv_telemetry::{FetchOutcome, ResolutionOutcome, SecretEnvSpan};
+    use secretenv_telemetry::{BackendType, FetchOutcome, ResolutionOutcome, SecretEnvSpan};
 
     let started = std::time::Instant::now();
     let (target, alias_name) = match &secret.source {
@@ -836,7 +836,7 @@ async fn fetch_one(
         ));
     };
     let backend: &dyn Backend = backend;
-    span.record_backend_type(backend.backend_type());
+    span.record_backend_type(BackendType::from_runtime_str(backend.backend_type()));
 
     // Child `secretenv.backend.fetch` span scopes the actual
     // backend.get call. Closed via Drop at end-of-scope (before the
@@ -847,7 +847,7 @@ async fn fetch_one(
         let (mut fetch_span, _fetch_guard) = SecretEnvSpan::start("secretenv.backend.fetch");
         fetch_span
             .record_alias_name(&alias_name)
-            .record_backend_type(backend.backend_type())
+            .record_backend_type(BackendType::from_runtime_str(backend.backend_type()))
             .record_backend_instance(&target.scheme);
         let r = crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await;
         let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);

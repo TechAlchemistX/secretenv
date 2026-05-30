@@ -122,6 +122,14 @@ pub struct MigrationPlan {
     pub registry_source_uri: BackendUri,
     /// Stable per-invocation identifier. v0.15 uses nanoseconds since
     /// the UNIX epoch in hex form; v0.17 may upgrade to `UUIDv7`.
+    ///
+    /// v0.18 Code-M4 doc-hygiene note: this field is moved (not
+    /// borrowed) into [`MigrateReport`] at the end of
+    /// [`migrate_with_plan`]. The resolve-once invariant means the
+    /// `MigrationPlan` must not be reused after the migrate; a fresh
+    /// plan + fresh `transaction_id` is required for each migrate
+    /// invocation. See [`migrate_with_plan`] line ~471 and ~606 for
+    /// the move sites.
     pub transaction_id: String,
 }
 

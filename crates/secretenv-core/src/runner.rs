@@ -221,14 +221,15 @@ pub async fn run_with_options(
     // path leaks host filesystem layout (incl. `/home/<user>/...` on
     // dev workstations) to whatever OTel backend is configured.
     // Spec §2.5 contracts this as "argv[0] only" — basename only.
-    let argv0_raw = command.first().map_or("<empty>", String::as_str);
+    let argv0_raw =
+        command.first().map_or(secretenv_telemetry::PROCESS_COMMAND_NAME_EMPTY, String::as_str);
     let argv0 =
         std::path::Path::new(argv0_raw).file_name().and_then(|s| s.to_str()).unwrap_or(argv0_raw);
     run_span
         .record_run_id(&secretenv_telemetry::fresh_run_id())
         .record_command(SecretEnvCommand::Run)
         .record_process_command_name(argv0)
-        .record_process_env_var_count(resolved.len() as u64)
+        .record_process_env_var_count(u64::try_from(resolved.len()).unwrap_or(u64::MAX))
         .record_run_dry_run(options.dry_run)
         .record_run_verbose(options.verbose);
     if let Some(name) = options.registry_name.as_deref() {
@@ -248,14 +249,18 @@ pub async fn run_with_options(
             // run level is the conservative aggregate.
             run_span
                 .record_run_outcome(ResolutionOutcome::Failure)
-                .record_run_failed_alias_count(resolved.len() as u64);
+                .record_run_failed_alias_count(u64::try_from(resolved.len()).unwrap_or(u64::MAX));
             // Emit the spec's run-level histogram point on the failure
             // branch too so the operator sees the latency distribution.
-            let registry = options.registry_name.as_deref().unwrap_or("<direct-uri>");
+            let registry = options
+                .registry_name
+                .as_deref()
+                .unwrap_or(secretenv_telemetry::REGISTRY_NAME_DIRECT_URI);
             let resolution_ms =
                 u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let bucket =
-                secretenv_telemetry::metrics::AliasCountBucket::from_count(resolved.len() as u64);
+            let bucket = secretenv_telemetry::metrics::AliasCountBucket::from_count(
+                u64::try_from(resolved.len()).unwrap_or(u64::MAX),
+            );
             secretenv_telemetry::metrics::record_resolution_duration(
                 resolution_ms,
                 registry,
@@ -271,9 +276,11 @@ pub async fn run_with_options(
     };
 
     let resolution_ms = u64::try_from(resolution_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let registry_for_metrics = options.registry_name.as_deref().unwrap_or("<direct-uri>");
-    let alias_bucket =
-        secretenv_telemetry::metrics::AliasCountBucket::from_count(resolved.len() as u64);
+    let registry_for_metrics =
+        options.registry_name.as_deref().unwrap_or(secretenv_telemetry::REGISTRY_NAME_DIRECT_URI);
+    let alias_bucket = secretenv_telemetry::metrics::AliasCountBucket::from_count(
+        u64::try_from(resolved.len()).unwrap_or(u64::MAX),
+    );
     let outcome_for_metric =
         if options.dry_run { ResolutionOutcome::DryRun } else { ResolutionOutcome::Success };
     secretenv_telemetry::metrics::record_resolution_duration(
@@ -468,6 +475,10 @@ fn emit_redact_event_span(
     if report.match_count == 0 {
         return;
     }
+    // v0.18 Code-L5: `_guard` is `let`-bound so the span stays open
+    // for the entire scope of this function. Dropping it before the
+    // `record_*` calls would end the span before the attributes are
+    // recorded. Do NOT remove as unused.
     let (mut span, _guard) =
         secretenv_telemetry::SecretEnvSpan::start("secretenv.redact.filter_event");
     span.record_redact_mode(secretenv_telemetry::RedactMode::Runtime)
@@ -856,7 +867,14 @@ async fn fetch_one(
     // outer resolution span's outcome is set).
     let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
     let fetch_started = std::time::Instant::now();
-    let fetch_result = {
+    // v0.18 Code-M3: single fetch_ms computation feeds both the span
+    // attribute and the metric emission below. v0.17 had two
+    // computations against the same `fetch_started.elapsed()` source
+    // — the inner one for the span (taken at end-of-with_timeout) and
+    // the outer one for the metric (taken after the inner scope
+    // dropped fetch_span). Microscopic divergence; collapsed for
+    // single-source-of-truth.
+    let (fetch_result, fetch_ms) = {
         let (mut probe_span, _probe_guard) = SecretEnvSpan::start("secretenv.backend.probe");
         probe_span
             .record_backend_type(BackendType::from_runtime_str(backend.backend_type()))
@@ -870,8 +888,8 @@ async fn fetch_one(
             .record_backend_type(BackendType::from_runtime_str(backend.backend_type()))
             .record_backend_instance(&target.scheme);
         let r = crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await;
-        let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        fetch_span.record_backend_fetch_duration_ms(fetch_ms);
+        let ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        fetch_span.record_backend_fetch_duration_ms(ms);
         let probe_outcome = if r.is_ok() {
             fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok);
             BackendProbeOutcome::Success
@@ -880,10 +898,9 @@ async fn fetch_one(
             BackendProbeOutcome::Error
         };
         probe_span.record_backend_probe_outcome(probe_outcome);
-        r
+        (r, ms)
     };
 
-    let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let backend_type_str = backend.backend_type();
 
     match fetch_result {
@@ -1031,7 +1048,7 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     {
         let (mut prepare_span, _prepare_guard) =
             secretenv_telemetry::SecretEnvSpan::start("secretenv.exec.prepare");
-        prepare_span.record_process_env_var_count(env.len() as u64);
+        prepare_span.record_process_env_var_count(u64::try_from(env.len()).unwrap_or(u64::MAX));
         scrub_secretenv_env(|k| {
             cmd.env_remove(k);
         });
@@ -1061,7 +1078,7 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     {
         let (mut prepare_span, _prepare_guard) =
             secretenv_telemetry::SecretEnvSpan::start("secretenv.exec.prepare");
-        prepare_span.record_process_env_var_count(env.len() as u64);
+        prepare_span.record_process_env_var_count(u64::try_from(env.len()).unwrap_or(u64::MAX));
         scrub_secretenv_env(|k| {
             cmd.env_remove(k);
         });

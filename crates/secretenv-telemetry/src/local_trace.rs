@@ -145,6 +145,13 @@ impl Drop for LocalTraceCapture {
     }
 }
 
+// v0.18 Code-L4 — saturation note. `start_unix_ms` is bounded:
+// `try_from(d.as_millis())` saturates at `u64::MAX` for the
+// theoretical edge case where `SystemTime` is past 2^64 ms after
+// UNIX_EPOCH (year 584,948,000+); `map_or(0, ...)` covers the
+// pre-epoch case (clock skew or virtualization). Operators
+// inspecting traces from such systems see the sentinel and can
+// reason about clock-shape rather than getting a panic.
 fn system_time_to_unix_ms(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

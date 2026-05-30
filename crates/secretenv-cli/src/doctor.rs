@@ -816,8 +816,21 @@ async fn probe_otel_status() -> OtelStatus {
 /// Parses host:port from URLs of the shape `http://host:port`,
 /// `https://host:port`, or `grpc://host:port`. Falls back to assuming
 /// the input is already a `host:port` pair otherwise.
+///
+/// v0.18 Code-N5 / Phase 7 M-2: respects `OTEL_EXPORTER_OTLP_PROTOCOL`
+/// when no explicit port is set on the endpoint. `http/protobuf` and
+/// `http/json` default to port 4318 (OTLP/HTTP); `grpc` (and unset)
+/// keep the prior 4317 default. Operators running an HTTP/protobuf
+/// exporter no longer see a false "unreachable" diagnostic.
 async fn probe_otel_reachability(endpoint: &str) -> OtelReachability {
-    let host_port = parse_endpoint_host_port(endpoint);
+    let protocol_default_port =
+        match std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").as_deref().unwrap_or("") {
+            "http/protobuf" | "http/json" => 4318,
+            // grpc (default) and any unknown value fall back to the
+            // OTLP/gRPC standard port.
+            _ => 4317,
+        };
+    let host_port = parse_endpoint_host_port(endpoint, protocol_default_port);
     let started = std::time::Instant::now();
     let connect_fut = tokio::net::TcpStream::connect(&host_port);
     match tokio::time::timeout(std::time::Duration::from_secs(1), connect_fut).await {
@@ -840,15 +853,17 @@ async fn probe_otel_reachability(endpoint: &str) -> OtelReachability {
 }
 
 /// Strip the scheme + path from an OTLP endpoint URL and return
-/// `host:port`. Defaults to port 4317 (the OTLP/gRPC standard) when
-/// the URL omits an explicit port.
-fn parse_endpoint_host_port(endpoint: &str) -> String {
+/// `host:port`. Defaults to `default_port` when the URL omits an
+/// explicit port. v0.18 Code-N5 / Phase 7 M-2: callers pass
+/// 4317 (gRPC) or 4318 (HTTP) based on
+/// `OTEL_EXPORTER_OTLP_PROTOCOL`.
+fn parse_endpoint_host_port(endpoint: &str, default_port: u16) -> String {
     let after_scheme = endpoint.split_once("://").map_or(endpoint, |(_, rest)| rest);
     let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
     if host_port.contains(':') {
         host_port.to_owned()
     } else {
-        format!("{host_port}:4317")
+        format!("{host_port}:{default_port}")
     }
 }
 

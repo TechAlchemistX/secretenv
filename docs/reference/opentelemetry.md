@@ -169,7 +169,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 |---|---|---|
 | `service.name` | ALLOW | OTel standard resource |
 | `service.version` | ALLOW | OTel standard resource |
-| `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions |
+| `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions. **v0.18 Sec-L-3 note:** `host.name` is set from `hostname::get()`, which on corporate CI runners and bare-metal hosts may surface an FQDN like `ip-10-0-1-23.us-west-2.compute.internal` or `runner-prod-build-42.corp.example.com` — those carry network topology hints. Operators who want to scrub or pin this attribute can override via `OTEL_RESOURCE_ATTRIBUTES=host.name=<override>` at the process env layer; it's last-write-wins against our default emission. |
 | `deployment.environment.name` | ALLOW (opt-in only) | NOT auto-inferred from `CI=true`; operator-supplied via `[otel]` config or `OTEL_RESOURCE_ATTRIBUTES` |
 
 **Matrix totals:** 51 ALLOW · 25 DENY · 76 entries.

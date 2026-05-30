@@ -70,7 +70,17 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ### Hardening
 
-(Phase 6 populates this section.)
+- **6 `as u64` truncating casts → `u64::try_from(...).unwrap_or(u64::MAX)`** in `secretenv-core::runner`. Matches the project convention. Closes [[v0.17-deferred-items#Code-M2]].
+- **Duplicate `fetch_ms` recomputation in `fetch_one` collapsed.** The probe/fetch block now returns `(fetch_result, ms)` as a tuple; the outer scope reuses `fetch_ms` for the metric emission. Closes [[v0.17-deferred-items#Code-M3]].
+- **`MigrationPlan.transaction_id` doc comment** documenting the move-into-`MigrateReport` invariant. Closes [[v0.17-deferred-items#Code-M4]].
+- **`RegistrySelection::registry_label()` decision lock-in** — kept as `Option<&str>` (call sites handle the borrow correctly). New companion `registry_label_for_telemetry() -> &str` returns the `REGISTRY_NAME_DIRECT_URI` sentinel for direct-URI selections. Closes [[v0.17-deferred-items#Code-L1]] + v1.0 watchlist W-18.
+- **`LocalTraceCapture::drain` saturation behavior documented** (`try_from` saturates at `u64::MAX` for post-year-584-million `SystemTime`; `map_or(0, ...)` covers pre-epoch clock skew). Closes [[v0.17-deferred-items#Code-L4]].
+- **`_guard` lifetime comment on the `secretenv.redact.filter_event` span site** prevents future remove-as-unused. Closes [[v0.17-deferred-items#Code-L5]].
+- **`secretenv_telemetry::REGISTRY_NAME_DIRECT_URI` + `PROCESS_COMMAND_NAME_EMPTY` constants** lift the v0.17 `"<direct-uri>"` and `"<empty>"` magic strings. Closes [[v0.17-deferred-items#Code-N2]] + [[v0.17-deferred-items#Code-N3]] + v1.0 watchlist W-15 + W-16.
+- **`SpanGuard._private: ()` keep decision** documented — the sealing is load-bearing against external crates, not cosmetic. Closes [[v0.17-deferred-items#Code-N4]].
+- **`doctor.rs::probe_otel_reachability` honors `OTEL_EXPORTER_OTLP_PROTOCOL`** — `http/protobuf` and `http/json` select port 4318; anything else keeps the 4317 default. Operators running OTLP/HTTP exporters no longer see a false "unreachable" diagnostic. Closes [[v0.17-deferred-items#Code-N5]] + Phase 7 M-2.
+- **`host.name` FQDN documentation note** added to `docs/reference/opentelemetry.md` §2 attribute matrix. Closes [[v0.17-deferred-items#Sec-L-3]].
+- **Dead typed-setter keep decision** — `record_alias_count`, `record_cascade_layer_index`, `record_backend_cli_name`, etc. retained as spec'd ALLOW surface for future callers (Phase 4 wired several previously-dormant setters this cycle, validating the keep-as-forward-compat pattern). Closes [[v0.17-deferred-items#Sec-L-4]].
 
 ### Documentation
 

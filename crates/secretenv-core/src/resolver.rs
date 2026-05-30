@@ -74,12 +74,36 @@ impl RegistrySelection {
     /// no operator-stated name and return `None`. Used by v0.17
     /// telemetry to attach `secretenv.registry.name` to the
     /// `secretenv.run` span without exposing the URI body.
+    ///
+    /// v0.18 Code-L1 / W-18 resolution: kept as `Option<&str>` rather
+    /// than `Option<String>`. The CLI call site at
+    /// `crates/secretenv-cli/src/cli.rs` does `.map(str::to_owned)`
+    /// to lift to an owned String for the runner's `RunOptions`, and
+    /// the resolver call site at `resolve_registry` uses
+    /// `if let Some(name)` for span emission — neither pays a real
+    /// cost from the borrow. Migrating to `Option<String>` would
+    /// force every read site to allocate. The lifetime coupling to
+    /// `&self` is theoretical only; closes Code-L1 + drops W-18 from
+    /// the v1.0 watchlist.
     #[must_use]
     pub fn registry_label(&self) -> Option<&str> {
         match self {
             Self::Name(n) => Some(n.as_str()),
             Self::Uri(_) => None,
         }
+    }
+
+    /// v0.18 W-16. Telemetry-safe registry label that NEVER returns
+    /// `None` — falls back to
+    /// [`secretenv_telemetry::REGISTRY_NAME_DIRECT_URI`] for direct-URI
+    /// selections. Use this when emitting metric attributes that
+    /// can't carry an `Option<&str>` (the `OTel` attribute set must
+    /// be total: either ALLOW with a value or structurally absent).
+    /// W-15/W-16 close together — see
+    /// `secretenv_telemetry::REGISTRY_NAME_DIRECT_URI`.
+    #[must_use]
+    pub fn registry_label_for_telemetry(&self) -> &str {
+        self.registry_label().unwrap_or(secretenv_telemetry::REGISTRY_NAME_DIRECT_URI)
     }
 }
 

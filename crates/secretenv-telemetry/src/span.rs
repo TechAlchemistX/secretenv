@@ -47,6 +47,15 @@ const TRACER_NAME: &str = "secretenv";
 /// The `_private` field is the sealed-construction marker — it
 /// keeps `SpanGuard` un-constructible from outside this crate so
 /// the only path to obtain one is through [`SecretEnvSpan::start`].
+///
+/// v0.18 Code-N4: the sealing IS cosmetic against
+/// in-crate callers (the constructor is in the same module) but
+/// load-bearing against EXTERNAL crates — `SpanGuard { _private: () }`
+/// won't compile outside `secretenv-telemetry` because the field is
+/// private. Decision: keep the marker. Removing it would let any
+/// downstream consumer construct a guard out of thin air, which
+/// would let them satisfy the `must_use` contract without actually
+/// holding a real span scope.
 #[derive(Debug)]
 #[must_use = "dropping the SpanGuard ends the surrounding span's scope"]
 pub struct SpanGuard {

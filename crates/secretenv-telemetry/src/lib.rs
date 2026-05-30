@@ -74,6 +74,25 @@ pub use span::{
     RegistrySelectionKind, SecretEnvCommand, SecretEnvSpan, SpanGuard,
 };
 
+/// Sentinel registry name for direct-URI selections.
+///
+/// v0.18 Code-N3 / Arch-M2 / W-15. Used when the registry was
+/// selected via a direct backend URI rather than a
+/// `[registries.<name>]` entry. Emitted as `secretenv.registry.name`
+/// at metric call sites and as a stable fallback wherever an
+/// operator-facing string is needed but no registry name exists.
+/// Single source of truth — call sites import this constant rather
+/// than re-typing the string.
+pub const REGISTRY_NAME_DIRECT_URI: &str = "<direct-uri>";
+
+/// Sentinel for the `argv[0]` slot when the run's `command` slice
+/// is empty.
+///
+/// v0.18 Code-N2. Should never fire in practice (the CLI rejects
+/// empty `--`-terminated invocations), but reserved as a constant
+/// rather than a magic string so call sites stay consistent.
+pub const PROCESS_COMMAND_NAME_EMPTY: &str = "<empty>";
+
 /// Generate a fresh per-invocation run ID.
 ///
 /// Returns a 32-char lowercase hex string sourced from 16 random

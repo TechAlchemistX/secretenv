@@ -28,11 +28,14 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 - **`BackendErrorStderr` newtype + SEC-INV-20 shape scrubber** (`secretenv_telemetry::BackendErrorStderr`, re-exported from `secretenv_core`). Three-pass conservative regex set strips URI shapes, AWS 12-digit account IDs, and high-entropy tokens (32+ chars of base64-ish alphabet). Newtype's only constructor IS the scrubber — holding a `BackendErrorStderr` is the proof obligation that scrubbing occurred.
 - **`SecretEnvSpan::record_backend_error_message_scrubbed(&BackendErrorStderr, opt_in: bool)` typed setter**. Dual-state ALLOW: opt-in emits the scrubbed payload, opt-out leaves the attribute structurally absent. SecretEnvSpan setter count grows 38 → 39.
 - **`LocalTraceCaptureError` typed-error enum** with `AlreadyInstalled` variant, returned by `LocalTraceCapture::install`.
+- **`MutationSpanName` closed enum** (`secretenv_telemetry::span::MutationSpanName`) — 8 variants covering every mutation span name (4 MCP mutation tools + 4 migrate phases). `as_str()` returns the canonical OTel name; `all()` returns every variant for sampler iteration and regression-test coverage.
+- **`SecretEnvSpan::start_mutation(MutationSpanName) -> (Self, SpanGuard)` typed constructor** — the sole entry point for starting mutation spans. Closes [[v0.17-deferred-items#Sec-F-5]] / [[v0.17-deferred-items#Code-L3]] / Phase 7 H-1 follow-up.
 
 ### Changed
 
 - **`LocalTraceCapture::install()` returns `Result<Self, LocalTraceCaptureError>`** (was `-> Self`). Module-level `INSTALLED: AtomicBool` guard prevents a second live install from silently swapping the global `TracerProvider`. Drop clears the flag for the next legitimate install. The only existing call site (`secretenv doctor --trace`) now bubbles the error via `anyhow`. Closes [[v0.17-deferred-items#Sec-M-2]] + [[v0.17-deferred-items#Arch-F-6]].
 - **`TelemetryGuard::Drop` is now bounded** at 1s via a worker-thread + `recv_timeout` pattern (extracted as the private `run_bounded_or_detach(timeout, work)` helper, shared with `flush_before_exec`). CTRL-C against `secretenv run` with a slow/unreachable OTLP collector no longer hangs the shell. On timeout, the worker thread is detached and a `tracing::warn!` event fires (same shape as the pre-exec timeout). Closes [[v0.17-deferred-items#Sec-M-3]].
+- **`MutationNonDroppableSampler::is_mutation_span()` walks `MutationSpanName::all()`** instead of a hand-maintained `&[&str]` allowlist (which has been removed). The closed enum is now the single source of truth for both the span name (via `MutationSpanName::as_str` at the call site through `SecretEnvSpan::start_mutation`) and the sampler whitelist (via the predicate iteration). Adding a new mutation span = adding a variant; nothing else moves. Migrated all 8 mutation call sites in `secretenv-migrate` + `secretenv-mcp::tools` to `start_mutation`.
 
 ### Fixed
 
@@ -41,6 +44,7 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 ### Security
 
 - **D-5.2 — TS-12 stderr-in-otel regression test.** `crates/secretenv-telemetry/tests/ts12_stderr_in_otel.rs` synthesizes a backend stderr containing `vault.prod.internal:8200/v1/secret/payments/stripe`, passes it through the new setter with `opt_in = true`, and asserts the URL fragment + path segments (`payments`, `stripe`, the literal URL, the port, the scheme) are structurally absent from the emitted span attribute. The opt-out arm asserts the attribute is structurally absent entirely. Closes [[v0.17-deferred-items#D-5.2]].
+- **`MutationSpanName` structural binding regression test.** `crates/secretenv-telemetry/tests/mutation_span_name_structural_binding.rs` walks every `MutationSpanName::all()` variant, drives each through `start_mutation` against an `AlwaysOff` inner sampler, and asserts the non-droppable wrapper force-records every variant. A new variant gets coverage for free; a typo at a new call site that doesn't go through `start_mutation` is structurally impossible since the typed constructor is the sole entry point. Plus a predicate-only test and a negative-coverage test on 8 non-mutation names.
 
 ### Hardening
 

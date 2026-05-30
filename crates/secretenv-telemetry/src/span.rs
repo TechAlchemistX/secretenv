@@ -73,16 +73,124 @@ pub struct SecretEnvSpan {
     span: BoxedSpan,
 }
 
+/// Closed set of mutation span names that participate in the
+/// SEC-INV-22 non-droppable rule (see [`crate::sampler`]).
+///
+/// v0.18 Phase 2 structural lift: in v0.17 the span name was a
+/// `&'static str` chosen at the call site, and the sampler kept a
+/// parallel `&[&str]` allowlist. The two could drift — a typo at a
+/// new mutation call site would create a span the operator believed
+/// was non-droppable but which the sampler treated as ordinary.
+/// Phase 7b at `6e5cdd7` caught the drift with `mutation_real_name_sampled`
+/// but that test asserted a constant against itself; a NEW call site
+/// with a different typo would still slip past it.
+///
+/// Phase 2 makes the binding structural: the sampler matches on this
+/// enum (via [`as_str`](Self::as_str)) instead of a private allowlist,
+/// and the only way to start a mutation span is
+/// [`SecretEnvSpan::start_mutation`], which takes a variant of this
+/// enum. The compiler enforces that the span name and the sampler
+/// whitelist are the same enumeration.
+///
+/// Adding a new mutation span = adding a variant here. The sampler,
+/// the call site entry point, and the canonical name list all flow
+/// from the variant set; nothing else needs to change.
+///
+/// Closes [[v0.17-deferred-items#Sec-F-5]] / [[v0.17-deferred-items#Code-L3]]
+/// / Phase 7 H-1 follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MutationSpanName {
+    /// MCP `set_alias` tool — registry write.
+    McpSetAlias,
+    /// MCP `delete_alias` tool — registry write.
+    McpDeleteAlias,
+    /// MCP `migrate_alias` tool — invokes the migrate transaction.
+    McpMigrateAlias,
+    /// MCP `gen_password` tool — generated value is the secret.
+    McpGenPassword,
+    /// Migrate `read` phase — source-side state read.
+    MigrateRead,
+    /// Migrate `write` phase — dest-side state write.
+    MigrateWrite,
+    /// Migrate `pointer_flip` phase — registry alias swap commits the migrate.
+    MigratePointerFlip,
+    /// Migrate `delete` phase — source-side delete after a successful
+    /// migrate (only fires when `--delete-source` is set).
+    MigrateDelete,
+}
+
+impl MutationSpanName {
+    /// Canonical OTel span name. Read by both the tracer (when
+    /// starting the span via [`SecretEnvSpan::start_mutation`]) and
+    /// the sampler (when deciding whether to force-record the span).
+    ///
+    /// The match is exhaustive so adding a variant without naming it
+    /// is a compile error.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::McpSetAlias => "secretenv.mcp.tool.set_alias",
+            Self::McpDeleteAlias => "secretenv.mcp.tool.delete_alias",
+            Self::McpMigrateAlias => "secretenv.mcp.tool.migrate_alias",
+            Self::McpGenPassword => "secretenv.mcp.tool.gen_password",
+            Self::MigrateRead => "secretenv.migrate.read",
+            Self::MigrateWrite => "secretenv.migrate.write",
+            Self::MigratePointerFlip => "secretenv.migrate.pointer_flip",
+            Self::MigrateDelete => "secretenv.migrate.delete",
+        }
+    }
+
+    /// Every variant, in canonical order. Drives the sampler's
+    /// matching predicate AND the Phase 2 regression test that walks
+    /// the variant set to assert structural binding.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::McpSetAlias,
+            Self::McpDeleteAlias,
+            Self::McpMigrateAlias,
+            Self::McpGenPassword,
+            Self::MigrateRead,
+            Self::MigrateWrite,
+            Self::MigratePointerFlip,
+            Self::MigrateDelete,
+        ]
+    }
+}
+
 impl SecretEnvSpan {
     /// Start a new span with a static-str name (e.g. `"redact.match"`,
     /// `"resolve.alias"`, `"backend.get"`). Returns the typed builder
     /// alongside a [`SpanGuard`] kept by the caller for scope.
+    ///
+    /// **For mutation spans, use [`Self::start_mutation`] instead.**
+    /// Mutation spans participate in the SEC-INV-22 non-droppable
+    /// rule; the typed entry point binds the span name and the
+    /// sampler whitelist to the same closed enum so they cannot
+    /// drift. v0.18 Phase 2 Sec-F-5 / Code-L3.
     #[must_use = "the span must be held for its scope; \
                   dropping it immediately ends the span"]
     pub fn start(name: &'static str) -> (Self, SpanGuard) {
         let tracer = global::tracer(TRACER_NAME);
         let span = tracer.start(name);
         (Self { name, span }, SpanGuard { _private: () })
+    }
+
+    /// Start a **mutation** span — one that participates in the
+    /// SEC-INV-22 non-droppable rule.
+    ///
+    /// v0.18 Phase 2 Sec-F-5 / Code-L3 / Phase 7 H-1 follow-up: this
+    /// is the sole entry point for mutation spans. The closed
+    /// [`MutationSpanName`] enum is shared between this constructor
+    /// and [`crate::sampler::MutationNonDroppableSampler`], so a new
+    /// mutation tool's span is automatically force-sampled by the
+    /// sampler without any second-place update — adding a variant
+    /// to the enum is the entire change.
+    #[must_use = "the span must be held for its scope; \
+                  dropping it immediately ends the span"]
+    pub fn start_mutation(name: MutationSpanName) -> (Self, SpanGuard) {
+        Self::start(name.as_str())
     }
 
     /// `secretenv.version` — the SecretEnv release that produced

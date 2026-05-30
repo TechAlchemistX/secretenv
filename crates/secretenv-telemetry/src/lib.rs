@@ -68,7 +68,10 @@ pub use metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
 pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
-pub use span::{AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, SecretEnvSpan, SpanGuard};
+pub use span::{
+    AliasOutcome, AuthMethod, MigrateOutcome, MigratePhase, MutationSpanName, SecretEnvSpan,
+    SpanGuard,
+};
 
 /// Generate a fresh per-invocation run ID.
 ///

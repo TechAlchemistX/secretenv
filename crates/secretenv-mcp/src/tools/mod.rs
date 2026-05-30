@@ -51,7 +51,7 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use secretenv_core::Config;
-use secretenv_telemetry::span::SecretEnvSpan;
+use secretenv_telemetry::span::{MutationSpanName, SecretEnvSpan};
 
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
@@ -487,7 +487,7 @@ impl Server {
         args: Parameters<SetAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<SetAliasResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.set_alias");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpSetAlias);
         let args = args.0;
         span.record_mcp_tool_name("set_alias")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
@@ -559,7 +559,7 @@ impl Server {
         args: Parameters<DeleteAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<DeleteAliasResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.delete_alias");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpDeleteAlias);
         let args = args.0;
         span.record_mcp_tool_name("delete_alias")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
@@ -957,7 +957,7 @@ impl Server {
         args: Parameters<GenPasswordArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<GenPasswordResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.gen_password");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpGenPassword);
         span.record_mcp_tool_name("gen_password")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
             .record_mcp_argument_alias_name(&args.0.alias);
@@ -1221,7 +1221,7 @@ impl Server {
         args: Parameters<MigrateAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<MigrateAliasResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.migrate_alias");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpMigrateAlias);
         span.record_mcp_tool_name("migrate_alias")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
             .record_mcp_argument_alias_name(&args.0.alias);

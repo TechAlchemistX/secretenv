@@ -170,6 +170,10 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.manifest.path", AttributeClassification::Allow),
     ("secretenv.manifest.alias_count", AttributeClassification::Allow),
     ("secretenv.manifest.default_count", AttributeClassification::Allow),
+    // v0.18 Phase 4 — Arch-M6 subset. `manifest.outcome` is the
+    // closed-enum result of `Manifest::load_from` (ok / not_found /
+    // parse_error / validation_error).
+    ("secretenv.manifest.outcome", AttributeClassification::Allow),
     // Phase 9b — Sec F-3. Spec §2.9 doctor aggregates.
     ("secretenv.doctor.check_level", AttributeClassification::Allow),
     ("secretenv.doctor.backend_count", AttributeClassification::Allow),

@@ -770,7 +770,10 @@ async fn fetch_one(
     backends: &BackendRegistry,
     dry_run: bool,
 ) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
-    use secretenv_telemetry::{BackendType, FetchOutcome, ResolutionOutcome, SecretEnvSpan};
+    use secretenv_telemetry::{
+        BackendProbeLevel, BackendProbeOutcome, BackendType, FetchOutcome, ResolutionOutcome,
+        SecretEnvSpan,
+    };
 
     let started = std::time::Instant::now();
     let (target, alias_name) = match &secret.source {
@@ -838,12 +841,29 @@ async fn fetch_one(
     let backend: &dyn Backend = backend;
     span.record_backend_type(BackendType::from_runtime_str(backend.backend_type()));
 
+    // v0.18 Phase 4 — `secretenv.backend.probe` schema-reserved span
+    // (Arch-M6 subset). Sized as a sibling of `secretenv.backend.fetch`
+    // wrapping the same `backend.get` call (per Arch-M1 deferred to
+    // v0.20, span topology stays flat — the parent-child intent in
+    // spec §4.1 surfaces by name only in v0.18). The probe captures
+    // the connectivity-and-permission outcome; the fetch span
+    // captures the value-fetch outcome. Both currently share the
+    // same get() invocation; future cycles may split them when a
+    // dedicated `Backend::probe` trait method materialises.
+    //
     // Child `secretenv.backend.fetch` span scopes the actual
     // backend.get call. Closed via Drop at end-of-scope (before the
     // outer resolution span's outcome is set).
     let op_label = format!("{}::get (secret '{}')", target.scheme, secret.env_var);
     let fetch_started = std::time::Instant::now();
     let fetch_result = {
+        let (mut probe_span, _probe_guard) = SecretEnvSpan::start("secretenv.backend.probe");
+        probe_span
+            .record_backend_type(BackendType::from_runtime_str(backend.backend_type()))
+            .record_backend_instance(&target.scheme)
+            .record_backend_probe_level(BackendProbeLevel::Connectivity)
+            .record_backend_fetch_attempt(1);
+
         let (mut fetch_span, _fetch_guard) = SecretEnvSpan::start("secretenv.backend.fetch");
         fetch_span
             .record_alias_name(&alias_name)
@@ -852,10 +872,14 @@ async fn fetch_one(
         let r = crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await;
         let fetch_ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
         fetch_span.record_backend_fetch_duration_ms(fetch_ms);
-        match &r {
-            Ok(_) => fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok),
-            Err(_) => fetch_span.record_backend_fetch_outcome(FetchOutcome::Error),
+        let probe_outcome = if r.is_ok() {
+            fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok);
+            BackendProbeOutcome::Success
+        } else {
+            fetch_span.record_backend_fetch_outcome(FetchOutcome::Error);
+            BackendProbeOutcome::Error
         };
+        probe_span.record_backend_probe_outcome(probe_outcome);
         r
     };
 
@@ -997,12 +1021,24 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     let args = &command[1..];
     let mut cmd = Command::new(program);
     cmd.args(args);
-    scrub_secretenv_env(|k| {
-        cmd.env_remove(k);
-    });
-    inject_env_entries(env, |k, v| {
-        cmd.env(k, v);
-    });
+    // v0.18 Phase 4 — `secretenv.exec.prepare` schema-reserved span
+    // (Arch-M6 subset). Wraps the env-block assembly between the
+    // post-fetch `Vec<EnvEntry>` and the actual exec call. Span ends
+    // (via _guard drop at end of scope) BEFORE flush_before_exec so
+    // the span itself is flushed to OTel before execve replaces the
+    // process. Sibling of `secretenv.exec.flush` (deferred to v0.20
+    // per Arch-M6 split — requires `pre_exec` hook integration).
+    {
+        let (mut prepare_span, _prepare_guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.exec.prepare");
+        prepare_span.record_process_env_var_count(env.len() as u64);
+        scrub_secretenv_env(|k| {
+            cmd.env_remove(k);
+        });
+        inject_env_entries(env, |k, v| {
+            cmd.env(k, v);
+        });
+    }
     // SEC-INV-22: flush pending OTel spans before `execve` replaces this
     // process — Drop on the CLI's TelemetryGuard would otherwise never
     // run. Bounded at 1s so a slow collector can't turn `secretenv run`
@@ -1020,12 +1056,19 @@ fn exec_with_env(command: &[String], env: &[EnvEntry]) -> Result<()> {
     let args = &command[1..];
     let mut cmd = Command::new(program);
     cmd.args(args);
-    scrub_secretenv_env(|k| {
-        cmd.env_remove(k);
-    });
-    inject_env_entries(env, |k, v| {
-        cmd.env(k, v);
-    });
+    // v0.18 Phase 4 — `secretenv.exec.prepare` schema-reserved span
+    // (Arch-M6 subset). See the unix branch above for rationale.
+    {
+        let (mut prepare_span, _prepare_guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.exec.prepare");
+        prepare_span.record_process_env_var_count(env.len() as u64);
+        scrub_secretenv_env(|k| {
+            cmd.env_remove(k);
+        });
+        inject_env_entries(env, |k, v| {
+            cmd.env(k, v);
+        });
+    }
     let status = cmd.status().with_context(|| format!("failed to spawn '{program}'"))?;
     // std::process::exit skips destructors — flush before exit so the
     // CLI's TelemetryGuard doesn't strand pending spans.

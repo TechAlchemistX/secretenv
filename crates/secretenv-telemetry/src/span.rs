@@ -309,6 +309,143 @@ impl BackendType {
     }
 }
 
+// =====================================================================
+// v0.18 Phase 4 closed enums — Arch-M6 subset (5 of 6 schema-reserved
+// spans). Each enum drives one or more typed `record_*` setters on
+// `SecretEnvSpan`. Pattern matches MutationSpanName / SecretEnvCommand /
+// BackendType from Phases 2-3.
+// =====================================================================
+
+/// Outcome of a `secretenv.manifest.load` span. v0.18 Phase 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ManifestOutcome {
+    /// Manifest loaded + validated successfully.
+    Ok,
+    /// No `secretenv.toml` found by the upward search.
+    NotFound,
+    /// File exists but is not parseable TOML or fails the typed
+    /// deserialization.
+    ParseError,
+    /// Parses but fails [`crate::SecretDecl`]-shape validation
+    /// (e.g. an alias `from` field not a `secretenv://<alias>` URI).
+    ValidationError,
+}
+
+impl ManifestOutcome {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::NotFound => "not_found",
+            Self::ParseError => "parse_error",
+            Self::ValidationError => "validation_error",
+        }
+    }
+}
+
+/// Kind of registry selection that drove a `secretenv.registry.load`
+/// span.
+///
+/// Mirrors `secretenv_core::RegistrySelection` from the consumer
+/// side without leaking the underlying type into this crate. v0.18
+/// Phase 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegistrySelectionKind {
+    /// `RegistrySelection::Name(_)` — selected by `[registries.<name>]`.
+    ByName,
+    /// `RegistrySelection::Uri(_)` — direct backend URI.
+    Uri,
+}
+
+impl RegistrySelectionKind {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ByName => "by_name",
+            Self::Uri => "uri",
+        }
+    }
+}
+
+/// Depth of a backend probe. v0.18 Phase 4 + the rolling D-3.1
+/// `backend.probe.level` setter slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendProbeLevel {
+    /// Connectivity-only probe — the backend's `check()` path.
+    Connectivity,
+    /// Full probe — connectivity AND permission/scope verification.
+    Full,
+}
+
+impl BackendProbeLevel {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connectivity => "connectivity",
+            Self::Full => "full",
+        }
+    }
+}
+
+/// Outcome of a backend probe. v0.18 Phase 4 + the rolling D-3.1
+/// `backend.probe.outcome` setter slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendProbeOutcome {
+    /// Probe succeeded.
+    Success,
+    /// Probe timed out per [`crate::sampler`] / `with_timeout` bound.
+    Timeout,
+    /// Backend reachable but refused the probe (auth / permission).
+    PermissionDenied,
+    /// Other error — backend-level fault.
+    Error,
+}
+
+impl BackendProbeOutcome {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Timeout => "timeout",
+            Self::PermissionDenied => "permission_denied",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Depth of a `secretenv doctor` invocation. v0.18 Phase 4 + the
+/// rolling D-3.1 `doctor.check_level` setter slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DoctorCheckLevel {
+    /// Level 1 + 2 (config + auth probe) only.
+    Quick,
+    /// Level 1 + 2 + `--fix` remediation pass.
+    Standard,
+    /// Level 1 + 2 + 3 (`--extensive` — registry/source reachability).
+    Extensive,
+}
+
+impl DoctorCheckLevel {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Standard => "standard",
+            Self::Extensive => "extensive",
+        }
+    }
+}
+
 impl SecretEnvSpan {
     /// Start a new span with a static-str name (e.g. `"redact.match"`,
     /// `"resolve.alias"`, `"backend.get"`). Returns the typed builder
@@ -495,6 +632,123 @@ impl SecretEnvSpan {
                 msg.as_str().to_owned(),
             ));
         }
+        self
+    }
+
+    // ----- v0.18 Phase 4: schema-reserved span attribute setters -----
+
+    /// `secretenv.manifest.path` — workspace-relative path to the
+    /// manifest file. Method name carries the contract (relative
+    /// only — never an absolute path) per Phase 9b Sec F-1 basename
+    /// guard discipline. ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_path_relative(&mut self, path: &std::path::Path) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.manifest.path",
+            path.to_string_lossy().into_owned(),
+        ));
+        self
+    }
+
+    /// `secretenv.manifest.alias_count` — number of `SecretDecl::Alias`
+    /// entries in the manifest. ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_alias_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.manifest.alias_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.manifest.default_count` — number of `SecretDecl::Default`
+    /// entries in the manifest. ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_default_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.manifest.default_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.manifest.outcome` — closed enum [`ManifestOutcome`].
+    /// ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_outcome(&mut self, outcome: ManifestOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.manifest.outcome", outcome.as_str()));
+        self
+    }
+
+    /// `secretenv.registry.selection` — closed enum
+    /// [`RegistrySelectionKind`]. ALLOW. v0.18 Phase 4.
+    pub fn record_registry_selection(&mut self, kind: RegistrySelectionKind) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.registry.selection", kind.as_str()));
+        self
+    }
+
+    /// `secretenv.registry.source_count` — number of cascade-layer
+    /// sources contributing to the resolved `AliasMap`. ALLOW. v0.18
+    /// Phase 4.
+    pub fn record_registry_source_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.registry.source_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.registry.source_index` — zero-based index of the
+    /// current cascade-layer source within the source list. ALLOW.
+    /// v0.18 Phase 4.
+    pub fn record_registry_source_index(&mut self, idx: u32) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.registry.source_index", i64::from(idx)));
+        self
+    }
+
+    /// `secretenv.backend.probe.level` — closed enum
+    /// [`BackendProbeLevel`]. ALLOW. v0.18 Phase 4.
+    pub fn record_backend_probe_level(&mut self, level: BackendProbeLevel) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.probe.level", level.as_str()));
+        self
+    }
+
+    /// `secretenv.backend.probe.outcome` — closed enum
+    /// [`BackendProbeOutcome`]. ALLOW. v0.18 Phase 4.
+    pub fn record_backend_probe_outcome(&mut self, outcome: BackendProbeOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.probe.outcome", outcome.as_str()));
+        self
+    }
+
+    /// `secretenv.backend.fetch.attempt` — 1-based retry counter for
+    /// the current fetch attempt. ALLOW. v0.18 Phase 4.
+    pub fn record_backend_fetch_attempt(&mut self, attempt: u32) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.backend.fetch.attempt", i64::from(attempt)));
+        self
+    }
+
+    /// `secretenv.doctor.check_level` — closed enum
+    /// [`DoctorCheckLevel`]. ALLOW. v0.18 Phase 4.
+    pub fn record_doctor_check_level(&mut self, level: DoctorCheckLevel) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.doctor.check_level", level.as_str()));
+        self
+    }
+
+    /// `secretenv.doctor.backend_count` — total number of backends
+    /// the doctor pass evaluated. ALLOW. v0.18 Phase 4.
+    pub fn record_doctor_backend_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.doctor.backend_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.doctor.failure_count` — number of backends in a
+    /// non-Authenticated state after the doctor pass. ALLOW. v0.18
+    /// Phase 4.
+    pub fn record_doctor_failure_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.doctor.failure_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
         self
     }
 

@@ -48,6 +48,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::future::join_all;
+use secretenv_telemetry::{RegistrySelectionKind, SecretEnvSpan};
 
 use crate::manifest::{Manifest, SecretDecl};
 use crate::registry::BackendRegistry;
@@ -376,7 +377,21 @@ pub async fn resolve_registry(
     backends: &BackendRegistry,
     cache: &mut RegistryCache,
 ) -> Result<AliasMap> {
+    // v0.18 Phase 4 — `secretenv.registry.load` schema-reserved span
+    // (Arch-M6 subset). Wraps the source-URI resolution + cache warm
+    // + per-source layer fetch into one parent span.
+    let (mut span, _guard) = SecretEnvSpan::start("secretenv.registry.load");
+    let selection_kind = match selection {
+        RegistrySelection::Name(_) => RegistrySelectionKind::ByName,
+        RegistrySelection::Uri(_) => RegistrySelectionKind::Uri,
+    };
+    span.record_registry_selection(selection_kind);
+    if let Some(name) = selection.registry_label() {
+        span.record_registry_name(name);
+    }
+
     let source_uris = pick_sources(config, selection)?;
+    span.record_registry_source_count(source_uris.len() as u64);
 
     // Warm the cache concurrently for any un-cached source URIs,
     // preserving Phase 1's within-cascade parallelism. After warm
@@ -387,7 +402,8 @@ pub async fn resolve_registry(
     // HashMap lookup + `Arc::clone` — zero I/O. Duplicate sources in
     // a cascade yield the same `Arc` without re-invoking the backend.
     let mut layers: Vec<Arc<CascadeLayer>> = Vec::with_capacity(source_uris.len());
-    for src in &source_uris {
+    for (idx, src) in source_uris.iter().enumerate() {
+        span.record_registry_source_index(u32::try_from(idx).unwrap_or(u32::MAX));
         layers.push(cache.fetch(src, backends).await?);
     }
     Ok(AliasMap::new(layers))

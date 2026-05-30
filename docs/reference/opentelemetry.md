@@ -200,25 +200,32 @@ Root spans correspond to top-level invocations. Child spans correspond to logica
 > `secretenv.redact.filter_event`, `secretenv.registry.migrate` (+ its
 > 5 phase children: `probe` / `read` / `write` / `pointer_flip` /
 > `delete`), `secretenv.doctor.backend`, and `secretenv.mcp.tool.<name>`
-> for all 14 MCP tools. The following **11 spans** appear in the
-> topology trees below as schema-reserved but are **not emitted**
-> in v0.17:
+> for all 14 MCP tools.
 >
-> - §4.1 run subtree: `secretenv.manifest.load`,
->   `secretenv.registry.load`, `secretenv.backend.probe` (as a child
->   under resolution), `secretenv.exec.prepare`, `secretenv.exec.flush`
-> - §4.3 doctor subtree: `secretenv.doctor` root,
->   `secretenv.doctor.registry`
+> **v0.18 update (Phase 4, Arch-M6 subset):** 5 of the 11 previously
+> schema-reserved spans now emit:
+> - `secretenv.manifest.load` — `Manifest::load_from`
+> - `secretenv.registry.load` — `resolve_registry`
+> - `secretenv.backend.probe` — `fetch_one` (sibling of
+>   `secretenv.backend.fetch` — parent-child linkage tracked separately
+>   under Arch-M1, deferred to v0.20)
+> - `secretenv.exec.prepare` — `exec_with_env`
+> - `secretenv.doctor.registry` — `run_doctor`
+>
+> The following **6 spans** remain schema-reserved and **not emitted**:
+>
+> - §4.1 run subtree: `secretenv.exec.flush` (hand-off to `execve`
+>   covered by an explicit `flush_before_exec` call; emitting as a
+>   span would require an `execve`-aware lifecycle with a `pre_exec`
+>   hook + manual flush sequencing — deferred to v0.20)
+> - §4.3 doctor subtree: `secretenv.doctor` root
 > - §4.4 MCP subtree: `secretenv.mcp.policy.evaluate`,
 >   `secretenv.mcp.confirm`, `secretenv.registry.transaction`,
 >   `secretenv.audit.append`
 >
-> The hand-off to `execve` is covered by an explicit
-> `flush_before_exec` call rather than an `exec.flush` span. The MCP
-> policy/confirm/audit events are captured in `audit_log.rs` as
-> structured records but not as OTel spans. These will land as
-> v0.17.x hygiene chips; their absence does not affect any SEC-INV
-> invariant.
+> The MCP policy/confirm/audit events are captured in `audit_log.rs`
+> as structured records but not as OTel spans. None of the remaining
+> schema-reserved spans affect any SEC-INV invariant.
 
 ### 4.1 `secretenv.run`
 

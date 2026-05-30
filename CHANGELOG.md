@@ -32,6 +32,14 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 - **`SecretEnvSpan::start_mutation(MutationSpanName) -> (Self, SpanGuard)` typed constructor** — the sole entry point for starting mutation spans. Closes [[v0.17-deferred-items#Sec-F-5]] / [[v0.17-deferred-items#Code-L3]] / Phase 7 H-1 follow-up.
 - **`SecretEnvCommand` closed enum** (`secretenv_telemetry::span::SecretEnvCommand`) — 7 variants (Run / Get / Migrate / Doctor / Redact / Mcp / Registry); `#[non_exhaustive]` for forward-compat.
 - **`BackendType` closed enum** (`secretenv_telemetry::span::BackendType`) — 15 canonical backend variants + `Unknown(String)` fallback; `BackendType::from_runtime_str(&str)` parses a `Backend::backend_type()` return. Closes Phase 7 M-4.
+- **5 schema-reserved OTel spans now emit** (Arch-M6 subset, 5 of 6):
+  - `secretenv.manifest.load` — `Manifest::load_from`
+  - `secretenv.registry.load` — `resolve_registry`
+  - `secretenv.backend.probe` — `fetch_one` (sibling of `secretenv.backend.fetch` — parent-child linkage deferred under Arch-M1 to v0.20)
+  - `secretenv.exec.prepare` — `exec_with_env`
+  - `secretenv.doctor.registry` — `run_doctor`'s per-registry cascade-reachability pass
+- **5 new closed enums** for Phase 4 attributes, all `#[non_exhaustive]`: `ManifestOutcome` (Ok / NotFound / ParseError / ValidationError), `RegistrySelectionKind` (ByName / Uri), `BackendProbeLevel` (Connectivity / Full), `BackendProbeOutcome` (Success / Timeout / PermissionDenied / Error), `DoctorCheckLevel` (Quick / Standard / Extensive).
+- **13 new typed setters on `SecretEnvSpan`** for the schema-reserved span attributes: `record_manifest_path_relative`, `record_manifest_alias_count`, `record_manifest_default_count`, `record_manifest_outcome`, `record_registry_selection`, `record_registry_source_count`, `record_registry_source_index`, `record_backend_probe_level`, `record_backend_probe_outcome`, `record_backend_fetch_attempt`, `record_doctor_check_level`, `record_doctor_backend_count`, `record_doctor_failure_count`. SecretEnvSpan setter count grows 39 → 52 (D-3.1 rolling closure).
 
 ### Changed
 

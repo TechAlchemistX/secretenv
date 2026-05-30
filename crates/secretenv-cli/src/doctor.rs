@@ -287,6 +287,13 @@ struct FixAction {
 /// reports a non-`Ok` status (after remediation, when `--fix` is on),
 /// even though the human report is still printed normally. This makes
 /// `secretenv doctor` usable as a CI pre-flight gate.
+// v0.18 Phase 4: the doctor.registry span scope pushed this function
+// past the soft 100-line cap. Splitting would not aid readability —
+// the function is a sequence of distinct passes (auth check, backend
+// per-instance status, registry cascade reachability, optional
+// extensive probes, optional OTel reachability, trace drain, report
+// emit). The line-count is a smell, not a defect.
+#[allow(clippy::too_many_lines)]
 pub async fn run_doctor(
     config: &Config,
     backends: &BackendRegistry,
@@ -345,6 +352,11 @@ pub async fn run_doctor(
     // re-running `check()`. Keyed by `instance_name` (the scheme).
     let mut statuses_by_instance: HashMap<String, DoctorStatus> = HashMap::new();
     let mut entries: Vec<DoctorEntry> = Vec::with_capacity(list.len());
+    // v0.18 Phase 4: capture aggregate counts BEFORE the zip consumes
+    // `statuses` so the doctor.registry span can emit them.
+    let backend_count = statuses.len() as u64;
+    let failure_count =
+        statuses.iter().filter(|s| !matches!(s, BackendStatus::Ok { .. })).count() as u64;
     for (b, s) in list.iter().zip(statuses) {
         let doctor_status: DoctorStatus = s.into();
         statuses_by_instance.insert(b.instance_name().to_owned(), doctor_status.clone());
@@ -358,18 +370,40 @@ pub async fn run_doctor(
     entries.sort_by(|a, b| a.instance_name.cmp(&b.instance_name));
 
     // ---- Per-registry cascade reachability ----
-    let mut registry_names: Vec<&String> = config.registries.keys().collect();
-    registry_names.sort();
-    let mut registries: Vec<RegistryReport> = Vec::with_capacity(registry_names.len());
-    for name in registry_names {
-        let cfg = &config.registries[name];
-        let mut sources: Vec<RegistrySourceReport> = Vec::with_capacity(cfg.sources.len());
-        for raw in &cfg.sources {
-            let status = source_status(raw, &statuses_by_instance);
-            sources.push(RegistrySourceReport { uri: raw.clone(), status });
+    // v0.18 Phase 4 — `secretenv.doctor.registry` schema-reserved span
+    // (Arch-M6 subset). Wraps the per-registry cascade-reachability
+    // pass with aggregate doctor-level attributes. Sibling of the
+    // existing per-backend `secretenv.doctor.backend` spans rather
+    // than parent (Arch-M1 deferred to v0.20).
+    let registries = {
+        let (mut registry_span, _registry_guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.doctor.registry");
+        let check_level = if opts.extensive {
+            secretenv_telemetry::DoctorCheckLevel::Extensive
+        } else if opts.fix {
+            secretenv_telemetry::DoctorCheckLevel::Standard
+        } else {
+            secretenv_telemetry::DoctorCheckLevel::Quick
+        };
+        registry_span
+            .record_doctor_check_level(check_level)
+            .record_doctor_backend_count(backend_count)
+            .record_doctor_failure_count(failure_count);
+
+        let mut registry_names: Vec<&String> = config.registries.keys().collect();
+        registry_names.sort();
+        let mut registries: Vec<RegistryReport> = Vec::with_capacity(registry_names.len());
+        for name in registry_names {
+            let cfg = &config.registries[name];
+            let mut sources: Vec<RegistrySourceReport> = Vec::with_capacity(cfg.sources.len());
+            for raw in &cfg.sources {
+                let status = source_status(raw, &statuses_by_instance);
+                sources.push(RegistrySourceReport { uri: raw.clone(), status });
+            }
+            registries.push(RegistryReport { name: name.clone(), sources });
         }
-        registries.push(RegistryReport { name: name.clone(), sources });
-    }
+        registries
+    };
 
     // ---- Optional --extensive depth probes ----
     if opts.extensive {

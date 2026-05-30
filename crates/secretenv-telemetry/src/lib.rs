@@ -69,8 +69,9 @@ pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
 pub use span::{
-    AliasOutcome, AuthMethod, BackendType, MigrateOutcome, MigratePhase, MutationSpanName,
-    SecretEnvCommand, SecretEnvSpan, SpanGuard,
+    AliasOutcome, AuthMethod, BackendProbeLevel, BackendProbeOutcome, BackendType,
+    DoctorCheckLevel, ManifestOutcome, MigrateOutcome, MigratePhase, MutationSpanName,
+    RegistrySelectionKind, SecretEnvCommand, SecretEnvSpan, SpanGuard,
 };
 
 /// Generate a fresh per-invocation run ID.
@@ -126,8 +127,7 @@ fn run_id_fallback_warn_once() {
 fn fresh_run_id_fallback() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let pid = u64::from(std::process::id());
-    let now_nanos =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let now_nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     // Mix pid into the low and high 64 bits of the nanos-since-epoch
     // value. The `as u64` casts deliberately truncate — we want the
     // bottom 64 bits and the next 64 bits separately to fill 16 bytes.

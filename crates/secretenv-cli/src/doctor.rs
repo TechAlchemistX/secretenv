@@ -299,8 +299,21 @@ pub async fn run_doctor(
     // ---- locally and we can render the trace section after the
     // ---- normal report. doctor --trace is a one-shot, so the
     // ---- global-provider swap has no downstream consequence.
-    let trace_capture =
-        if opts.trace { Some(secretenv_telemetry::LocalTraceCapture::install()) } else { None };
+    //
+    // v0.18 Sec-M-2: install() returns Result. `doctor --trace` is
+    // a one-shot command at the top of the process; an already-
+    // installed capture here means a programming error (no other
+    // call site exists in the workspace). Map Err -> anyhow and
+    // bubble; the operator sees a clear diagnostic instead of a
+    // silently-swapped global provider.
+    let trace_capture = if opts.trace {
+        Some(
+            secretenv_telemetry::LocalTraceCapture::install()
+                .map_err(|e| anyhow::anyhow!("doctor --trace: {e}"))?,
+        )
+    } else {
+        None
+    };
 
     // ---- Pass 1: initial Level 1+2 check across all backends ----
     let mut statuses = check_all_backends(&list).await;

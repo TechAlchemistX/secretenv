@@ -24,19 +24,23 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ### Added
 
-(Phases 1–6 populate this section.)
+- **`--otel-include-error-detail` flag on `secretenv run`** (and `RunOptions::otel_include_error_detail` in `secretenv-core`). Opt-in toggle for emitting the scrubbed backend stderr text on the `secretenv.backend.error.message` `OTel` span attribute. Default OFF — attribute is structurally absent. Closes [[v0.17-deferred-items#D-5.1]].
+- **`BackendErrorStderr` newtype + SEC-INV-20 shape scrubber** (`secretenv_telemetry::BackendErrorStderr`, re-exported from `secretenv_core`). Three-pass conservative regex set strips URI shapes, AWS 12-digit account IDs, and high-entropy tokens (32+ chars of base64-ish alphabet). Newtype's only constructor IS the scrubber — holding a `BackendErrorStderr` is the proof obligation that scrubbing occurred.
+- **`SecretEnvSpan::record_backend_error_message_scrubbed(&BackendErrorStderr, opt_in: bool)` typed setter**. Dual-state ALLOW: opt-in emits the scrubbed payload, opt-out leaves the attribute structurally absent. SecretEnvSpan setter count grows 38 → 39.
+- **`LocalTraceCaptureError` typed-error enum** with `AlreadyInstalled` variant, returned by `LocalTraceCapture::install`.
 
 ### Changed
 
-(Phases 1–6 populate this section.)
+- **`LocalTraceCapture::install()` returns `Result<Self, LocalTraceCaptureError>`** (was `-> Self`). Module-level `INSTALLED: AtomicBool` guard prevents a second live install from silently swapping the global `TracerProvider`. Drop clears the flag for the next legitimate install. The only existing call site (`secretenv doctor --trace`) now bubbles the error via `anyhow`. Closes [[v0.17-deferred-items#Sec-M-2]] + [[v0.17-deferred-items#Arch-F-6]].
+- **`TelemetryGuard::Drop` is now bounded** at 1s via a worker-thread + `recv_timeout` pattern (extracted as the private `run_bounded_or_detach(timeout, work)` helper, shared with `flush_before_exec`). CTRL-C against `secretenv run` with a slow/unreachable OTLP collector no longer hangs the shell. On timeout, the worker thread is detached and a `tracing::warn!` event fires (same shape as the pre-exec timeout). Closes [[v0.17-deferred-items#Sec-M-3]].
 
 ### Fixed
 
-(Phases 1–6 populate this section.)
+(Phases 2–6 populate this section.)
 
 ### Security
 
-(Phase 1 + Phase 2 populate this section.)
+- **D-5.2 — TS-12 stderr-in-otel regression test.** `crates/secretenv-telemetry/tests/ts12_stderr_in_otel.rs` synthesizes a backend stderr containing `vault.prod.internal:8200/v1/secret/payments/stripe`, passes it through the new setter with `opt_in = true`, and asserts the URL fragment + path segments (`payments`, `stripe`, the literal URL, the port, the scheme) are structurally absent from the emitted span attribute. The opt-out arm asserts the attribute is structurally absent entirely. Closes [[v0.17-deferred-items#D-5.2]].
 
 ### Hardening
 

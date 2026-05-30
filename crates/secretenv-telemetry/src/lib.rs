@@ -46,6 +46,7 @@
 // taxonomy stabilizes.
 #![allow(clippy::doc_markdown)]
 
+pub mod backend_error_redaction;
 pub mod error_kind;
 pub mod event;
 pub mod init;
@@ -56,12 +57,13 @@ pub mod sampler;
 pub mod sink;
 pub mod span;
 
+pub use backend_error_redaction::BackendErrorStderr;
 pub use error_kind::SecretEnvErrorKind;
 pub use event::{RedactionEvent, RedactionSource, RedactionStream};
 pub use init::{
     flush_before_exec, init, init_with_env, tracing_bridge_layer, InitError, TelemetryGuard,
 };
-pub use local_trace::{LocalTraceCapture, LocalTraceSpan};
+pub use local_trace::{LocalTraceCapture, LocalTraceCaptureError, LocalTraceSpan};
 pub use metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
 pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};

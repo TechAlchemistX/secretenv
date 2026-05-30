@@ -24,10 +24,22 @@
 //! telemetry (no caller after drain). Using this in a long-lived
 //! process would clobber the production provider — don't.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use opentelemetry::global;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
+
+/// Module-level guard preventing more than one live
+/// [`LocalTraceCapture`] from clobbering the global tracer provider
+/// at the same time. Set on successful [`LocalTraceCapture::install`]
+/// and cleared on `drop`.
+///
+/// v0.18 Sec-M-2 / Arch-F-6: repeated `install()` calls would
+/// silently swap the global provider, breaking observability for any
+/// span emitted between the two installs. The guard surfaces the
+/// collision as a typed [`LocalTraceCaptureError`].
+static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// One captured span, surfaced to non-OTel callers as a plain struct
 /// so the CLI can render without depending on `opentelemetry_sdk`.
@@ -51,9 +63,22 @@ pub struct LocalTraceSpan {
 /// capture window. Call [`LocalTraceCapture::drain`] to force-flush
 /// and surface the captured spans.
 #[must_use = "the capture must be drained to recover the spans"]
+#[derive(Debug)]
 pub struct LocalTraceCapture {
     provider: SdkTracerProvider,
     exporter: InMemorySpanExporter,
+}
+
+/// Failure mode from [`LocalTraceCapture::install`].
+#[derive(Debug, thiserror::Error)]
+pub enum LocalTraceCaptureError {
+    /// A previous [`LocalTraceCapture`] is still live in this
+    /// process. Drop it (or call [`LocalTraceCapture::drain`]) before
+    /// installing a second capture; otherwise the second install
+    /// would swap the global tracer provider and break any span
+    /// emitted under the first capture's window. v0.18 Sec-M-2.
+    #[error("LocalTraceCapture is already installed in this process")]
+    AlreadyInstalled,
 }
 
 impl LocalTraceCapture {
@@ -62,13 +87,23 @@ impl LocalTraceCapture {
     /// returned handle holds the provider strongly; dropping it
     /// without [`drain`](Self::drain) leaves the global provider
     /// pointing at this no-collector setup until process exit.
-    pub fn install() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalTraceCaptureError::AlreadyInstalled`] when a
+    /// previous capture is still live. v0.18 Sec-M-2: this prevents
+    /// a second install from silently swapping the global tracer
+    /// provider out from under the first capture's emission window.
+    pub fn install() -> Result<Self, LocalTraceCaptureError> {
+        if INSTALLED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err(LocalTraceCaptureError::AlreadyInstalled);
+        }
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
             .build();
         global::set_tracer_provider(provider.clone());
-        Self { provider, exporter }
+        Ok(Self { provider, exporter })
     }
 
     /// Force-flush + collect every span the captured window observed.
@@ -92,6 +127,14 @@ impl LocalTraceCapture {
             .collect();
         spans.sort_by_key(|s| s.start_unix_ms);
         spans
+    }
+}
+
+impl Drop for LocalTraceCapture {
+    /// Clears the module-level installed flag so a subsequent
+    /// [`LocalTraceCapture::install`] call can succeed. v0.18 Sec-M-2.
+    fn drop(&mut self) {
+        INSTALLED.store(false, Ordering::SeqCst);
     }
 }
 

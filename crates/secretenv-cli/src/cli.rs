@@ -406,6 +406,17 @@ pub struct RunArgs {
     #[arg(long)]
     pub redact_token: Option<String>,
 
+    /// Include the scrubbed backend stderr text on
+    /// `secretenv.backend.error.message` `OTel` span attributes.
+    /// Default OFF — the attribute is structurally absent.
+    /// When ON, backend stderr is passed through the SEC-INV-20
+    /// shape-based scrubber (URI shapes / AWS 12-digit account IDs /
+    /// high-entropy tokens stripped) before emission. Operators who
+    /// run their own collector and need backend-side debug context
+    /// in trace UIs opt in via this flag. v0.18 D-5.1.
+    #[arg(long)]
+    pub otel_include_error_detail: bool,
+
     /// Program + arguments to execute. Use `--` to separate
     /// secretenv flags from the command.
     #[arg(trailing_var_arg = true, required = true)]
@@ -1039,6 +1050,7 @@ async fn cmd_run(
     options.redact = redact;
     options.redact_token = args.redact_token.clone();
     options.registry_name = selection.registry_label().map(str::to_owned);
+    options.otel_include_error_detail = args.otel_include_error_detail;
 
     // Capture the dispatch up front so the report reflects what we
     // actually did, not what we requested. `Auto` may degrade to

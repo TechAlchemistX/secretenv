@@ -72,6 +72,7 @@ pub use resolver::{
 #[cfg(feature = "value-access")]
 pub use runner::{build_env, run, run_with_options, EnvEntry, RedactMode, RunOptions};
 pub use secret::Secret;
+pub use secretenv_telemetry::BackendErrorStderr;
 pub use status::BackendStatus;
 pub use timeouts::{with_timeout, DEFAULT_CHECK_TIMEOUT, DEFAULT_GET_TIMEOUT};
 pub use uri::{BackendUri, FragmentError, UriError};

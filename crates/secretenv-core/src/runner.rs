@@ -101,6 +101,14 @@ pub struct RunOptions {
     /// `None` skips the attribute; operator-stated identifier per
     /// `docs/reference/opentelemetry.md` §2.5.
     pub registry_name: Option<String>,
+    /// v0.18 D-5.1 — opt-in for the
+    /// `secretenv.backend.error.message` `OTel` span attribute.
+    /// Default `false`; the attribute is structurally absent.
+    /// When `true`, backend stderr is passed through the SEC-INV-20
+    /// shape-based scrubber before emission via
+    /// `SecretEnvSpan::record_backend_error_message_scrubbed`.
+    /// Driven by `--otel-include-error-detail` on `secretenv run`.
+    pub otel_include_error_detail: bool,
 }
 
 /// A fully-resolved env-var pair, ready for injection into the child

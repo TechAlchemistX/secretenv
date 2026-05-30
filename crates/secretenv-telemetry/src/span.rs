@@ -27,7 +27,7 @@ use opentelemetry::trace::{Span as _, Tracer as _};
 use opentelemetry::KeyValue;
 
 use crate::metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
-use crate::{RedactionSource, RedactionStream, SecretEnvErrorKind};
+use crate::{BackendErrorStderr, RedactionSource, RedactionStream, SecretEnvErrorKind};
 
 /// OTel `Tracer` name. Single instance per process; the global
 /// `TracerProvider` (installed by [`crate::init`]) hands back a
@@ -203,6 +203,33 @@ impl SecretEnvSpan {
             "secretenv.backend.error.kind",
             kind.as_attribute_value(),
         ));
+        self
+    }
+
+    /// `secretenv.backend.error.message` — opt-in scrubbed backend
+    /// stderr text. Dual-state ALLOW per `docs/reference/opentelemetry.md`
+    /// §2: default DENY (`opt_in = false` → attribute structurally
+    /// absent); opt-in scrubbed-ALLOW (`opt_in = true` → emit the
+    /// scrubbed payload). The opt-in is driven by the CLI flag
+    /// `--otel-include-error-detail` on `secretenv run` (and the
+    /// corresponding [`crate::init::RunOptions`] field). v0.18 D-5.1.
+    ///
+    /// SEC-INV-20 enforcement is structural: the `msg` parameter is
+    /// `&BackendErrorStderr`, and that type's only constructor runs
+    /// the shape-based scrubber (URI shapes / AWS 12-digit account
+    /// IDs / high-entropy tokens). A caller that holds a
+    /// `BackendErrorStderr` has, by construction, scrubbed the input.
+    pub fn record_backend_error_message_scrubbed(
+        &mut self,
+        msg: &BackendErrorStderr,
+        opt_in: bool,
+    ) -> &mut Self {
+        if opt_in {
+            self.span.set_attribute(KeyValue::new(
+                "secretenv.backend.error.message",
+                msg.as_str().to_owned(),
+            ));
+        }
         self
     }
 

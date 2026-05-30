@@ -1802,6 +1802,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry-stdout",
  "opentelemetry_sdk",
+ "regex",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

@@ -969,6 +969,24 @@ impl SecretEnvSpan {
         self
     }
 
+    /// `secretenv.migrate.collapsed`. ALLOW. v0.18 M-9.
+    ///
+    /// `true` when the source + dest backend pair lets the
+    /// three-phase transaction (read → write → pointer-flip) collapse
+    /// into a single backend-side transaction (e.g. same-backend
+    /// migrations where the backend exposes an atomic `cas_set`
+    /// surface). `false` for the regular three-phase flow.
+    ///
+    /// v0.18 emits this attribute as `false` at the parent migrate
+    /// span unconditionally — backend-pair collapse detection is not
+    /// yet wired (no backend currently exposes `cas_set`). The
+    /// attribute reserves the slot so future collapse paths can
+    /// flip it without spec churn.
+    pub fn record_migrate_collapsed(&mut self, collapsed: bool) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.migrate.collapsed", collapsed));
+        self
+    }
+
     /// The span name, for tests + diagnostic logging.
     #[must_use]
     pub const fn name(&self) -> &'static str {

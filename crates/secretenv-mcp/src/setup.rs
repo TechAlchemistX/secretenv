@@ -270,12 +270,42 @@ pub fn expand_home(p: &str) -> Result<PathBuf, std::io::Error> {
 /// works regardless of shell init.
 #[must_use]
 pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
+    // Existing public API — preserves v0.16 behavior (overrides
+    // always applied). v0.18 callers that need to honor the
+    // user-scope `allow_cli_overrides` knob use
+    // [`render_config_with_overrides`].
+    render_config_with_overrides(profile, binary_path, true)
+}
+
+/// Like [`render_config`] but honors the user-scope F-3 veto.
+///
+/// When `allow_cli_overrides` is `false`, the per-IDE
+/// [`IdeProfile::extra_args`] are stripped from the rendered
+/// config — operator user-scope choice overrides the workspace-
+/// scope profile default. v0.18 F-3.
+#[must_use]
+pub fn render_config_with_overrides(
+    profile: &IdeProfile,
+    binary_path: &str,
+    allow_cli_overrides: bool,
+) -> String {
     // `extra_args` (Phase 7f) appends per-IDE CLI overrides like
     // `--allow-mutations=always` for IDEs that don't advertise MCP
     // elicitation capability (e.g. Gemini CLI 0.43.0). Renders into
     // the JSON / TOML `args` array right after `mcp serve`.
-    let full_argv: Vec<&str> =
-        SERVE_ARGV.iter().chain(profile.extra_args.iter()).copied().collect();
+    let extra_args: &[&str] = if allow_cli_overrides {
+        profile.extra_args
+    } else {
+        if !profile.extra_args.is_empty() {
+            tracing::warn!(
+                ide = profile.key,
+                suppressed_args = ?profile.extra_args,
+                "[mcp].allow_cli_overrides = false; stripping IDE profile extra_args from rendered config"
+            );
+        }
+        &[]
+    };
+    let full_argv: Vec<&str> = SERVE_ARGV.iter().chain(extra_args.iter()).copied().collect();
     let args_json = full_argv.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ");
 
     match profile.shape {
@@ -291,7 +321,7 @@ pub fn render_config(profile: &IdeProfile, binary_path: &str) -> String {
         ConfigShape::JsonOpenCode => {
             let argv_with_bin = std::iter::once(binary_path)
                 .chain(SERVE_ARGV.iter().copied())
-                .chain(profile.extra_args.iter().copied())
+                .chain(extra_args.iter().copied())
                 .map(|a| format!("\"{a}\""))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -362,9 +392,10 @@ pub fn merge_config_into_file(
     profile: &IdeProfile,
     binary_path: &str,
     target: &Path,
+    allow_cli_overrides: bool,
 ) -> Result<MergeOutcome> {
     if !target.exists() {
-        let body = render_config(profile, binary_path);
+        let body = render_config_with_overrides(profile, binary_path, allow_cli_overrides);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!("creating parent directory `{}` for IDE config", parent.display())
@@ -377,7 +408,7 @@ pub fn merge_config_into_file(
 
     let existing = std::fs::read_to_string(target)
         .with_context(|| format!("reading existing IDE config `{}`", target.display()))?;
-    let proposed = render_config(profile, binary_path);
+    let proposed = render_config_with_overrides(profile, binary_path, allow_cli_overrides);
 
     match profile.shape {
         ConfigShape::JsonMcpServers => merge_json_keyed(target, &existing, &proposed, "mcpServers"),
@@ -571,6 +602,66 @@ mod tests {
         assert!(body.contains("[mcp_servers.secretenv]"));
         assert!(body.contains("command = \"secretenv\""));
         assert!(body.contains("args = [\"mcp\", \"serve\"]"));
+    }
+
+    // v0.18 F-3 regression: when allow_cli_overrides = false, the
+    // per-IDE extra_args (e.g. Gemini's --allow-mutations=always)
+    // must be stripped from the rendered config. Picking Gemini
+    // because its profile carries non-empty extra_args.
+    #[test]
+    fn render_config_with_overrides_false_strips_extra_args_for_gemini() {
+        let profile = find_profile("gemini").unwrap();
+        assert!(
+            !profile.extra_args.is_empty(),
+            "Gemini profile must carry extra_args for this test to be meaningful"
+        );
+
+        let with_overrides = render_config_with_overrides(profile, "secretenv", true);
+        let without = render_config_with_overrides(profile, "secretenv", false);
+
+        // Overrides ON: every extra_arg appears in the body.
+        for arg in profile.extra_args {
+            assert!(
+                with_overrides.contains(arg),
+                "extra_arg `{arg}` missing from overrides-on body: {with_overrides}"
+            );
+        }
+
+        // Overrides OFF: --allow-mutations must NOT appear (would
+        // mean the F-3 veto failed and the workspace override
+        // smuggled past).
+        assert!(
+            !without.contains("--allow-mutations"),
+            "F-3 veto failed: --allow-mutations still present in overrides-off body: {without}"
+        );
+        assert!(!without.contains("always"), "F-3 veto failed: `always` still present: {without}");
+
+        // Mandatory base argv still present even with veto.
+        assert!(without.contains("mcp"));
+        assert!(without.contains("serve"));
+    }
+
+    #[test]
+    fn render_config_with_overrides_false_is_noop_for_profiles_without_extra_args() {
+        // Walk every profile, find the ones with empty extra_args,
+        // and assert that overriding the toggle changes nothing
+        // (the per-IDE override surface is the only thing the toggle
+        // gates).
+        let mut tested = 0;
+        for profile in IDE_PROFILES {
+            if !profile.extra_args.is_empty() {
+                continue;
+            }
+            let with_overrides = render_config_with_overrides(profile, "secretenv", true);
+            let without = render_config_with_overrides(profile, "secretenv", false);
+            assert_eq!(
+                with_overrides, without,
+                "profile `{}` (no extra_args) renders should match",
+                profile.key
+            );
+            tested += 1;
+        }
+        assert!(tested > 0, "at least one profile must have empty extra_args for this test");
     }
 
     #[test]
@@ -769,7 +860,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("nonexistent").join("mcp.json");
         let profile = find_profile("gemini").unwrap();
-        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target, true).unwrap();
         assert_eq!(outcome, MergeOutcome::Created);
         let body = std::fs::read_to_string(&target).unwrap();
         assert!(body.contains("\"mcpServers\""));
@@ -793,7 +884,7 @@ mod tests {
         .unwrap();
 
         let profile = find_profile("gemini").unwrap();
-        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target, true).unwrap();
         assert_eq!(outcome, MergeOutcome::Added);
 
         let body = std::fs::read_to_string(&target).unwrap();
@@ -815,7 +906,7 @@ mod tests {
         let initial = render_config(profile, "secretenv");
         std::fs::write(&target, &initial).unwrap();
 
-        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target, true).unwrap();
         assert_eq!(outcome, MergeOutcome::AlreadyPresent);
     }
 
@@ -835,7 +926,8 @@ mod tests {
         .unwrap();
 
         let profile = find_profile("gemini").unwrap();
-        let outcome = merge_config_into_file(profile, "/expected/path/secretenv", &target).unwrap();
+        let outcome =
+            merge_config_into_file(profile, "/expected/path/secretenv", &target, true).unwrap();
         assert_eq!(outcome, MergeOutcome::Conflict);
     }
 
@@ -857,7 +949,7 @@ mod tests {
         .unwrap();
 
         let profile = find_profile("continue").unwrap();
-        let outcome = merge_config_into_file(profile, "secretenv", &target).unwrap();
+        let outcome = merge_config_into_file(profile, "secretenv", &target, true).unwrap();
         assert_eq!(outcome, MergeOutcome::Added);
 
         let body = std::fs::read_to_string(&target).unwrap();
@@ -876,7 +968,7 @@ mod tests {
         let target = dir.path().join("opencode.jsonc");
         std::fs::write(&target, "// hi\n{}\n").unwrap();
         let profile = find_profile("opencode").unwrap();
-        let err = merge_config_into_file(profile, "secretenv", &target).unwrap_err();
+        let err = merge_config_into_file(profile, "secretenv", &target, true).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("--merge"));
         assert!(msg.contains("OpenCode"));
@@ -888,7 +980,7 @@ mod tests {
         let target = dir.path().join("config.toml");
         std::fs::write(&target, "# comment\n[other]\nkey = \"value\"\n").unwrap();
         let profile = find_profile("codex").unwrap();
-        let err = merge_config_into_file(profile, "secretenv", &target).unwrap_err();
+        let err = merge_config_into_file(profile, "secretenv", &target, true).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("--merge"));
         assert!(msg.contains("Codex"));

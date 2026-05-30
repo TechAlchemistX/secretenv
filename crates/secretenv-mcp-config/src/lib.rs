@@ -162,6 +162,18 @@ pub struct McpConfig {
     /// archive). v0.16.2 D.3.
     #[serde(default = "default_audit_log_max_rotations")]
     pub audit_log_max_rotations: u32,
+    /// User-scope veto over workspace-scope argv overrides. v0.18 F-3.
+    ///
+    /// `secretenv mcp setup --ide <name>` writes IDE config files
+    /// that bake extra argv flags (e.g. Gemini's
+    /// `--allow-mutations=always` to compensate for its missing
+    /// elicitation surface). When this knob is `false`, the operator
+    /// has vetoed that mechanism: the rendered IDE configs strip
+    /// any `extra_args` from the per-IDE profile and the runtime
+    /// emits a `tracing::warn!` event surfacing the suppressed args.
+    /// Default `true` preserves v0.16 behavior.
+    #[serde(default = "default_allow_cli_overrides")]
+    pub allow_cli_overrides: bool,
 }
 
 const fn default_audit_log_max_bytes() -> u64 {
@@ -170,6 +182,10 @@ const fn default_audit_log_max_bytes() -> u64 {
 
 const fn default_audit_log_max_rotations() -> u32 {
     5
+}
+
+const fn default_allow_cli_overrides() -> bool {
+    true
 }
 
 impl Default for McpConfig {
@@ -181,6 +197,7 @@ impl Default for McpConfig {
             mutation_log: None,
             audit_log_max_bytes: default_audit_log_max_bytes(),
             audit_log_max_rotations: default_audit_log_max_rotations(),
+            allow_cli_overrides: default_allow_cli_overrides(),
         }
     }
 }

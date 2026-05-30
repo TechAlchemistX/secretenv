@@ -26,6 +26,9 @@ secretenv-migrate.workspace          = true
 secretenv-registry-mutate.workspace  = true
 secretenv-backends-init.workspace    = true
 secretenv-mcp.workspace              = true
+# v0.18 F-3 — cmd_mcp_setup reads [mcp].allow_cli_overrides to
+# honor the user-scope F-3 veto when writing IDE configs.
+secretenv-mcp-config.workspace       = true
 secretenv-backend-local.workspace    = true
 secretenv-backend-aws-ssm.workspace  = true
 secretenv-backend-1password.workspace = true

@@ -157,6 +157,7 @@ pub enum MutationOutcome {
 /// it knows whether the operator was prompted, auto-approved, etc.
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum OperatorDecisionEcho {
     /// Operator typed `y`/`yes` at the prompt.
     Approved,
@@ -169,6 +170,10 @@ pub enum OperatorDecisionEcho {
     /// `allow_mutations = "never"` was set — no prompt fired and
     /// the mutation was refused outright.
     PolicyRefusal,
+    /// v0.18 M-12. Echoed back to the agent on dry-run migrations
+    /// so the agent can confirm its `dry_run = true` was honoured
+    /// and that an audit-log entry was written tagged as `DryRun`.
+    DryRun,
 }
 
 /// Response payload for the `set_alias` tool.

@@ -1447,6 +1447,7 @@ dependencies = [
  "secretenv-backends-init",
  "secretenv-core",
  "secretenv-mcp",
+ "secretenv-mcp-config",
  "secretenv-migrate",
  "secretenv-registry-mutate",
  "secretenv-telemetry",

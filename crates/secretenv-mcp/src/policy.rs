@@ -274,7 +274,7 @@ pub async fn enforce_mutation_policy(
         AllowMutations::Confirm => {
             let resolved = resolve_confirm_via(mcp_config.confirm_via, peer)?;
             match resolved {
-                ConfirmVia::Elicitation => {
+                ResolvedConfirmVia::Elicitation => {
                     let peer = peer.ok_or_else(|| {
                         anyhow!(
                             "elicitation requested but no MCP peer is available — \
@@ -284,32 +284,56 @@ pub async fn enforce_mutation_policy(
                     })?;
                     prompt_via_elicitation(request, peer).await
                 }
-                ConfirmVia::Tty => prompt_via_tty(request).await,
-                ConfirmVia::Notification => bail!(
+                ResolvedConfirmVia::Tty => prompt_via_tty(request).await,
+                ResolvedConfirmVia::Notification => bail!(
                     "MCP server policy is `confirm` with `confirm_via = \"notification\"`, \
                      which is not yet implemented. Set `confirm_via = \"elicitation\"` \
                      (preferred for IDE-driven hosts) or `\"tty\"` (standalone shell)."
                 ),
-                ConfirmVia::None => bail!(
+                ResolvedConfirmVia::None => bail!(
                     "MCP server policy is `confirm` with `confirm_via = \"none\"` — no \
                      confirmation surface is configured, so the mutation cannot proceed. \
                      Set `confirm_via = \"elicitation\"`/`\"tty\"`/`\"auto\"` or \
                      `allow_mutations = \"always\"`."
                 ),
-                ConfirmVia::Auto => {
-                    // resolve_confirm_via never returns Auto — unreachable.
-                    unreachable!("Auto should have been resolved to a concrete surface")
-                }
-                // ConfirmVia is #[non_exhaustive] in secretenv-mcp-config
-                // (Phase 7h R-4); a future patch that adds a variant
-                // surfaces here as a guarded refusal until this arm is
-                // expanded to handle it.
-                other => bail!(
-                    "MCP server policy uses a confirm_via variant ({other:?}) this \
-                     `secretenv-mcp` build does not handle. Upgrade `secretenv-mcp` to a \
-                     newer release, or set `confirm_via` to a value supported by this build."
-                ),
+                // ResolvedConfirmVia is #[non_exhaustive] but defined
+                // in THIS crate, so the match is exhaustive at
+                // compile time. A future variant addition is a
+                // compile error here — exactly what we want for an
+                // unhandled mutation-confirm surface (v0.18 Sec-F-2).
             }
+        }
+    }
+}
+
+/// Closed enum of the *resolved* confirmation surfaces — every
+/// variant of [`ConfirmVia`] EXCEPT `Auto`. Returned by
+/// [`resolve_confirm_via`] so the downstream match cannot witness
+/// an `Auto` value at the type level (the v0.17 implementation had
+/// an `unreachable!()` for `Auto` that worked only by convention —
+/// v0.18 Sec-F-2 makes the contract structural).
+///
+/// `#[non_exhaustive]` mirrors the upstream [`ConfirmVia`] policy
+/// so a future variant joins this enum without breaking external
+/// consumers that exhaustively match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+enum ResolvedConfirmVia {
+    Elicitation,
+    Tty,
+    Notification,
+    None,
+}
+
+impl ResolvedConfirmVia {
+    /// Resolution path actually taken — recorded for audit/tracing.
+    #[allow(dead_code)] // available for downstream audit/tracing wiring
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Elicitation => "elicitation",
+            Self::Tty => "tty",
+            Self::Notification => "notification",
+            Self::None => "none",
         }
     }
 }
@@ -352,17 +376,26 @@ pub async fn enforce_mutation_policy(
 fn resolve_confirm_via(
     configured: ConfirmVia,
     peer: Option<&Peer<RoleServer>>,
-) -> Result<ConfirmVia> {
-    if configured != ConfirmVia::Auto {
-        return Ok(configured);
+) -> Result<ResolvedConfirmVia> {
+    match configured {
+        ConfirmVia::Elicitation => return Ok(ResolvedConfirmVia::Elicitation),
+        ConfirmVia::Tty => return Ok(ResolvedConfirmVia::Tty),
+        ConfirmVia::Notification => return Ok(ResolvedConfirmVia::Notification),
+        ConfirmVia::None => return Ok(ResolvedConfirmVia::None),
+        // Auto + any future #[non_exhaustive] variant of ConfirmVia
+        // falls through to the auto-resolution path below. If a
+        // future variant shouldn't auto-resolve, the upstream config
+        // crate should reject it at parse time.
+        ConfirmVia::Auto | _ => {}
     }
+    // Auto resolution path.
     if let Some(peer) = peer {
         if !peer.supported_elicitation_modes().is_empty() {
-            return Ok(ConfirmVia::Elicitation);
+            return Ok(ResolvedConfirmVia::Elicitation);
         }
     }
     if std::io::stdin().is_terminal() {
-        return Ok(ConfirmVia::Tty);
+        return Ok(ResolvedConfirmVia::Tty);
     }
     bail!(
         "MCP server policy is `confirm` with `confirm_via = \"auto\"` but the \
@@ -577,16 +610,20 @@ mod tests {
 
     #[test]
     fn resolve_explicit_value_passes_through() {
-        assert_eq!(resolve_confirm_via(ConfirmVia::Tty, None).unwrap(), ConfirmVia::Tty);
+        // v0.18 Sec-F-2: resolve_confirm_via now returns
+        // ResolvedConfirmVia (no Auto variant). Each ConfirmVia
+        // variant other than Auto maps to its matching resolved
+        // variant 1:1.
+        assert_eq!(resolve_confirm_via(ConfirmVia::Tty, None).unwrap(), ResolvedConfirmVia::Tty);
         assert_eq!(
             resolve_confirm_via(ConfirmVia::Notification, None).unwrap(),
-            ConfirmVia::Notification,
+            ResolvedConfirmVia::Notification,
         );
         assert_eq!(
             resolve_confirm_via(ConfirmVia::Elicitation, None).unwrap(),
-            ConfirmVia::Elicitation,
+            ResolvedConfirmVia::Elicitation,
         );
-        assert_eq!(resolve_confirm_via(ConfirmVia::None, None).unwrap(), ConfirmVia::None);
+        assert_eq!(resolve_confirm_via(ConfirmVia::None, None).unwrap(), ResolvedConfirmVia::None);
     }
 
     #[test]

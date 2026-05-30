@@ -210,5 +210,22 @@ where
                 error_message,
             }
         }
+        // v0.18 M-12. enforce_mutation_policy never returns DryRun
+        // (the prompt path runs only for real mutations); dry-run
+        // audit logging happens at the call site in tools/mod.rs
+        // BEFORE policy enforcement.
+        Ok(OperatorDecision::DryRun) => {
+            tracing::warn!(
+                "mutation_runner: policy returned DryRun decision (should be handled at \
+                 the call site before reaching this combinator)"
+            );
+            MutationResolution {
+                outcome: MutationOutcome::Refused,
+                decision: OperatorDecisionEcho::PolicyRefusal,
+                error_message: Some(
+                    "internal: DryRun decision must be handled before mutation_runner".to_owned(),
+                ),
+            }
+        }
     }
 }

@@ -245,6 +245,18 @@ pub enum McpCommand {
         /// manually. Mutually exclusive with `--force`.
         #[arg(long, requires = "write")]
         merge: bool,
+        /// Scan every supported IDE's config file for SecretEnv
+        /// MCP registrations and report any present argv overrides
+        /// (`--allow-mutations` etc.) + flag which would be vetoed
+        /// by the current user-scope `[mcp].allow_cli_overrides`
+        /// setting. Read-only; no files modified. Operator-discovery
+        /// surface for stale overrides. v0.18 R-3. Mutually
+        /// exclusive with every other flag.
+        #[arg(
+            long,
+            conflicts_with_all = &["ide", "list_ides", "write", "force", "merge"]
+        )]
+        check_overrides: bool,
     },
     /// Inspect the MCP mutation audit log.
     ///
@@ -782,8 +794,12 @@ async fn cmd_mcp(mc: &McpCommand, config_path: Option<PathBuf>) -> Result<()> {
             eprintln!("SecretEnv MCP server enabled (disable sentinel cleared).");
             Ok(())
         }
-        McpCommand::Setup { ide, list_ides, binary, write, force, merge } => {
-            cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force, *merge)
+        McpCommand::Setup { ide, list_ides, binary, write, force, merge, check_overrides } => {
+            if *check_overrides {
+                cmd_mcp_setup_check_overrides()
+            } else {
+                cmd_mcp_setup(ide.as_deref(), *list_ides, binary, *write, *force, *merge)
+            }
         }
         McpCommand::Audit { cmd } => cmd_mcp_audit(cmd),
     }
@@ -821,9 +837,19 @@ fn cmd_mcp_setup(
     merge: bool,
 ) -> Result<()> {
     use secretenv_mcp::setup::{
-        expand_home, find_profile, merge_config_into_file, render_config, MergeOutcome,
-        IDE_PROFILES,
+        expand_home, find_profile, merge_config_into_file, render_config_with_overrides,
+        MergeOutcome, IDE_PROFILES,
     };
+    use secretenv_mcp_config::McpConfig;
+
+    // v0.18 F-3: load user-scope [mcp] config to honor
+    // allow_cli_overrides. Best-effort — if Config::load fails
+    // (e.g. malformed user-scope config.toml), fall back to default
+    // (overrides allowed) and let the user fix the config separately.
+    let allow_cli_overrides = secretenv_core::Config::load()
+        .ok()
+        .and_then(|c| McpConfig::from_core_value(c.mcp.as_ref()).ok())
+        .map_or(true, |mcp| mcp.allow_cli_overrides);
 
     if list_ides {
         println!("Supported IDEs for `secretenv mcp setup`:\n");
@@ -851,7 +877,7 @@ fn cmd_mcp_setup(
             "unknown IDE `{ide_key}`. Run `secretenv mcp setup --list-ides` to see options.",
         )
     })?;
-    let body = render_config(profile, binary);
+    let body = render_config_with_overrides(profile, binary, allow_cli_overrides);
 
     if !write {
         println!("# MCP config block for {} ({}):", profile.display_name, profile.key);
@@ -887,7 +913,7 @@ fn cmd_mcp_setup(
         .with_context(|| format!("expanding home directory for `{}`", profile.config_path))?;
 
     if merge {
-        let outcome = merge_config_into_file(profile, binary, &target)?;
+        let outcome = merge_config_into_file(profile, binary, &target, allow_cli_overrides)?;
         match outcome {
             MergeOutcome::Created => eprintln!(
                 "Wrote new MCP config for {} ({}).",
@@ -938,6 +964,102 @@ fn cmd_mcp_setup(
         profile.display_name,
         target.display()
     );
+    Ok(())
+}
+
+/// `secretenv mcp setup --check-overrides` — read-only audit of every
+/// supported IDE's config file for any present argv overrides on the
+/// SecretEnv MCP server registration. Flags overrides that would be
+/// vetoed by the current user-scope `[mcp].allow_cli_overrides`
+/// setting. v0.18 R-3.
+///
+/// Returns `Result<()>` for parity with the sibling `cmd_mcp_setup`
+/// dispatcher even though the read-only path can't fail past
+/// best-effort Config loading.
+#[allow(clippy::unnecessary_wraps)]
+fn cmd_mcp_setup_check_overrides() -> Result<()> {
+    use secretenv_mcp::setup::{expand_home, IDE_PROFILES};
+    use secretenv_mcp_config::McpConfig;
+
+    let allow_cli_overrides = secretenv_core::Config::load()
+        .ok()
+        .and_then(|c| McpConfig::from_core_value(c.mcp.as_ref()).ok())
+        .map_or(true, |mcp| mcp.allow_cli_overrides);
+
+    println!("Scanning {} supported IDE config paths…", IDE_PROFILES.len());
+    println!(
+        "User-scope [mcp].allow_cli_overrides = {} (config_path: {})",
+        allow_cli_overrides,
+        secretenv_core::default_config_path_xdg()
+            .map_or_else(|_| "<no XDG path>".to_owned(), |p| p.display().to_string())
+    );
+    println!();
+
+    let mut total_overrides = 0;
+    let mut vetoed = 0;
+    for profile in IDE_PROFILES {
+        // Print-only profiles (claude-code's `ShellClaudeMcpAdd`,
+        // generic) have no on-disk config the operator can stale-
+        // override against; skip them.
+        if profile.config_path.starts_with('(') {
+            continue;
+        }
+        let Ok(target) = expand_home(profile.config_path) else {
+            continue;
+        };
+        if !target.exists() {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&target) else {
+            continue;
+        };
+
+        // Conservative substring match — every override we currently
+        // ship in `extra_args` starts with `--allow-mutations` or
+        // similar long-flag form. If the body contains `secretenv`
+        // (likely an MCP server registration) AND any long-flag
+        // override pattern, flag it.
+        if !body.contains("secretenv") {
+            continue;
+        }
+        let mut overrides: Vec<&'static str> = Vec::new();
+        for arg in profile.extra_args {
+            if body.contains(arg) {
+                overrides.push(arg);
+            }
+        }
+        if overrides.is_empty() {
+            continue;
+        }
+
+        total_overrides += overrides.len();
+        let status = if allow_cli_overrides { "PRESENT" } else { "VETOED" };
+        if !allow_cli_overrides {
+            vetoed += overrides.len();
+        }
+        println!(
+            "[{status}] {} ({}): {}",
+            profile.display_name,
+            target.display(),
+            overrides.join(" ")
+        );
+    }
+
+    println!();
+    if total_overrides == 0 {
+        println!("No SecretEnv MCP argv overrides detected in any IDE config file.");
+    } else {
+        println!(
+            "Found {total_overrides} argv override(s) across IDE configs; {vetoed} would be vetoed \
+             by the current user-scope setting."
+        );
+        if !allow_cli_overrides {
+            println!(
+                "Re-run `secretenv mcp setup --ide <name>` to regenerate IDE configs without the \
+                 vetoed args."
+            );
+        }
+    }
     Ok(())
 }
 

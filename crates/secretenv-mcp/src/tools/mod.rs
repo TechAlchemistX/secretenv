@@ -814,6 +814,18 @@ impl Server {
                 Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
                     (decision, MutationOutcome::Applied)
                 }
+                // v0.18 M-12. DryRun is reserved for the migrate path
+                // call site BEFORE policy enforcement; reaching here
+                // is a contract violation.
+                Ok(OperatorDecision::DryRun) => {
+                    tracing::warn!(
+                        tool = "redact_file",
+                        "policy returned DryRun (should be handled at call site)"
+                    );
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    return Json(response);
+                }
             }
         } else {
             // Dry-run: pretend AutoApproved so the decision-echo
@@ -1031,6 +1043,16 @@ impl Server {
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+                // v0.18 M-12.
+                Ok(OperatorDecision::DryRun) => {
+                    tracing::warn!(
+                        tool = "gen_password",
+                        "policy returned DryRun (should be handled at call site)"
+                    );
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    return Json(response);
+                }
             };
 
         // Approved — build registry + parse target URI + generate + set + register alias.
@@ -1255,14 +1277,15 @@ impl Server {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.error_message =
                     Some(format!("building backend registry: {}", safe_error_message(&e)));
-                if !args.dry_run {
-                    helpers::audit_migrate(
-                        &self.mutation_log,
-                        &args,
-                        OperatorDecision::AutoApproved,
-                        &client_id,
-                    );
-                }
+                // v0.18 M-12: log even when dry_run, tagged with the
+                // DryRun decision so the audit trail records the
+                // attempted-but-not-built migration.
+                let decision = if args.dry_run {
+                    OperatorDecision::DryRun
+                } else {
+                    OperatorDecision::AutoApproved
+                };
+                helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
                 return Json(response);
             }
         };
@@ -1287,14 +1310,13 @@ impl Server {
                     response.outcome = MutationOutcome::WriteFailed;
                     response.error_message =
                         Some(format!("building migration plan: {}", safe_error_message(&e)));
-                    if !args.dry_run {
-                        helpers::audit_migrate(
-                            &self.mutation_log,
-                            &args,
-                            OperatorDecision::AutoApproved,
-                            &client_id,
-                        );
-                    }
+                    // v0.18 M-12: log even when dry_run.
+                    let decision = if args.dry_run {
+                        OperatorDecision::DryRun
+                    } else {
+                        OperatorDecision::AutoApproved
+                    };
+                    helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
                     return Json(response);
                 }
             };
@@ -1342,6 +1364,19 @@ impl Server {
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+                // v0.18 M-12. Migrate's dry-run path bypasses the
+                // policy gate (this enforce branch is the
+                // real-mutation path). A DryRun decision arriving
+                // here is a contract violation.
+                Ok(OperatorDecision::DryRun) => {
+                    tracing::warn!(
+                        tool = "migrate_alias",
+                        "policy returned DryRun (should be handled at call site)"
+                    );
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    return Json(response);
+                }
             }
         };
 
@@ -1407,7 +1442,16 @@ impl Server {
             }
         }
 
-        if !args.dry_run {
+        // v0.18 M-12. v0.16 design skipped the audit-log append for
+        // dry-run migrates by contract (nothing mutated; no reason
+        // to log). M-12 reinstates a log entry tagged with
+        // OperatorDecision::DryRun so operators can prove the agent
+        // attempted the migration. The real-mutation branch keeps
+        // the original semantics (decision = Approved / Denied /
+        // Timeout / AutoApproved per the confirmation prompt).
+        if args.dry_run {
+            helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::DryRun, &client_id);
+        } else {
             helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
         }
         Json(response)

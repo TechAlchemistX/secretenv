@@ -432,7 +432,14 @@ where
     let (mut span, _guard) = SecretEnvSpan::start("secretenv.registry.migrate");
     span.record_command(secretenv_telemetry::SecretEnvCommand::Migrate)
         .record_alias_name(&plan.alias)
-        .record_migrate_transaction_id(&plan.transaction_id);
+        .record_migrate_transaction_id(&plan.transaction_id)
+        // v0.18 M-9. Forward-compat: always `false` in v0.18 because
+        // no backend currently exposes an atomic cas_set surface.
+        // When backend-pair collapse detection lands (likely via a
+        // new `Backend::supports_cas_set` trait method), this site
+        // computes the bool from the source/dest pair and emits the
+        // collapsed-path flag at parent-span scope.
+        .record_migrate_collapsed(false);
 
     let source = backend_for(backends, &plan.source_uri)?;
     let dest = backend_for(backends, &plan.dest_uri)?;

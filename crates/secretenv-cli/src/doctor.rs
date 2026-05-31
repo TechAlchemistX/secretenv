@@ -354,9 +354,12 @@ pub async fn run_doctor(
     let mut entries: Vec<DoctorEntry> = Vec::with_capacity(list.len());
     // v0.18 Phase 4: capture aggregate counts BEFORE the zip consumes
     // `statuses` so the doctor.registry span can emit them.
-    let backend_count = statuses.len() as u64;
+    // v0.18 Phase 7b Code-L-6: was `as u64` residue from Phase 4;
+    // saturating per Phase 6 convention.
+    let backend_count = u64::try_from(statuses.len()).unwrap_or(u64::MAX);
     let failure_count =
-        statuses.iter().filter(|s| !matches!(s, BackendStatus::Ok { .. })).count() as u64;
+        u64::try_from(statuses.iter().filter(|s| !matches!(s, BackendStatus::Ok { .. })).count())
+            .unwrap_or(u64::MAX);
     for (b, s) in list.iter().zip(statuses) {
         let doctor_status: DoctorStatus = s.into();
         statuses_by_instance.insert(b.instance_name().to_owned(), doctor_status.clone());

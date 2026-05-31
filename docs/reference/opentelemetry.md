@@ -254,11 +254,20 @@ secretenv.registry.migrate
 ### 4.3 `secretenv.doctor`
 
 ```
-secretenv.doctor
-├── secretenv.doctor.registry        (one per registry)
-└── secretenv.doctor.backend         (one per backend instance)
-    └── secretenv.backend.probe
+secretenv.doctor                     (root; one per `secretenv doctor` invocation)
+├── secretenv.doctor.registry        (one per registry; SIBLING of doctor.backend)
+├── secretenv.doctor.backend         (one per backend instance)
+│   └── secretenv.backend.probe
+└── …
 ```
+
+> **Topology note (v0.18 Phase 7b Arch-F-10):** `secretenv.doctor.registry`
+> is emitted as a SIBLING of `secretenv.doctor.backend`, not a parent.
+> This matches the §4.1 flat-topology compromise: parent-child linkage
+> between higher-level orchestration spans and per-resource spans is
+> deferred to **v0.20** under the Arch-M1 hierarchical-topology pass.
+> Earlier revisions of this spec drew the relationship as parent-child;
+> that diagram was aspirational, not implemented.
 
 ### 4.4 `secretenv.mcp.tool.<name>`
 

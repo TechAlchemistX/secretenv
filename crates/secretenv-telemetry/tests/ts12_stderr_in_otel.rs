@@ -104,8 +104,12 @@ fn ts12_stderr_scrubber_round_trip() {
             "TS-12 violation: forbidden substring `{forbidden}` present in emitted attribute: `{emitted}`"
         );
     }
+    // v0.18 Phase 7b Code-N-5: assert the placeholder MARKER
+    // `<uri-stripped>` (angle-bracket-delimited) rather than the bare
+    // word `uri-stripped`, so a regression that replaced the URI with
+    // the literal text `uri-stripped` (no markers) would not pass.
     assert!(
-        emitted.contains("uri-stripped"),
+        emitted.contains("<uri-stripped>"),
         "scrubber placeholder absent from emitted attribute: `{emitted}`"
     );
     assert!(

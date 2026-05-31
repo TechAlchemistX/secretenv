@@ -214,6 +214,11 @@ where
         // (the prompt path runs only for real mutations); dry-run
         // audit logging happens at the call site in tools/mod.rs
         // BEFORE policy enforcement.
+        //
+        // Architectural note: structurally unreachable arm; remove
+        // when Arch-W-1 lands (split `OperatorDecision` into per-tool
+        // variants so `DryRun` is not in the enum returned by the
+        // policy enforcement combinator). v0.18 Phase 7b Arch-F-4.
         Ok(OperatorDecision::DryRun) => {
             tracing::warn!(
                 "mutation_runner: policy returned DryRun decision (should be handled at \

@@ -78,6 +78,7 @@ pub struct LocalTraceCapture {
 
 /// Failure mode from [`LocalTraceCapture::install`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LocalTraceCaptureError {
     /// A previous [`LocalTraceCapture`] is still live in this
     /// process. Drop it (or call [`LocalTraceCapture::drain`]) before

@@ -415,7 +415,9 @@ pub async fn resolve_registry(
     }
 
     let source_uris = pick_sources(config, selection)?;
-    span.record_registry_source_count(source_uris.len() as u64);
+    // v0.18 Phase 7b Code-L-6: was `as u64` residue from Phase 4;
+    // saturating per Phase 6 convention.
+    span.record_registry_source_count(u64::try_from(source_uris.len()).unwrap_or(u64::MAX));
 
     // Warm the cache concurrently for any un-cached source URIs,
     // preserving Phase 1's within-cascade parallelism. After warm

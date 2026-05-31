@@ -440,14 +440,17 @@ where
     let (mut span, _guard) = SecretEnvSpan::start("secretenv.registry.migrate");
     span.record_command(secretenv_telemetry::SecretEnvCommand::Migrate)
         .record_alias_name(&plan.alias)
-        .record_migrate_transaction_id(&plan.transaction_id)
-        // v0.18 M-9. Forward-compat: always `false` in v0.18 because
-        // no backend currently exposes an atomic cas_set surface.
-        // When backend-pair collapse detection lands (likely via a
-        // new `Backend::supports_cas_set` trait method), this site
-        // computes the bool from the source/dest pair and emits the
-        // collapsed-path flag at parent-span scope.
-        .record_migrate_collapsed(false);
+        .record_migrate_transaction_id(&plan.transaction_id);
+    // v0.18 Phase 7b Arch-F-2: the unconditional
+    // `record_migrate_collapsed(false)` emission removed. v0.18 has
+    // no backend exposing atomic compare-and-set, so the value would
+    // always be `false` — emitting that to the wire told operators
+    // "we checked and the migrate did not collapse" when the code
+    // does not yet actually check. The setter stays in span.rs as a
+    // reserved attribute slot; once a backend exposes the surface
+    // and collapse detection lands here, this call site flips the
+    // bool from the real source/dest analysis. Matches the project's
+    // D-3.1 "no setter without a real caller" pattern.
 
     let source = backend_for(backends, &plan.source_uri)?;
     let dest = backend_for(backends, &plan.dest_uri)?;

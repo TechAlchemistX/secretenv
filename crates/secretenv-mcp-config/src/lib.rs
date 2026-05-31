@@ -47,8 +47,15 @@ use serde::Deserialize;
 ///
 /// Default: [`AllowMutations::Confirm`] — every mutation tool call
 /// surfaces a per-call confirmation prompt before proceeding.
+///
+/// v0.18 Phase 7b Sec-F-4: `#[non_exhaustive]` for symmetry with the
+/// sibling [`ConfirmVia`] enum. Downstream consumers must add a
+/// wildcard arm that errors on unknown variants rather than silently
+/// reusing the default — the same posture the Phase 2 `MutationSpanName`
+/// lift codified.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AllowMutations {
     /// Refuse every mutation tool call. Mutation tools are absent
     /// from `tools/list` when this is set.

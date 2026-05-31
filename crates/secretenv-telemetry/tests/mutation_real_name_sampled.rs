@@ -3,20 +3,25 @@
 //
 // v0.17 Phase 7 security audit H-1 regression test.
 //
-// The Phase 3 test `mutation_never_sampled.rs` exercised the sampler
-// directly with hardcoded span-name strings — it tested the
-// `MUTATION_SPAN_NAMES` constant against itself. The Phase 7 security
-// audit caught that the actual call-site names in
-// `secretenv-mcp/src/tools/mod.rs` were missing the `secretenv.`
-// prefix, so the whitelist never matched and SEC-INV-22 was silently
-// broken under aggressive ratio sampling.
+// **v0.18 Phase 7b update (Arch-F-1):** the structural-binding claim
+// this test exercised by hand is now enforced by the type system +
+// runtime guardrail:
 //
-// This test exercises the **real production path**: drive
-// `SecretEnvSpan::start("secretenv.mcp.tool.set_alias")` — the literal
-// string at `tools/mod.rs:462` after the Phase 7b rename — against a
-// `SdkTracerProvider` whose inner sampler always drops, with the
-// `MutationNonDroppableSampler` wrapper. The span MUST land in the
-// `InMemorySpanExporter`.
+// 1. Phase 2 (Sec-F-5) made `MutationSpanName::all()` the source of
+//    truth for both the sampler whitelist AND the canonical span
+//    name (`start_mutation` is the sole legitimate entry point;
+//    sampler walks the same enum).
+// 2. Phase 7b (Arch-F-1) added a debug-build `debug_assert!` in
+//    `SecretEnvSpan::start(name)` that PANICS if `name` matches any
+//    `MutationSpanName::all()` value, surfacing accidental bypass.
+//
+// What this test guards today: drive `start_mutation` for every
+// variant against a `SdkTracerProvider` whose inner sampler always
+// drops, with the `MutationNonDroppableSampler` wrapper. The spans
+// MUST land in the `InMemorySpanExporter`. The original v0.17 leak
+// (call-site / whitelist string drift) is structurally impossible
+// after Phase 2, but the live sampler-override behavior is still
+// worth a real end-to-end assertion.
 
 #![allow(missing_docs)]
 
@@ -25,21 +30,7 @@ use opentelemetry_sdk::trace::{
     InMemorySpanExporter, Sampler, SdkTracerProvider, SimpleSpanProcessor,
 };
 
-use secretenv_telemetry::{MutationNonDroppableSampler, SecretEnvSpan};
-
-/// Every span name the MCP tool handlers actually use at the call
-/// sites today. Verified by grepping
-/// `crates/secretenv-mcp/src/tools/mod.rs` for `SecretEnvSpan::start`.
-/// If the call sites drift back to the un-prefixed names, the
-/// `MUTATION_SPAN_NAMES` whitelist in `sampler.rs` will silently
-/// stop matching and SEC-INV-22 will regress. This test fails
-/// loudly if that happens.
-const LIVE_MCP_MUTATION_SPAN_NAMES: &[&str] = &[
-    "secretenv.mcp.tool.set_alias",
-    "secretenv.mcp.tool.delete_alias",
-    "secretenv.mcp.tool.migrate_alias",
-    "secretenv.mcp.tool.gen_password",
-];
+use secretenv_telemetry::{MutationNonDroppableSampler, MutationSpanName, SecretEnvSpan};
 
 #[test]
 fn live_mutation_span_names_survive_always_off_inner_sampler() {
@@ -55,12 +46,11 @@ fn live_mutation_span_names_survive_always_off_inner_sampler() {
         .build();
     global::set_tracer_provider(provider.clone());
 
-    for &name in LIVE_MCP_MUTATION_SPAN_NAMES {
-        // start() with a `&'static str` matches the call-site shape
-        // exactly. The leak path the audit caught was a name-string
-        // mismatch between this site and the whitelist constant; this
-        // test ties the two together.
-        let _ = SecretEnvSpan::start(name);
+    // Walk every variant of MutationSpanName. Phase 2's structural
+    // lift means adding a new variant automatically grows this test
+    // — the assertion below verifies the sampler matched it.
+    for variant in MutationSpanName::all() {
+        let _ = SecretEnvSpan::start_mutation(*variant);
     }
 
     let _ = provider.force_flush();
@@ -70,12 +60,14 @@ fn live_mutation_span_names_survive_always_off_inner_sampler() {
 
     let observed: std::collections::HashSet<String> =
         spans.iter().map(|s| s.name.to_string()).collect();
-    for name in LIVE_MCP_MUTATION_SPAN_NAMES {
+    for variant in MutationSpanName::all() {
+        let name = variant.as_str();
         assert!(
-            observed.contains(*name),
+            observed.contains(name),
             "SEC-INV-22 regression: mutation span '{name}' was dropped under \
-             AlwaysOff inner sampler; sampler whitelist no longer matches the \
-             live call-site name. Observed spans: {observed:?}",
+             AlwaysOff inner sampler; the wrapper sampler failed to override \
+             the drop verdict for a known MutationSpanName variant. Observed \
+             spans: {observed:?}",
         );
     }
 }

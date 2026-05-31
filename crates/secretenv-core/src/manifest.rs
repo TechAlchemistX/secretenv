@@ -94,9 +94,16 @@ impl Manifest {
         // basename for emission so an absolute path on the operator's
         // workstation never reaches OTel; this is the same SEC-INV
         // discipline as the `command_name` basename guard.
+        //
+        // v0.18 Phase 7b Code-L-1: if `path.file_name()` returns None
+        // (the path is `/`, `..`, or empty), the previous fallback
+        // emitted the raw path itself — leaking the very absolute
+        // path the basename reduction was meant to hide. Falls back
+        // to a literal placeholder instead. Matches the existing
+        // PROCESS_COMMAND_NAME_EMPTY sentinel pattern.
         let span_path = path
             .file_name()
-            .map_or_else(|| std::path::PathBuf::from(path), std::path::PathBuf::from);
+            .map_or_else(|| std::path::PathBuf::from("<no-basename>"), std::path::PathBuf::from);
         let (mut span, _guard) = SecretEnvSpan::start("secretenv.manifest.load");
         span.record_manifest_path_relative(&span_path);
 

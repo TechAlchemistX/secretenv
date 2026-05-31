@@ -303,6 +303,17 @@ pub async fn enforce_mutation_policy(
                 // unhandled mutation-confirm surface (v0.18 Sec-F-2).
             }
         }
+        // v0.18 Phase 7b Sec-F-4: AllowMutations is #[non_exhaustive]
+        // in the upstream crate. A future variant must error rather
+        // than fall through silently — same posture as the explicit
+        // ConfirmVia wildcard in resolve_confirm_via.
+        _ => bail!(
+            "MCP server policy uses an `allow_mutations` value not recognized \
+             by this build of secretenv. This indicates a version mismatch \
+             between secretenv-mcp-config and secretenv-mcp. Upgrade \
+             secretenv to a version that supports this variant, or set \
+             `allow_mutations` to one of {{never, confirm, always}}."
+        ),
     }
 }
 
@@ -382,11 +393,22 @@ fn resolve_confirm_via(
         ConfirmVia::Tty => return Ok(ResolvedConfirmVia::Tty),
         ConfirmVia::Notification => return Ok(ResolvedConfirmVia::Notification),
         ConfirmVia::None => return Ok(ResolvedConfirmVia::None),
-        // Auto + any future #[non_exhaustive] variant of ConfirmVia
-        // falls through to the auto-resolution path below. If a
-        // future variant shouldn't auto-resolve, the upstream config
-        // crate should reject it at parse time.
-        ConfirmVia::Auto | _ => {}
+        // Auto explicitly falls through to the auto-resolution path
+        // below. v0.18 Phase 7b Sec-F-2/Code-F-1: was previously
+        // `ConfirmVia::Auto | _ => {}` — the wildcard silently routed
+        // any future #[non_exhaustive] variant of ConfirmVia into the
+        // auto-resolution path, re-introducing the silent-drift class
+        // Phase 2's MutationSpanName lift eliminated. Now: Auto stays
+        // on its own arm; a future variant fails at the explicit `_`
+        // arm below with a build-version-mismatch error.
+        ConfirmVia::Auto => {}
+        _ => bail!(
+            "MCP server policy uses a `confirm_via` value not recognized by \
+             this build of secretenv. This indicates a version mismatch \
+             between secretenv-mcp-config and secretenv-mcp. Upgrade \
+             secretenv to a version that supports this variant, or set \
+             `confirm_via` to one of {{auto, elicitation, tty, notification, none}}."
+        ),
     }
     // Auto resolution path.
     if let Some(peer) = peer {

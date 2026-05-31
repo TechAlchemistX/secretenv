@@ -817,13 +817,39 @@ impl Server {
                 // v0.18 M-12. DryRun is reserved for the migrate path
                 // call site BEFORE policy enforcement; reaching here
                 // is a contract violation.
+                //
+                // Architectural note: structurally unreachable arm;
+                // remove when Arch-W-1 lands (split `OperatorDecision`
+                // into per-tool variants). v0.18 Phase 7b Arch-F-4.
+                //
+                // v0.18 Phase 7b Code-F-3: populate `error_message`
+                // and append an audit-log entry so the contract
+                // violation is OBSERVABLE in both the tool response
+                // and the on-disk trail — was previously silent.
                 Ok(OperatorDecision::DryRun) => {
                     tracing::warn!(
                         tool = "redact_file",
                         "policy returned DryRun (should be handled at call site)"
                     );
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: helpers::now_secs(),
+                        tool_name: "redact_file".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
+                    };
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(
+                        "internal: policy returned DryRun for a non-migrate tool \
+                         (contract violation; see secretenv-mcp v0.18 M-12)"
+                            .to_owned(),
+                    );
                     return Json(response);
                 }
             }
@@ -1044,13 +1070,37 @@ impl Server {
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
                 // v0.18 M-12.
+                //
+                // Architectural note: structurally unreachable arm;
+                // remove when Arch-W-1 lands. v0.18 Phase 7b Arch-F-4.
+                //
+                // v0.18 Phase 7b Code-F-3: populate `error_message`
+                // and append an audit-log entry so the contract
+                // violation is OBSERVABLE.
                 Ok(OperatorDecision::DryRun) => {
                     tracing::warn!(
                         tool = "gen_password",
                         "policy returned DryRun (should be handled at call site)"
                     );
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: helpers::now_secs(),
+                        tool_name: "gen_password".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
+                    };
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(
+                        "internal: policy returned DryRun for a non-migrate tool \
+                         (contract violation; see secretenv-mcp v0.18 M-12)"
+                            .to_owned(),
+                    );
                     return Json(response);
                 }
             };
@@ -1368,13 +1418,35 @@ impl Server {
                 // policy gate (this enforce branch is the
                 // real-mutation path). A DryRun decision arriving
                 // here is a contract violation.
+                //
+                // Architectural note: structurally unreachable arm;
+                // remove when Arch-W-1 lands (split `OperatorDecision`
+                // into Migrate vs Mutation variants). v0.18 Phase 7b
+                // Arch-F-4.
+                //
+                // v0.18 Phase 7b Code-F-3: populate `error_message`
+                // and append an audit-log entry so the contract
+                // violation is OBSERVABLE.
                 Ok(OperatorDecision::DryRun) => {
                     tracing::warn!(
                         tool = "migrate_alias",
                         "policy returned DryRun (should be handled at call site)"
                     );
+                    helpers::audit_migrate(
+                        &self.mutation_log,
+                        &args,
+                        OperatorDecision::Denied,
+                        &client_id,
+                    );
                     response.outcome = MutationOutcome::Refused;
                     response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(
+                        "internal: policy returned DryRun for the real-mutation \
+                         migrate branch (contract violation; dry-run handling \
+                         should occur before policy enforcement; see \
+                         secretenv-mcp v0.18 M-12)"
+                            .to_owned(),
+                    );
                     return Json(response);
                 }
             }

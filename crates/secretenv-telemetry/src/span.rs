@@ -468,6 +468,27 @@ impl SecretEnvSpan {
     #[must_use = "the span must be held for its scope; \
                   dropping it immediately ends the span"]
     pub fn start(name: &'static str) -> (Self, SpanGuard) {
+        // v0.18 Phase 7b Arch-F-1: in debug/test builds, surface
+        // accidental bypass of `start_mutation`. The sampler matches
+        // on the wire name, so a misuse is still force-sampled
+        // correctly — but the structural-binding claim ("the only
+        // way to land a mutation span is `start_mutation`") needs a
+        // runtime guardrail until the marker-type split lands
+        // (Arch-W-5 / v0.19). Release builds compile this out.
+        // `start_mutation` bypasses this check via `start_inner`.
+        debug_assert!(
+            !MutationSpanName::all().iter().any(|m| m.as_str() == name),
+            "SecretEnvSpan::start({name:?}) was called with a mutation \
+             span name; use `start_mutation(MutationSpanName::…)` instead. \
+             v0.18 Phase 7b Arch-F-1.",
+        );
+        Self::start_inner(name)
+    }
+
+    /// Shared body of [`start`] and [`start_mutation`]. The mutation
+    /// entry point goes through here directly so it does not trip the
+    /// Arch-F-1 debug-assert guarding the raw `start` surface.
+    fn start_inner(name: &'static str) -> (Self, SpanGuard) {
         let tracer = global::tracer(TRACER_NAME);
         let span = tracer.start(name);
         (Self { name, span }, SpanGuard { _private: () })
@@ -486,7 +507,7 @@ impl SecretEnvSpan {
     #[must_use = "the span must be held for its scope; \
                   dropping it immediately ends the span"]
     pub fn start_mutation(name: MutationSpanName) -> (Self, SpanGuard) {
-        Self::start(name.as_str())
+        Self::start_inner(name.as_str())
     }
 
     /// `secretenv.version` — the SecretEnv release that produced
@@ -646,10 +667,17 @@ impl SecretEnvSpan {
 
     // ----- v0.18 Phase 4: schema-reserved span attribute setters -----
 
-    /// `secretenv.manifest.path` — workspace-relative path to the
-    /// manifest file. Method name carries the contract (relative
-    /// only — never an absolute path) per Phase 9b Sec F-1 basename
-    /// guard discipline. ALLOW. v0.18 Phase 4.
+    /// `secretenv.manifest.path` — manifest file path AFTER the
+    /// caller has reduced it to a non-leaking representation
+    /// (basename only in v0.18, per the
+    /// `Manifest::load_from` emission site at `secretenv-core`).
+    /// The method name carries the contract: a caller passing the
+    /// raw absolute path is a SEC-INV-04-class bug — the value must
+    /// already be path-leak-safe before reaching this setter. ALLOW.
+    /// v0.18 Phase 4. v0.18 Phase 7b Code-F-2: doc clarified — was
+    /// previously described as "workspace-relative", but the only
+    /// production caller emits the basename, so the doc rewording
+    /// matches reality without re-shaping the wire emission.
     pub fn record_manifest_path_relative(&mut self, path: &std::path::Path) -> &mut Self {
         self.span.set_attribute(KeyValue::new(
             "secretenv.manifest.path",

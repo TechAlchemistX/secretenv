@@ -96,11 +96,17 @@ fn uri_regex() -> &'static Regex {
     // scrub() call, not in a production user path.
     #[allow(clippy::expect_used)]
     RE.get_or_init(|| {
-        // Two arms:
+        // Three arms:
         //   1. Scheme-prefixed: `https?://<non-whitespace>+`
         //   2. Bare host-with-path: `<host>(:port)?/<path>` — requires
         //      a `/` after the host segment so we don't strip every
         //      colon-prefixed value (a hex digest, for instance).
+        //   3. Bare host-with-port (no path): `<host>:<port>` — added
+        //      in v0.18 Phase 7b Sec-F-1. Catches stderr of the form
+        //      `connection refused: vault.prod.internal:8200` that
+        //      arm 2 missed. Gated on a literal port so we don't
+        //      over-match arbitrary dotted prose like "filename.ext"
+        //      or "module.path:42" line refs.
         //
         // Host segment: at least one dot to avoid matching plain words.
         Regex::new(
@@ -113,6 +119,10 @@ fn uri_regex() -> &'static Regex {
               (?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)+
               (?::\d{1,5})?
               /[^\s'\u{0022}]*
+              |
+              [A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?
+              (?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)+
+              :\d{1,5}\b
             )
         ",
         )
@@ -171,6 +181,33 @@ mod tests {
         let s = scrubbed.as_str();
         assert!(!s.contains("vault.prod.internal"), "host leaked: {s}");
         assert!(!s.contains("payments"), "path segment leaked: {s}");
+    }
+
+    #[test]
+    fn strips_bare_host_with_port_no_path() {
+        // v0.18 Phase 7b Sec-F-1 regression. The pre-Phase-7b scrubber
+        // required a trailing `/path` to match the bare-host arm, so
+        // a path-less `host:port` cluster preserved the internal
+        // hostname — the exact topology fingerprint SEC-INV-20 is
+        // meant to hide.
+        let raw = "connection refused: vault.prod.internal:8200";
+        let scrubbed = BackendErrorStderr::scrub(raw);
+        let s = scrubbed.as_str();
+        assert!(!s.contains("vault.prod.internal"), "host leaked: {s}");
+        assert!(!s.contains("8200"), "port leaked: {s}");
+        assert!(s.contains(URI_REPLACEMENT), "placeholder missing: {s}");
+    }
+
+    #[test]
+    fn does_not_overmatch_dotted_text_without_port() {
+        // The Phase 7b bare-host-port arm requires a literal port to
+        // avoid stripping arbitrary dotted prose. Filenames and
+        // module paths without a `:port` suffix must survive.
+        let raw = "parsed module foo.bar.baz from config.toml line 42";
+        let scrubbed = BackendErrorStderr::scrub(raw);
+        let s = scrubbed.as_str();
+        assert!(s.contains("foo.bar.baz"), "module path over-stripped: {s}");
+        assert!(s.contains("config.toml"), "filename over-stripped: {s}");
     }
 
     #[test]

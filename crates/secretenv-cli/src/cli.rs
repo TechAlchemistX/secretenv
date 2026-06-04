@@ -421,11 +421,16 @@ pub struct RunArgs {
     /// Include the scrubbed backend stderr text on
     /// `secretenv.backend.error.message` `OTel` span attributes.
     /// Default OFF — the attribute is structurally absent.
-    /// When ON, backend stderr is passed through the SEC-INV-20
-    /// shape-based scrubber (URI shapes / AWS 12-digit account IDs /
-    /// high-entropy tokens stripped) before emission. Operators who
-    /// run their own collector and need backend-side debug context
-    /// in trace UIs opt in via this flag. v0.18 D-5.1.
+    /// When emission lands, backend stderr is passed through the
+    /// SEC-INV-20 shape-based scrubber (URI shapes / AWS 12-digit
+    /// account IDs / high-entropy tokens stripped) before emission.
+    ///
+    /// RESERVED in v0.18.0: the flag parses and the SEC-INV-20
+    /// scrubber + typed setter ship, but no production call site emits
+    /// the attribute yet, so setting this flag is currently a no-op
+    /// (the attribute stays absent). Wire-up is tracked as
+    /// v0.18-Sec-F-5; the flag is shipped now so the opt-in surface is
+    /// stable. v0.18 D-5.1.
     #[arg(long)]
     pub otel_include_error_detail: bool,
 

@@ -65,7 +65,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.backend.cli.version` | ALLOW | Useful for triage |
 | `secretenv.backend.cli.identity` | **DENY** | Account email / ARN |
 | `secretenv.backend.auth_method` | ALLOW | Closed enum: `oidc` / `token` / `iam` / `env`; never the credential |
-| `secretenv.backend.probe.level` | ALLOW | `l1_cli` / `l2_auth` / `l3_read` |
+| `secretenv.backend.probe.level` | ALLOW | `connectivity` / `full` (run-path `secretenv.backend.probe` span; the doctor 3-level model uses `secretenv.doctor.check_level`) |
 | `secretenv.backend.probe.outcome` | ALLOW | Closed enum |
 | `secretenv.backend.error.kind` | ALLOW | Closed enum `SecretEnvErrorKind` |
 | `secretenv.backend.error.message` | **DENY by default** | Per-run opt-in via `--otel-include-error-detail`; even then, scrubbed via SEC-INV-20 before any emission |
@@ -80,11 +80,11 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | Attribute | ALLOW/DENY | Notes |
 |---|---|---|
 | `secretenv.registry.name` | ALLOW | Registry config name |
-| `secretenv.registry.selection` | ALLOW | `named` / `direct-uri` (never the URI itself) |
+| `secretenv.registry.selection` | ALLOW | `by_name` / `uri` (never the URI itself) |
 | `secretenv.registry.source_count` | ALLOW | Aggregate |
 | `secretenv.registry.source_index` | ALLOW | Aggregate |
 | `secretenv.registry.source_uri` | **DENY** | Registry document URI; topology |
-| `secretenv.manifest.path` | ALLOW (relative only) | Relative to CWD; never absolute |
+| `secretenv.manifest.path` | ALLOW (basename only) | Filename basename only (e.g. `secretenv.toml`); never an absolute path. Empty/`/`/`..` paths emit the `<no-basename>` sentinel |
 | `secretenv.manifest.alias_count` | ALLOW | Aggregate |
 | `secretenv.manifest.default_count` | ALLOW | Aggregate |
 
@@ -320,6 +320,9 @@ Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password
 - `secretenv.migrate.read`
 - `secretenv.migrate.write`
 - `secretenv.migrate.pointer_flip`
+- `secretenv.migrate.delete`
+
+This is the canonical mutation set — the eight variants of `MutationSpanName` (`secretenv_telemetry::span`), which is the single source of truth for both the span name (via `start_mutation`) and the sampler whitelist. `secretenv.migrate.probe` is **not** in the set: the probe phase is read-only.
 
 This implements SEC-INV-22: mutation events are never absent from the trace stream, even when the operator has configured aggressive ratio sampling for high-volume CI.
 

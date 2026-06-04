@@ -16,15 +16,15 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
-(Empty — v0.18.0-alpha.0 development in progress; see `[0.18.0-alpha.0]` below.)
+(Empty.)
 
-## [0.18.0-alpha.0] - 2026-05-30
+## [0.18.0] - 2026-06-03
 
-**Headline (pre-release scaffold):** v0.18 is the **named non-backend hardening minor** consuming the ~25-item carry-forward queue from the v0.17 OpenTelemetry cycle. Modeled on v0.4 (functionality-only release between v0.3 cloud trio and v0.5 Keychain). No new backends. Authoritative plan: [`kb/wiki/build-plan-v0.18-hardening.md`](kb/wiki/build-plan-v0.18-hardening.md). Carry-forward ledger: [`kb/wiki/v0.17-deferred-items.md`](kb/wiki/v0.17-deferred-items.md). Each closure flips its ledger entry in the same commit (build plan Rule 31).
+**Headline:** v0.18 is the **named non-backend hardening minor** consuming the ~25-item carry-forward queue from the v0.17 OpenTelemetry cycle. Modeled on v0.4 (functionality-only release between v0.3 cloud trio and v0.5 Keychain). No new backends; backend total stays at **15**, workspace crate count stays at **22**. Ships ~5 deliberate pre-launch BREAKING public-API changes (see `### BREAKING`). Authoritative plan: `kb/wiki/build-plan-v0.18-hardening.md`. Carry-forward ledgers: `kb/wiki/v0.17-deferred-items.md` + `kb/wiki/v0.18-deferred-items.md`. Live-backend smoke: 796 PASS / 0 FAIL / 3 expected SKIP across all 15 backends.
 
 ### Added
 
-- **`--otel-include-error-detail` flag on `secretenv run`** (and `RunOptions::otel_include_error_detail` in `secretenv-core`). Opt-in toggle for emitting the scrubbed backend stderr text on the `secretenv.backend.error.message` `OTel` span attribute. Default OFF — attribute is structurally absent. Closes [[v0.17-deferred-items#D-5.1]].
+- **`--otel-include-error-detail` flag on `secretenv run`** (and `RunOptions::otel_include_error_detail` in `secretenv-core`). Opt-in toggle for emitting the scrubbed backend stderr text on the `secretenv.backend.error.message` `OTel` span attribute. Default OFF — attribute is structurally absent. **Reserved in v0.18.0:** the flag, the SEC-INV-20 scrubber, and the typed setter all ship, but no production call site emits the attribute yet, so setting the flag is currently a no-op; wire-up is tracked as v0.18-Sec-F-5. The opt-in surface is shipped now so it's stable. Closes [[v0.17-deferred-items#D-5.1]] (surface; emission deferred).
 - **`BackendErrorStderr` newtype + SEC-INV-20 shape scrubber** (`secretenv_telemetry::BackendErrorStderr`, re-exported from `secretenv_core`). Three-pass conservative regex set strips URI shapes, AWS 12-digit account IDs, and high-entropy tokens (32+ chars of base64-ish alphabet). Newtype's only constructor IS the scrubber — holding a `BackendErrorStderr` is the proof obligation that scrubbing occurred.
 - **`SecretEnvSpan::record_backend_error_message_scrubbed(&BackendErrorStderr, opt_in: bool)` typed setter**. Dual-state ALLOW: opt-in emits the scrubbed payload, opt-out leaves the attribute structurally absent. SecretEnvSpan setter count grows 38 → 39.
 - **`LocalTraceCaptureError` typed-error enum** with `AlreadyInstalled` variant, returned by `LocalTraceCapture::install`.
@@ -59,9 +59,22 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 - **`SecretEnvSpan::record_backend_type` takes `BackendType`** (was `&str`). 3 call sites migrated (`secretenv-core::runner` x2, `secretenv-cli::doctor` x1). Closes [[v0.17-deferred-items#Phase-7-M-4]] (partial — `record_backend_type` half).
 - **`fresh_run_id()` fallback is no longer all-zeros.** When `getrandom` fails (extremely rare on supported platforms; never observed in production through v0.17), emits a `tracing::warn!` event ONCE per process AND returns a non-zero hex string derived from `process::id()` XOR low/high 64 bits of `SystemTime::now().duration_since(UNIX_EPOCH).as_nanos()`. The v0.17 all-zero sentinel (which operators saw as `run_id=00000...0` without explanation) is gone. Closes [[v0.17-deferred-items#Arch-M3]] + [[v0.17-deferred-items#Code-L2]] + [[v0.17-deferred-items#Arch-L4]] + v1.0 watchlist W-17.
 
+### BREAKING
+
+Five deliberate public-API breaks in `secretenv-telemetry`, bundled into this single minor per the pre-launch breaking-change posture (install base is effectively zero; the window closes at public announcement). Within-workspace callers are all migrated; the list is for downstream library embedders.
+
+- **`secretenv_telemetry::init()` → `init(service_version: &str)`.** Migrate: `init(env!("CARGO_PKG_VERSION"))`. The `service.version` resource attribute now flows from the calling binary, not the telemetry crate.
+- **`LocalTraceCapture::install()` now returns `Result<Self, LocalTraceCaptureError>`** (was `-> Self`). Migrate: handle/propagate the `AlreadyInstalled` error (e.g. via `?`).
+- **`InitError::Exporter(#[from] opentelemetry_otlp::ExporterBuildError)`** (was `Exporter(String)`); `InitError` is now `#[non_exhaustive]`. Migrate: match on the structured cause rather than a string, and add a wildcard arm for the non-exhaustive enum.
+- **`SecretEnvSpan::record_command(SecretEnvCommand)`** (was `record_command(&str)`). Migrate: pass a `SecretEnvCommand` variant instead of a string literal.
+- **`SecretEnvSpan::record_backend_type(BackendType)`** (was `record_backend_type(&str)`). Migrate: pass a `BackendType` variant, or `BackendType::from_runtime_str(s)` to parse a runtime string.
+
 ### Fixed
 
-(Phases 2–6 populate this section.)
+- **`secretenv.manifest.path` no longer leaks an absolute path** when the manifest path has no filename component (`/`, `..`, empty). `Manifest::load_from` now emits a `<no-basename>` sentinel instead of the raw path, closing a SEC-INV path-leak gap. (Phase 7b Code-L-1.)
+- **`SEC-INV-20` scrubber now strips bare `host:port` clusters without a trailing path** (e.g. `vault.prod.internal:8200`) — the prior URI regex required a `/path` suffix, so a path-less internal hostname survived into a scrubbed span attribute. New regex arm is gated on a literal port so dotted prose (filenames, module paths) is not over-stripped. (Phase 7b Sec-F-1.)
+- **`OperatorDecision::DryRun` contract-violation arms are now observable** — the non-migrate MCP tool arms that treat a `DryRun` decision as a contract violation now populate `error_message` AND append an audit-log entry, instead of refusing silently. (Phase 7b Code-F-3.)
+- **`resolve_confirm_via` no longer silently absorbs unknown `ConfirmVia` variants** — the `ConfirmVia::Auto | _` wildcard is split into an explicit `Auto` arm plus a `_` arm that errors with a build-version-mismatch message, so a future `#[non_exhaustive]` variant cannot drift into the auto-resolution path. The sibling `AllowMutations` consumer gains the same guard. (Phase 7b Sec-F-2 / Code-F-1 / Sec-F-4.)
 
 ### Security
 
@@ -84,7 +97,11 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ### Documentation
 
-(Phase 10 populates this section.)
+- **`docs/reference/opentelemetry.md` attribute-matrix accuracy fixes** so the spec matches what the binary actually emits: `secretenv.backend.probe.level` documented as `connectivity` / `full` (was the aspirational `l1_cli` / `l2_auth` / `l3_read`); `secretenv.registry.selection` as `by_name` / `uri` (was `named` / `direct-uri`); `secretenv.manifest.path` clarified as basename-only with the `<no-basename>` sentinel; §6 mutation-span set completed with `secretenv.migrate.delete` (the eighth `MutationSpanName` variant) + a note that `secretenv.migrate.probe` is read-only and excluded. (Phase 9 architecture-audit Arch-P9-2.)
+- **`host.name` FQDN leakage note** added to §2 of the attribute matrix (also listed under Hardening). (Sec-L-3.)
+- **`--otel-include-error-detail --help`** clarified to state the flag is reserved in v0.18.0 (parses + scrubber ships, but no production caller emits yet). (Sec-P9-3.)
+
+A comprehensive documentation refresh (README OpenTelemetry section, the v0.18 build-log/roadmap cross-links, the remaining Phase 9 code-review doc NITs) is deferred to a dedicated post-release documentation pass; the changes above are the accuracy-critical subset required for an honest release.
 
 ### Known limitations
 

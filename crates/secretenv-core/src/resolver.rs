@@ -48,6 +48,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::future::join_all;
+use secretenv_telemetry::{RegistrySelectionKind, SecretEnvSpan};
 
 use crate::manifest::{Manifest, SecretDecl};
 use crate::registry::BackendRegistry;
@@ -73,12 +74,36 @@ impl RegistrySelection {
     /// no operator-stated name and return `None`. Used by v0.17
     /// telemetry to attach `secretenv.registry.name` to the
     /// `secretenv.run` span without exposing the URI body.
+    ///
+    /// v0.18 Code-L1 / W-18 resolution: kept as `Option<&str>` rather
+    /// than `Option<String>`. The CLI call site at
+    /// `crates/secretenv-cli/src/cli.rs` does `.map(str::to_owned)`
+    /// to lift to an owned String for the runner's `RunOptions`, and
+    /// the resolver call site at `resolve_registry` uses
+    /// `if let Some(name)` for span emission — neither pays a real
+    /// cost from the borrow. Migrating to `Option<String>` would
+    /// force every read site to allocate. The lifetime coupling to
+    /// `&self` is theoretical only; closes Code-L1 + drops W-18 from
+    /// the v1.0 watchlist.
     #[must_use]
     pub fn registry_label(&self) -> Option<&str> {
         match self {
             Self::Name(n) => Some(n.as_str()),
             Self::Uri(_) => None,
         }
+    }
+
+    /// v0.18 W-16. Telemetry-safe registry label that NEVER returns
+    /// `None` — falls back to
+    /// [`secretenv_telemetry::REGISTRY_NAME_DIRECT_URI`] for direct-URI
+    /// selections. Use this when emitting metric attributes that
+    /// can't carry an `Option<&str>` (the `OTel` attribute set must
+    /// be total: either ALLOW with a value or structurally absent).
+    /// W-15/W-16 close together — see
+    /// `secretenv_telemetry::REGISTRY_NAME_DIRECT_URI`.
+    #[must_use]
+    pub fn registry_label_for_telemetry(&self) -> &str {
+        self.registry_label().unwrap_or(secretenv_telemetry::REGISTRY_NAME_DIRECT_URI)
     }
 }
 
@@ -376,7 +401,23 @@ pub async fn resolve_registry(
     backends: &BackendRegistry,
     cache: &mut RegistryCache,
 ) -> Result<AliasMap> {
+    // v0.18 Phase 4 — `secretenv.registry.load` schema-reserved span
+    // (Arch-M6 subset). Wraps the source-URI resolution + cache warm
+    // + per-source layer fetch into one parent span.
+    let (mut span, _guard) = SecretEnvSpan::start("secretenv.registry.load");
+    let selection_kind = match selection {
+        RegistrySelection::Name(_) => RegistrySelectionKind::ByName,
+        RegistrySelection::Uri(_) => RegistrySelectionKind::Uri,
+    };
+    span.record_registry_selection(selection_kind);
+    if let Some(name) = selection.registry_label() {
+        span.record_registry_name(name);
+    }
+
     let source_uris = pick_sources(config, selection)?;
+    // v0.18 Phase 7b Code-L-6: was `as u64` residue from Phase 4;
+    // saturating per Phase 6 convention.
+    span.record_registry_source_count(u64::try_from(source_uris.len()).unwrap_or(u64::MAX));
 
     // Warm the cache concurrently for any un-cached source URIs,
     // preserving Phase 1's within-cascade parallelism. After warm
@@ -387,7 +428,8 @@ pub async fn resolve_registry(
     // HashMap lookup + `Arc::clone` — zero I/O. Duplicate sources in
     // a cascade yield the same `Arc` without re-invoking the backend.
     let mut layers: Vec<Arc<CascadeLayer>> = Vec::with_capacity(source_uris.len());
-    for src in &source_uris {
+    for (idx, src) in source_uris.iter().enumerate() {
+        span.record_registry_source_index(u32::try_from(idx).unwrap_or(u32::MAX));
         layers.push(cache.fetch(src, backends).await?);
     }
     Ok(AliasMap::new(layers))

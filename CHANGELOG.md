@@ -16,7 +16,99 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 
 ## [Unreleased]
 
-(Empty — pending v0.17.x carry-forwards.)
+(Empty.)
+
+## [0.18.0] - 2026-06-03
+
+**Headline:** v0.18 is the **named non-backend hardening minor** consuming the ~25-item carry-forward queue from the v0.17 OpenTelemetry cycle. Modeled on v0.4 (functionality-only release between v0.3 cloud trio and v0.5 Keychain). No new backends; backend total stays at **15**, workspace crate count stays at **22**. Ships ~5 deliberate pre-launch BREAKING public-API changes (see `### BREAKING`). Authoritative plan: `kb/wiki/build-plan-v0.18-hardening.md`. Carry-forward ledgers: `kb/wiki/v0.17-deferred-items.md` + `kb/wiki/v0.18-deferred-items.md`. Live-backend smoke: 796 PASS / 0 FAIL / 3 expected SKIP across all 15 backends.
+
+### Added
+
+- **`--otel-include-error-detail` flag on `secretenv run`** (and `RunOptions::otel_include_error_detail` in `secretenv-core`). Opt-in toggle for emitting the scrubbed backend stderr text on the `secretenv.backend.error.message` `OTel` span attribute. Default OFF — attribute is structurally absent. **Reserved in v0.18.0:** the flag, the SEC-INV-20 scrubber, and the typed setter all ship, but no production call site emits the attribute yet, so setting the flag is currently a no-op; wire-up is tracked as v0.18-Sec-F-5. The opt-in surface is shipped now so it's stable. Closes [[v0.17-deferred-items#D-5.1]] (surface; emission deferred).
+- **`BackendErrorStderr` newtype + SEC-INV-20 shape scrubber** (`secretenv_telemetry::BackendErrorStderr`, re-exported from `secretenv_core`). Three-pass conservative regex set strips URI shapes, AWS 12-digit account IDs, and high-entropy tokens (32+ chars of base64-ish alphabet). Newtype's only constructor IS the scrubber — holding a `BackendErrorStderr` is the proof obligation that scrubbing occurred.
+- **`SecretEnvSpan::record_backend_error_message_scrubbed(&BackendErrorStderr, opt_in: bool)` typed setter**. Dual-state ALLOW: opt-in emits the scrubbed payload, opt-out leaves the attribute structurally absent. SecretEnvSpan setter count grows 38 → 39.
+- **`LocalTraceCaptureError` typed-error enum** with `AlreadyInstalled` variant, returned by `LocalTraceCapture::install`.
+- **`MutationSpanName` closed enum** (`secretenv_telemetry::span::MutationSpanName`) — 8 variants covering every mutation span name (4 MCP mutation tools + 4 migrate phases). `as_str()` returns the canonical OTel name; `all()` returns every variant for sampler iteration and regression-test coverage.
+- **`SecretEnvSpan::start_mutation(MutationSpanName) -> (Self, SpanGuard)` typed constructor** — the sole entry point for starting mutation spans. Closes [[v0.17-deferred-items#Sec-F-5]] / [[v0.17-deferred-items#Code-L3]] / Phase 7 H-1 follow-up.
+- **`SecretEnvCommand` closed enum** (`secretenv_telemetry::span::SecretEnvCommand`) — 7 variants (Run / Get / Migrate / Doctor / Redact / Mcp / Registry); `#[non_exhaustive]` for forward-compat.
+- **`BackendType` closed enum** (`secretenv_telemetry::span::BackendType`) — 15 canonical backend variants + `Unknown(String)` fallback; `BackendType::from_runtime_str(&str)` parses a `Backend::backend_type()` return. Closes Phase 7 M-4.
+- **`[mcp].allow_cli_overrides` config knob** (default `true` — preserves v0.16 behavior). When `false`, user-scope vetoes per-IDE profile argv overrides like Gemini's `--allow-mutations=always`; rendered IDE configs strip the suppressed args + emit a `tracing::warn!` listing them. New public function `secretenv_mcp::setup::render_config_with_overrides(profile, binary, allow_cli_overrides)`. Closes [[v0.17-deferred-items#v0.16-F-3]].
+- **`secretenv mcp setup --check-overrides`** — read-only operator-discovery subcommand. Scans every supported IDE config path and reports any present SecretEnv MCP argv overrides + flags which would be vetoed by the current user-scope `allow_cli_overrides`. Mutually exclusive with all other `mcp setup` flags. Closes [[v0.17-deferred-items#v0.16-R-3]].
+- **`OperatorDecision::DryRun` + `OperatorDecisionEcho::DryRun` variants** — the migrate audit log now records a dedicated entry for `dry_run = true` migrations so operators can prove the agent attempted the migration even when no backend state changed. Closes [[v0.17-deferred-items#v0.16-M-12]].
+- **`SecretEnvSpan::record_migrate_collapsed(bool)` setter** + policy entry — forward-compat slot for the dual-control collapse detection. Emitted as `false` in v0.18 (no backend currently exposes an atomic `cas_set` surface); future collapse paths flip the bit at parent migrate span scope without spec churn. Closes [[v0.17-deferred-items#v0.16-M-9]] (partial; the underlying collapse-detection logic stays deferred).
+- **5 schema-reserved OTel spans now emit** (Arch-M6 subset, 5 of 6):
+  - `secretenv.manifest.load` — `Manifest::load_from`
+  - `secretenv.registry.load` — `resolve_registry`
+  - `secretenv.backend.probe` — `fetch_one` (sibling of `secretenv.backend.fetch` — parent-child linkage deferred under Arch-M1 to v0.20)
+  - `secretenv.exec.prepare` — `exec_with_env`
+  - `secretenv.doctor.registry` — `run_doctor`'s per-registry cascade-reachability pass
+- **5 new closed enums** for Phase 4 attributes, all `#[non_exhaustive]`: `ManifestOutcome` (Ok / NotFound / ParseError / ValidationError), `RegistrySelectionKind` (ByName / Uri), `BackendProbeLevel` (Connectivity / Full), `BackendProbeOutcome` (Success / Timeout / PermissionDenied / Error), `DoctorCheckLevel` (Quick / Standard / Extensive).
+- **13 new typed setters on `SecretEnvSpan`** for the schema-reserved span attributes: `record_manifest_path_relative`, `record_manifest_alias_count`, `record_manifest_default_count`, `record_manifest_outcome`, `record_registry_selection`, `record_registry_source_count`, `record_registry_source_index`, `record_backend_probe_level`, `record_backend_probe_outcome`, `record_backend_fetch_attempt`, `record_doctor_check_level`, `record_doctor_backend_count`, `record_doctor_failure_count`. SecretEnvSpan setter count grows 39 → 52 (D-3.1 rolling closure).
+
+### Changed
+
+- **`LocalTraceCapture::install()` returns `Result<Self, LocalTraceCaptureError>`** (was `-> Self`). Module-level `INSTALLED: AtomicBool` guard prevents a second live install from silently swapping the global `TracerProvider`. Drop clears the flag for the next legitimate install. The only existing call site (`secretenv doctor --trace`) now bubbles the error via `anyhow`. Closes [[v0.17-deferred-items#Sec-M-2]] + [[v0.17-deferred-items#Arch-F-6]].
+- **`TelemetryGuard::Drop` is now bounded** at 1s via a worker-thread + `recv_timeout` pattern (extracted as the private `run_bounded_or_detach(timeout, work)` helper, shared with `flush_before_exec`). CTRL-C against `secretenv run` with a slow/unreachable OTLP collector no longer hangs the shell. On timeout, the worker thread is detached and a `tracing::warn!` event fires (same shape as the pre-exec timeout). Closes [[v0.17-deferred-items#Sec-M-3]].
+- **`MutationNonDroppableSampler::is_mutation_span()` walks `MutationSpanName::all()`** instead of a hand-maintained `&[&str]` allowlist (which has been removed). The closed enum is now the single source of truth for both the span name (via `MutationSpanName::as_str` at the call site through `SecretEnvSpan::start_mutation`) and the sampler whitelist (via the predicate iteration). Adding a new mutation span = adding a variant; nothing else moves. Migrated all 8 mutation call sites in `secretenv-migrate` + `secretenv-mcp::tools` to `start_mutation`.
+- **`resolve_confirm_via` returns `Result<ResolvedConfirmVia>`** (was `Result<ConfirmVia>`). New internal closed enum `ResolvedConfirmVia` mirrors every `ConfirmVia` variant EXCEPT `Auto` so the downstream match cannot witness an `Auto` value at the type level — the v0.17 `unreachable!("Auto should have been resolved to a concrete surface")` is gone. `OperatorDecision` and `OperatorDecisionEcho` both gain `#[non_exhaustive]` to absorb the new `DryRun` variant + future-proof for v0.19+ additions. Closes [[v0.17-deferred-items#v0.16-Sec-F-2]].
+- **`secretenv_telemetry::init` signature is now `init(service_version: &str) -> Result<TelemetryGuard, InitError>`** (was `init() -> Result<...>`). The `service.version` resource attribute now flows from the calling binary's `env!("CARGO_PKG_VERSION")` rather than the telemetry crate's own version, so library embedders can set their own. Closes [[v0.17-deferred-items#Arch-F-5]]. **(BREAKING)** Downstream callers update from `init()` to `init(env!("CARGO_PKG_VERSION"))`.
+- **`InitError::Exporter` carries a structured cause** — `InitError::Exporter(#[from] opentelemetry_otlp::ExporterBuildError)` instead of `Exporter(String)`. Downstream `?` propagates the OTel SDK error chain. `InitError` also gains `#[non_exhaustive]`. Closes [[v0.17-deferred-items#Arch-F-7]] + [[v0.17-deferred-items#Arch-L2]].
+- **`init_with_env` is `#[doc(hidden)]`** — still `pub` (callers compile unchanged) but absent from public rustdoc. Test-injection seam, not part of the supported surface. Closes [[v0.17-deferred-items#Arch-L3]].
+- **`LocalTraceSpan` is `#[non_exhaustive]`** — adding fields like `trace_id` for cross-process correlation in v0.19+ is no longer a breaking change. Closes [[v0.17-deferred-items#Code-M1]] + v1.0 watchlist W-11.
+- **`SecretEnvSpan::record_command` takes `SecretEnvCommand`** (was `&str`). 3 call sites migrated (`secretenv-core::runner` x1, `secretenv-migrate` x1, plus a test). Closes [[v0.17-deferred-items#Phase-7-M-4]] (partial — `record_command` half).
+- **`SecretEnvSpan::record_backend_type` takes `BackendType`** (was `&str`). 3 call sites migrated (`secretenv-core::runner` x2, `secretenv-cli::doctor` x1). Closes [[v0.17-deferred-items#Phase-7-M-4]] (partial — `record_backend_type` half).
+- **`fresh_run_id()` fallback is no longer all-zeros.** When `getrandom` fails (extremely rare on supported platforms; never observed in production through v0.17), emits a `tracing::warn!` event ONCE per process AND returns a non-zero hex string derived from `process::id()` XOR low/high 64 bits of `SystemTime::now().duration_since(UNIX_EPOCH).as_nanos()`. The v0.17 all-zero sentinel (which operators saw as `run_id=00000...0` without explanation) is gone. Closes [[v0.17-deferred-items#Arch-M3]] + [[v0.17-deferred-items#Code-L2]] + [[v0.17-deferred-items#Arch-L4]] + v1.0 watchlist W-17.
+
+### BREAKING
+
+Five deliberate public-API breaks in `secretenv-telemetry`, bundled into this single minor per the pre-launch breaking-change posture (install base is effectively zero; the window closes at public announcement). Within-workspace callers are all migrated; the list is for downstream library embedders.
+
+- **`secretenv_telemetry::init()` → `init(service_version: &str)`.** Migrate: `init(env!("CARGO_PKG_VERSION"))`. The `service.version` resource attribute now flows from the calling binary, not the telemetry crate.
+- **`LocalTraceCapture::install()` now returns `Result<Self, LocalTraceCaptureError>`** (was `-> Self`). Migrate: handle/propagate the `AlreadyInstalled` error (e.g. via `?`).
+- **`InitError::Exporter(#[from] opentelemetry_otlp::ExporterBuildError)`** (was `Exporter(String)`); `InitError` is now `#[non_exhaustive]`. Migrate: match on the structured cause rather than a string, and add a wildcard arm for the non-exhaustive enum.
+- **`SecretEnvSpan::record_command(SecretEnvCommand)`** (was `record_command(&str)`). Migrate: pass a `SecretEnvCommand` variant instead of a string literal.
+- **`SecretEnvSpan::record_backend_type(BackendType)`** (was `record_backend_type(&str)`). Migrate: pass a `BackendType` variant, or `BackendType::from_runtime_str(s)` to parse a runtime string.
+
+### Fixed
+
+- **`secretenv.manifest.path` no longer leaks an absolute path** when the manifest path has no filename component (`/`, `..`, empty). `Manifest::load_from` now emits a `<no-basename>` sentinel instead of the raw path, closing a SEC-INV path-leak gap. (Phase 7b Code-L-1.)
+- **`SEC-INV-20` scrubber now strips bare `host:port` clusters without a trailing path** (e.g. `vault.prod.internal:8200`) — the prior URI regex required a `/path` suffix, so a path-less internal hostname survived into a scrubbed span attribute. New regex arm is gated on a literal port so dotted prose (filenames, module paths) is not over-stripped. (Phase 7b Sec-F-1.)
+- **`OperatorDecision::DryRun` contract-violation arms are now observable** — the non-migrate MCP tool arms that treat a `DryRun` decision as a contract violation now populate `error_message` AND append an audit-log entry, instead of refusing silently. (Phase 7b Code-F-3.)
+- **`resolve_confirm_via` no longer silently absorbs unknown `ConfirmVia` variants** — the `ConfirmVia::Auto | _` wildcard is split into an explicit `Auto` arm plus a `_` arm that errors with a build-version-mismatch message, so a future `#[non_exhaustive]` variant cannot drift into the auto-resolution path. The sibling `AllowMutations` consumer gains the same guard. (Phase 7b Sec-F-2 / Code-F-1 / Sec-F-4.)
+
+### Security
+
+- **D-5.2 — TS-12 stderr-in-otel regression test.** `crates/secretenv-telemetry/tests/ts12_stderr_in_otel.rs` synthesizes a backend stderr containing `vault.prod.internal:8200/v1/secret/payments/stripe`, passes it through the new setter with `opt_in = true`, and asserts the URL fragment + path segments (`payments`, `stripe`, the literal URL, the port, the scheme) are structurally absent from the emitted span attribute. The opt-out arm asserts the attribute is structurally absent entirely. Closes [[v0.17-deferred-items#D-5.2]].
+- **`MutationSpanName` structural binding regression test.** `crates/secretenv-telemetry/tests/mutation_span_name_structural_binding.rs` walks every `MutationSpanName::all()` variant, drives each through `start_mutation` against an `AlwaysOff` inner sampler, and asserts the non-droppable wrapper force-records every variant. A new variant gets coverage for free; a typo at a new call site that doesn't go through `start_mutation` is structurally impossible since the typed constructor is the sole entry point. Plus a predicate-only test and a negative-coverage test on 8 non-mutation names.
+
+### Hardening
+
+- **6 `as u64` truncating casts → `u64::try_from(...).unwrap_or(u64::MAX)`** in `secretenv-core::runner`. Matches the project convention. Closes [[v0.17-deferred-items#Code-M2]].
+- **Duplicate `fetch_ms` recomputation in `fetch_one` collapsed.** The probe/fetch block now returns `(fetch_result, ms)` as a tuple; the outer scope reuses `fetch_ms` for the metric emission. Closes [[v0.17-deferred-items#Code-M3]].
+- **`MigrationPlan.transaction_id` doc comment** documenting the move-into-`MigrateReport` invariant. Closes [[v0.17-deferred-items#Code-M4]].
+- **`RegistrySelection::registry_label()` decision lock-in** — kept as `Option<&str>` (call sites handle the borrow correctly). New companion `registry_label_for_telemetry() -> &str` returns the `REGISTRY_NAME_DIRECT_URI` sentinel for direct-URI selections. Closes [[v0.17-deferred-items#Code-L1]] + v1.0 watchlist W-18.
+- **`LocalTraceCapture::drain` saturation behavior documented** (`try_from` saturates at `u64::MAX` for post-year-584-million `SystemTime`; `map_or(0, ...)` covers pre-epoch clock skew). Closes [[v0.17-deferred-items#Code-L4]].
+- **`_guard` lifetime comment on the `secretenv.redact.filter_event` span site** prevents future remove-as-unused. Closes [[v0.17-deferred-items#Code-L5]].
+- **`secretenv_telemetry::REGISTRY_NAME_DIRECT_URI` + `PROCESS_COMMAND_NAME_EMPTY` constants** lift the v0.17 `"<direct-uri>"` and `"<empty>"` magic strings. Closes [[v0.17-deferred-items#Code-N2]] + [[v0.17-deferred-items#Code-N3]] + v1.0 watchlist W-15 + W-16.
+- **`SpanGuard._private: ()` keep decision** documented — the sealing is load-bearing against external crates, not cosmetic. Closes [[v0.17-deferred-items#Code-N4]].
+- **`doctor.rs::probe_otel_reachability` honors `OTEL_EXPORTER_OTLP_PROTOCOL`** — `http/protobuf` and `http/json` select port 4318; anything else keeps the 4317 default. Operators running OTLP/HTTP exporters no longer see a false "unreachable" diagnostic. Closes [[v0.17-deferred-items#Code-N5]] + Phase 7 M-2.
+- **`host.name` FQDN documentation note** added to `docs/reference/opentelemetry.md` §2 attribute matrix. Closes [[v0.17-deferred-items#Sec-L-3]].
+- **Dead typed-setter keep decision** — `record_alias_count`, `record_cascade_layer_index`, `record_backend_cli_name`, etc. retained as spec'd ALLOW surface for future callers (Phase 4 wired several previously-dormant setters this cycle, validating the keep-as-forward-compat pattern). Closes [[v0.17-deferred-items#Sec-L-4]].
+
+### Documentation
+
+- **`docs/reference/opentelemetry.md` attribute-matrix accuracy fixes** so the spec matches what the binary actually emits: `secretenv.backend.probe.level` documented as `connectivity` / `full` (was the aspirational `l1_cli` / `l2_auth` / `l3_read`); `secretenv.registry.selection` as `by_name` / `uri` (was `named` / `direct-uri`); `secretenv.manifest.path` clarified as basename-only with the `<no-basename>` sentinel; §6 mutation-span set completed with `secretenv.migrate.delete` (the eighth `MutationSpanName` variant) + a note that `secretenv.migrate.probe` is read-only and excluded. (Phase 9 architecture-audit Arch-P9-2.)
+- **`host.name` FQDN leakage note** added to §2 of the attribute matrix (also listed under Hardening). (Sec-L-3.)
+- **`--otel-include-error-detail --help`** clarified to state the flag is reserved in v0.18.0 (parses + scrubber ships, but no production caller emits yet). (Sec-P9-3.)
+
+A comprehensive documentation refresh (README OpenTelemetry section, the v0.18 build-log/roadmap cross-links, the remaining Phase 9 code-review doc NITs) is deferred to a dedicated post-release documentation pass; the changes above are the accuracy-critical subset required for an honest release.
+
+### Known limitations
+
+- **OTel `LoggerProvider` not installed** — `tracing::*!` events still surface as span events via the `tracing-opentelemetry` bridge, not as native OTel `LogRecord` instances. Deferred to v0.19+ per [`v0.17-deferred-items`](kb/wiki/v0.17-deferred-items.md#phase-7-m-3--loggerprovider-not-installed).
+- **Flat span topology** — `secretenv.run` and its children emit as siblings rather than a parent-child tree. Trace UIs show all spans at root level. Deferred to v0.20 cycle pending a deliberate `BoxedSpan` exposure decision.
+- **`secretenv.exec.flush` schema-reserved span not emitted** — Drop cannot fire across `execve`; emitting this span correctly requires `pre_exec` hook + manual flush sequencing. Deferred to v0.20 cycle. The other five Phase 4 schema-reserved spans (`manifest.load`, `registry.load`, `backend.probe`, `exec.prepare`, `doctor.registry`) ship in v0.18.
+- **D-3.1 typed-setter coverage** — ~13 of the spec's ALLOW attributes still have no `SecretEnvSpan` setter; each lands in the cycle that wires its first caller (rolling convention from v0.17).
 
 ## [0.17.0] - 2026-05-28
 

@@ -13,40 +13,32 @@
 //! `OTEL_TRACES_SAMPLER_ARG=0.0001`) could lose the audit trail of
 //! the very events that motivate having OTel in the first place.
 //!
-//! The mutation span name set is closed and small; it lives below
-//! as `MUTATION_SPAN_NAMES`. Adding a new mutation tool requires
-//! amending the constant — a PR-reviewed code change that surfaces
-//! in code review as a deliberate audit-surface expansion.
+//! # Structural binding (v0.18 Phase 2)
+//!
+//! The mutation span name set lives in the closed
+//! [`crate::MutationSpanName`] enum. The sampler matches on
+//! [`MutationSpanName::as_str`] for every variant, so the name a
+//! tracer emits (via [`crate::SecretEnvSpan::start_mutation`]) and
+//! the name the sampler force-records cannot drift. Adding a new
+//! mutation span = adding a variant to the enum; both the call site
+//! and the sampler whitelist follow automatically.
+//!
+//! v0.17 kept a separate `&[&str]` allowlist that could (and did at
+//! Phase 7) drift from the call sites by a typo. v0.18 closes
+//! [[v0.17-deferred-items#Sec-F-5]] / [[v0.17-deferred-items#Code-L3]]
+//! / Phase 7 H-1 follow-up.
 
 use opentelemetry::trace::{Link, SpanKind, TraceId};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::trace::{Sampler, SamplingDecision, SamplingResult, ShouldSample};
 
-/// The closed set of span names that must always be sampled,
-/// regardless of operator-configured ratio sampling.
-///
-/// Order corresponds to the doc's §6 sampling list:
-/// - MCP mutation tools that change registry state
-/// - Registry-migrate phases that touch dest-side state
-const MUTATION_SPAN_NAMES: &[&str] = &[
-    "secretenv.mcp.tool.set_alias",
-    "secretenv.mcp.tool.delete_alias",
-    "secretenv.mcp.tool.migrate_alias",
-    "secretenv.mcp.tool.gen_password",
-    "secretenv.migrate.read",
-    "secretenv.migrate.write",
-    "secretenv.migrate.pointer_flip",
-    // Phase 9b — Arch Code-H2. Post-commit source-delete touches
-    // dest-side state (source cleanup after a successful migrate)
-    // and is one of the 4 phases SEC-INV-22 contracts as non-droppable.
-    "secretenv.migrate.delete",
-];
+use crate::MutationSpanName;
 
 /// Wraps any [`ShouldSample`] with the mutation-non-droppable rule.
 ///
-/// For spans named in [`MUTATION_SPAN_NAMES`], returns
-/// [`SamplingDecision::RecordAndSample`] unconditionally. For all
-/// other spans, delegates to the inner sampler.
+/// For spans whose name matches a [`MutationSpanName`] variant,
+/// returns [`SamplingDecision::RecordAndSample`] unconditionally.
+/// For all other spans, delegates to the inner sampler.
 #[derive(Debug, Clone)]
 pub struct MutationNonDroppableSampler<S: ShouldSample + Clone> {
     inner: S,
@@ -59,9 +51,13 @@ impl<S: ShouldSample + Clone> MutationNonDroppableSampler<S> {
     }
 
     /// True when this span name participates in the non-droppable rule.
+    ///
+    /// Implementation walks [`MutationSpanName::all`] so the predicate
+    /// stays in lock-step with the enum: a new variant joins the
+    /// whitelist for free, no parallel allowlist to update.
     #[must_use]
     pub fn is_mutation_span(name: &str) -> bool {
-        MUTATION_SPAN_NAMES.contains(&name)
+        MutationSpanName::all().iter().any(|m| m.as_str() == name)
     }
 }
 
@@ -137,11 +133,12 @@ mod tests {
     #[test]
     fn mutation_set_overrides_drop() {
         let sampler = MutationNonDroppableSampler::new(AlwaysDrop);
-        for name in MUTATION_SPAN_NAMES {
+        for variant in MutationSpanName::all() {
+            let name = variant.as_str();
             assert_eq!(
                 sample_with(&sampler, name),
                 SamplingDecision::RecordAndSample,
-                "mutation span '{name}' must always sample even when inner drops",
+                "mutation span '{name}' (MutationSpanName::{variant:?}) must always sample even when inner drops",
             );
         }
     }
@@ -156,7 +153,8 @@ mod tests {
 
     #[test]
     fn is_mutation_span_predicate_matches_set() {
-        for name in MUTATION_SPAN_NAMES {
+        for variant in MutationSpanName::all() {
+            let name = variant.as_str();
             assert!(MutationNonDroppableSampler::<AlwaysDrop>::is_mutation_span(name));
         }
         assert!(!MutationNonDroppableSampler::<AlwaysDrop>::is_mutation_span(

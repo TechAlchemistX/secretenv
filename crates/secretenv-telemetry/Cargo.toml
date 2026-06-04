@@ -40,6 +40,12 @@ hostname                           = "0.4"
 # attached to every `secretenv.run` root span). Already a workspace
 # dep used by `secretenv-core::redact`; no new wire-protocol surface.
 getrandom.workspace                = true
+# v0.18 SEC-INV-20 shape-based scrubber for backend stderr emitted via
+# the opt-in `--otel-include-error-detail` path. Lives here (not in
+# `secretenv-core`) because the `BackendErrorStderr` newtype is the
+# typed input to `SecretEnvSpan::record_backend_error_message_scrubbed`
+# and `secretenv-telemetry` cannot take a dep on downstream crates.
+regex.workspace                    = true
 
 [dev-dependencies]
 # `trybuild` powers the SEC-INV-19 compile-fail guard at

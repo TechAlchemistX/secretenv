@@ -201,7 +201,7 @@ jobs:
 
             Verify a downloaded tarball with the `checksums.txt` asset.
 
-            Full build plan and design notes: [kb/wiki](https://github.com/TechAlchemistX/secretenv/tree/main/../../kb/wiki).
+            See the [CHANGELOG](https://github.com/TechAlchemistX/secretenv/blob/${{ github.ref_name }}/CHANGELOG.md) for the full list of changes in this release.
 
   # ------------------------------------------------------------------
   # 3. Publish every crate to crates.io in dependency order.

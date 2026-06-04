@@ -51,7 +51,7 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use secretenv_core::Config;
-use secretenv_telemetry::span::SecretEnvSpan;
+use secretenv_telemetry::span::{MutationSpanName, SecretEnvSpan};
 
 use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
 use crate::boundary::{
@@ -487,7 +487,7 @@ impl Server {
         args: Parameters<SetAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<SetAliasResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.set_alias");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpSetAlias);
         let args = args.0;
         span.record_mcp_tool_name("set_alias")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
@@ -559,7 +559,7 @@ impl Server {
         args: Parameters<DeleteAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<DeleteAliasResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.delete_alias");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpDeleteAlias);
         let args = args.0;
         span.record_mcp_tool_name("delete_alias")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
@@ -814,6 +814,44 @@ impl Server {
                 Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
                     (decision, MutationOutcome::Applied)
                 }
+                // v0.18 M-12. DryRun is reserved for the migrate path
+                // call site BEFORE policy enforcement; reaching here
+                // is a contract violation.
+                //
+                // Architectural note: structurally unreachable arm;
+                // remove when Arch-W-1 lands (split `OperatorDecision`
+                // into per-tool variants). v0.18 Phase 7b Arch-F-4.
+                //
+                // v0.18 Phase 7b Code-F-3: populate `error_message`
+                // and append an audit-log entry so the contract
+                // violation is OBSERVABLE in both the tool response
+                // and the on-disk trail — was previously silent.
+                Ok(OperatorDecision::DryRun) => {
+                    tracing::warn!(
+                        tool = "redact_file",
+                        "policy returned DryRun (should be handled at call site)"
+                    );
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: helpers::now_secs(),
+                        tool_name: "redact_file".to_owned(),
+                        alias_name: None,
+                        backend_instance: None,
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
+                    };
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(
+                        "internal: policy returned DryRun for a non-migrate tool \
+                         (contract violation; see secretenv-mcp v0.18 M-12)"
+                            .to_owned(),
+                    );
+                    return Json(response);
+                }
             }
         } else {
             // Dry-run: pretend AutoApproved so the decision-echo
@@ -957,7 +995,7 @@ impl Server {
         args: Parameters<GenPasswordArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<GenPasswordResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.gen_password");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpGenPassword);
         span.record_mcp_tool_name("gen_password")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
             .record_mcp_argument_alias_name(&args.0.alias);
@@ -1031,6 +1069,40 @@ impl Server {
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+                // v0.18 M-12.
+                //
+                // Architectural note: structurally unreachable arm;
+                // remove when Arch-W-1 lands. v0.18 Phase 7b Arch-F-4.
+                //
+                // v0.18 Phase 7b Code-F-3: populate `error_message`
+                // and append an audit-log entry so the contract
+                // violation is OBSERVABLE.
+                Ok(OperatorDecision::DryRun) => {
+                    tracing::warn!(
+                        tool = "gen_password",
+                        "policy returned DryRun (should be handled at call site)"
+                    );
+                    let entry = MutationLogEntry {
+                        ts_unix_secs: helpers::now_secs(),
+                        tool_name: "gen_password".to_owned(),
+                        alias_name: Some(args.alias.clone()),
+                        backend_instance: Some(backend_instance.clone()),
+                        agent_reason: args.reason.clone(),
+                        operator_decision: OperatorDecision::Denied,
+                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
+                    };
+                    if let Err(append_err) = self.mutation_log.append(&entry) {
+                        tracing::error!(error = ?append_err, "audit-log append failed");
+                    }
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(
+                        "internal: policy returned DryRun for a non-migrate tool \
+                         (contract violation; see secretenv-mcp v0.18 M-12)"
+                            .to_owned(),
+                    );
+                    return Json(response);
+                }
             };
 
         // Approved — build registry + parse target URI + generate + set + register alias.
@@ -1221,7 +1293,7 @@ impl Server {
         args: Parameters<MigrateAliasArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Json<MigrateAliasResponse> {
-        let (mut span, _guard) = SecretEnvSpan::start("secretenv.mcp.tool.migrate_alias");
+        let (mut span, _guard) = SecretEnvSpan::start_mutation(MutationSpanName::McpMigrateAlias);
         span.record_mcp_tool_name("migrate_alias")
             .record_mcp_client_name(&helpers::client_id_from_peer(&ctx.peer))
             .record_mcp_argument_alias_name(&args.0.alias);
@@ -1255,14 +1327,15 @@ impl Server {
                 response.outcome = MutationOutcome::WriteFailed;
                 response.error_message =
                     Some(format!("building backend registry: {}", safe_error_message(&e)));
-                if !args.dry_run {
-                    helpers::audit_migrate(
-                        &self.mutation_log,
-                        &args,
-                        OperatorDecision::AutoApproved,
-                        &client_id,
-                    );
-                }
+                // v0.18 M-12: log even when dry_run, tagged with the
+                // DryRun decision so the audit trail records the
+                // attempted-but-not-built migration.
+                let decision = if args.dry_run {
+                    OperatorDecision::DryRun
+                } else {
+                    OperatorDecision::AutoApproved
+                };
+                helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
                 return Json(response);
             }
         };
@@ -1287,14 +1360,13 @@ impl Server {
                     response.outcome = MutationOutcome::WriteFailed;
                     response.error_message =
                         Some(format!("building migration plan: {}", safe_error_message(&e)));
-                    if !args.dry_run {
-                        helpers::audit_migrate(
-                            &self.mutation_log,
-                            &args,
-                            OperatorDecision::AutoApproved,
-                            &client_id,
-                        );
-                    }
+                    // v0.18 M-12: log even when dry_run.
+                    let decision = if args.dry_run {
+                        OperatorDecision::DryRun
+                    } else {
+                        OperatorDecision::AutoApproved
+                    };
+                    helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
                     return Json(response);
                 }
             };
@@ -1342,6 +1414,41 @@ impl Server {
                     return Json(response);
                 }
                 Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
+                // v0.18 M-12. Migrate's dry-run path bypasses the
+                // policy gate (this enforce branch is the
+                // real-mutation path). A DryRun decision arriving
+                // here is a contract violation.
+                //
+                // Architectural note: structurally unreachable arm;
+                // remove when Arch-W-1 lands (split `OperatorDecision`
+                // into Migrate vs Mutation variants). v0.18 Phase 7b
+                // Arch-F-4.
+                //
+                // v0.18 Phase 7b Code-F-3: populate `error_message`
+                // and append an audit-log entry so the contract
+                // violation is OBSERVABLE.
+                Ok(OperatorDecision::DryRun) => {
+                    tracing::warn!(
+                        tool = "migrate_alias",
+                        "policy returned DryRun (should be handled at call site)"
+                    );
+                    helpers::audit_migrate(
+                        &self.mutation_log,
+                        &args,
+                        OperatorDecision::Denied,
+                        &client_id,
+                    );
+                    response.outcome = MutationOutcome::Refused;
+                    response.decision = OperatorDecisionEcho::PolicyRefusal;
+                    response.error_message = Some(
+                        "internal: policy returned DryRun for the real-mutation \
+                         migrate branch (contract violation; dry-run handling \
+                         should occur before policy enforcement; see \
+                         secretenv-mcp v0.18 M-12)"
+                            .to_owned(),
+                    );
+                    return Json(response);
+                }
             }
         };
 
@@ -1407,7 +1514,16 @@ impl Server {
             }
         }
 
-        if !args.dry_run {
+        // v0.18 M-12. v0.16 design skipped the audit-log append for
+        // dry-run migrates by contract (nothing mutated; no reason
+        // to log). M-12 reinstates a log entry tagged with
+        // OperatorDecision::DryRun so operators can prove the agent
+        // attempted the migration. The real-mutation branch keeps
+        // the original semantics (decision = Approved / Denied /
+        // Timeout / AutoApproved per the confirmation prompt).
+        if args.dry_run {
+            helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::DryRun, &client_id);
+        } else {
             helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
         }
         Json(response)

@@ -61,6 +61,7 @@ impl Default for RotationConfig {
 /// fired. Recorded verbatim in the audit log.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum OperatorDecision {
     /// Operator approved the mutation.
     Approved,
@@ -71,6 +72,11 @@ pub enum OperatorDecision {
     /// `[mcp].allow_mutations = "always"` was in effect, so no
     /// prompt fired; the mutation auto-approved.
     AutoApproved,
+    /// v0.18 M-12. The mutation was invoked with `dry_run = true`;
+    /// no backend state changed. The entry exists so operators can
+    /// prove the dry-run was attempted (compliance / "what did the
+    /// agent want to do?" audit).
+    DryRun,
 }
 
 /// One audit-log entry. JSON-Lines serialization on disk.

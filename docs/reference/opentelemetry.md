@@ -65,7 +65,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.backend.cli.version` | ALLOW | Useful for triage |
 | `secretenv.backend.cli.identity` | **DENY** | Account email / ARN |
 | `secretenv.backend.auth_method` | ALLOW | Closed enum: `oidc` / `token` / `iam` / `env`; never the credential |
-| `secretenv.backend.probe.level` | ALLOW | `l1_cli` / `l2_auth` / `l3_read` |
+| `secretenv.backend.probe.level` | ALLOW | `connectivity` / `full` (run-path `secretenv.backend.probe` span; the doctor 3-level model uses `secretenv.doctor.check_level`) |
 | `secretenv.backend.probe.outcome` | ALLOW | Closed enum |
 | `secretenv.backend.error.kind` | ALLOW | Closed enum `SecretEnvErrorKind` |
 | `secretenv.backend.error.message` | **DENY by default** | Per-run opt-in via `--otel-include-error-detail`; even then, scrubbed via SEC-INV-20 before any emission |
@@ -80,11 +80,11 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | Attribute | ALLOW/DENY | Notes |
 |---|---|---|
 | `secretenv.registry.name` | ALLOW | Registry config name |
-| `secretenv.registry.selection` | ALLOW | `named` / `direct-uri` (never the URI itself) |
+| `secretenv.registry.selection` | ALLOW | `by_name` / `uri` (never the URI itself) |
 | `secretenv.registry.source_count` | ALLOW | Aggregate |
 | `secretenv.registry.source_index` | ALLOW | Aggregate |
 | `secretenv.registry.source_uri` | **DENY** | Registry document URI; topology |
-| `secretenv.manifest.path` | ALLOW (relative only) | Relative to CWD; never absolute |
+| `secretenv.manifest.path` | ALLOW (basename only) | Filename basename only (e.g. `secretenv.toml`); never an absolute path. Empty/`/`/`..` paths emit the `<no-basename>` sentinel |
 | `secretenv.manifest.alias_count` | ALLOW | Aggregate |
 | `secretenv.manifest.default_count` | ALLOW | Aggregate |
 
@@ -169,7 +169,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 |---|---|---|
 | `service.name` | ALLOW | OTel standard resource |
 | `service.version` | ALLOW | OTel standard resource |
-| `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions |
+| `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions. **v0.18 Sec-L-3 note:** `host.name` is set from `hostname::get()`, which on corporate CI runners and bare-metal hosts may surface an FQDN like `ip-10-0-1-23.us-west-2.compute.internal` or `runner-prod-build-42.corp.example.com` — those carry network topology hints. Operators who want to scrub or pin this attribute can override via `OTEL_RESOURCE_ATTRIBUTES=host.name=<override>` at the process env layer; it's last-write-wins against our default emission. |
 | `deployment.environment.name` | ALLOW (opt-in only) | NOT auto-inferred from `CI=true`; operator-supplied via `[otel]` config or `OTEL_RESOURCE_ATTRIBUTES` |
 
 **Matrix totals:** 51 ALLOW · 25 DENY · 76 entries.
@@ -200,25 +200,32 @@ Root spans correspond to top-level invocations. Child spans correspond to logica
 > `secretenv.redact.filter_event`, `secretenv.registry.migrate` (+ its
 > 5 phase children: `probe` / `read` / `write` / `pointer_flip` /
 > `delete`), `secretenv.doctor.backend`, and `secretenv.mcp.tool.<name>`
-> for all 14 MCP tools. The following **11 spans** appear in the
-> topology trees below as schema-reserved but are **not emitted**
-> in v0.17:
+> for all 14 MCP tools.
 >
-> - §4.1 run subtree: `secretenv.manifest.load`,
->   `secretenv.registry.load`, `secretenv.backend.probe` (as a child
->   under resolution), `secretenv.exec.prepare`, `secretenv.exec.flush`
-> - §4.3 doctor subtree: `secretenv.doctor` root,
->   `secretenv.doctor.registry`
+> **v0.18 update (Phase 4, Arch-M6 subset):** 5 of the 11 previously
+> schema-reserved spans now emit:
+> - `secretenv.manifest.load` — `Manifest::load_from`
+> - `secretenv.registry.load` — `resolve_registry`
+> - `secretenv.backend.probe` — `fetch_one` (sibling of
+>   `secretenv.backend.fetch` — parent-child linkage tracked separately
+>   under Arch-M1, deferred to v0.20)
+> - `secretenv.exec.prepare` — `exec_with_env`
+> - `secretenv.doctor.registry` — `run_doctor`
+>
+> The following **6 spans** remain schema-reserved and **not emitted**:
+>
+> - §4.1 run subtree: `secretenv.exec.flush` (hand-off to `execve`
+>   covered by an explicit `flush_before_exec` call; emitting as a
+>   span would require an `execve`-aware lifecycle with a `pre_exec`
+>   hook + manual flush sequencing — deferred to v0.20)
+> - §4.3 doctor subtree: `secretenv.doctor` root
 > - §4.4 MCP subtree: `secretenv.mcp.policy.evaluate`,
 >   `secretenv.mcp.confirm`, `secretenv.registry.transaction`,
 >   `secretenv.audit.append`
 >
-> The hand-off to `execve` is covered by an explicit
-> `flush_before_exec` call rather than an `exec.flush` span. The MCP
-> policy/confirm/audit events are captured in `audit_log.rs` as
-> structured records but not as OTel spans. These will land as
-> v0.17.x hygiene chips; their absence does not affect any SEC-INV
-> invariant.
+> The MCP policy/confirm/audit events are captured in `audit_log.rs`
+> as structured records but not as OTel spans. None of the remaining
+> schema-reserved spans affect any SEC-INV invariant.
 
 ### 4.1 `secretenv.run`
 
@@ -247,11 +254,20 @@ secretenv.registry.migrate
 ### 4.3 `secretenv.doctor`
 
 ```
-secretenv.doctor
-├── secretenv.doctor.registry        (one per registry)
-└── secretenv.doctor.backend         (one per backend instance)
-    └── secretenv.backend.probe
+secretenv.doctor                     (root; one per `secretenv doctor` invocation)
+├── secretenv.doctor.registry        (one per registry; SIBLING of doctor.backend)
+├── secretenv.doctor.backend         (one per backend instance)
+│   └── secretenv.backend.probe
+└── …
 ```
+
+> **Topology note (v0.18 Phase 7b Arch-F-10):** `secretenv.doctor.registry`
+> is emitted as a SIBLING of `secretenv.doctor.backend`, not a parent.
+> This matches the §4.1 flat-topology compromise: parent-child linkage
+> between higher-level orchestration spans and per-resource spans is
+> deferred to **v0.20** under the Arch-M1 hierarchical-topology pass.
+> Earlier revisions of this spec drew the relationship as parent-child;
+> that diagram was aspirational, not implemented.
 
 ### 4.4 `secretenv.mcp.tool.<name>`
 
@@ -304,6 +320,9 @@ Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password
 - `secretenv.migrate.read`
 - `secretenv.migrate.write`
 - `secretenv.migrate.pointer_flip`
+- `secretenv.migrate.delete`
+
+This is the canonical mutation set — the eight variants of `MutationSpanName` (`secretenv_telemetry::span`), which is the single source of truth for both the span name (via `start_mutation`) and the sampler whitelist. `secretenv.migrate.probe` is **not** in the set: the probe phase is read-only.
 
 This implements SEC-INV-22: mutation events are never absent from the trace stream, even when the operator has configured aggressive ratio sampling for high-volume CI.
 

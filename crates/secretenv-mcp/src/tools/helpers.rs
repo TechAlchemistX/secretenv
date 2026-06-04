@@ -76,6 +76,8 @@ pub const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
         OperatorDecision::Denied => OperatorDecisionEcho::Denied,
         OperatorDecision::Timeout => OperatorDecisionEcho::Timeout,
         OperatorDecision::AutoApproved => OperatorDecisionEcho::AutoApproved,
+        // v0.18 M-12.
+        OperatorDecision::DryRun => OperatorDecisionEcho::DryRun,
     }
 }
 

@@ -77,7 +77,7 @@ use secretenv_core::{
     resolve_registry, AliasMap, Backend, BackendRegistry, BackendUri, Config, RegistryCache,
     RegistrySelection, Secret,
 };
-use secretenv_telemetry::span::{MigrateOutcome, MigratePhase, SecretEnvSpan};
+use secretenv_telemetry::span::{MigrateOutcome, MigratePhase, MutationSpanName, SecretEnvSpan};
 
 pub mod mcp_safe;
 
@@ -122,6 +122,14 @@ pub struct MigrationPlan {
     pub registry_source_uri: BackendUri,
     /// Stable per-invocation identifier. v0.15 uses nanoseconds since
     /// the UNIX epoch in hex form; v0.17 may upgrade to `UUIDv7`.
+    ///
+    /// v0.18 Code-M4 doc-hygiene note: this field is moved (not
+    /// borrowed) into [`MigrateReport`] at the end of
+    /// [`migrate_with_plan`]. The resolve-once invariant means the
+    /// `MigrationPlan` must not be reused after the migrate; a fresh
+    /// plan + fresh `transaction_id` is required for each migrate
+    /// invocation. See [`migrate_with_plan`] line ~471 and ~606 for
+    /// the move sites.
     pub transaction_id: String,
 }
 
@@ -430,9 +438,19 @@ where
     // non-droppable sampler keeps every child + root in the trace
     // stream even under aggressive ratio sampling (SEC-INV-22).
     let (mut span, _guard) = SecretEnvSpan::start("secretenv.registry.migrate");
-    span.record_command("migrate")
+    span.record_command(secretenv_telemetry::SecretEnvCommand::Migrate)
         .record_alias_name(&plan.alias)
         .record_migrate_transaction_id(&plan.transaction_id);
+    // v0.18 Phase 7b Arch-F-2: the unconditional
+    // `record_migrate_collapsed(false)` emission removed. v0.18 has
+    // no backend exposing atomic compare-and-set, so the value would
+    // always be `false` — emitting that to the wire told operators
+    // "we checked and the migrate did not collapse" when the code
+    // does not yet actually check. The setter stays in span.rs as a
+    // reserved attribute slot; once a backend exposes the surface
+    // and collapse detection lands here, this call site flips the
+    // bool from the real source/dest analysis. Matches the project's
+    // D-3.1 "no setter without a real caller" pattern.
 
     let source = backend_for(backends, &plan.source_uri)?;
     let dest = backend_for(backends, &plan.dest_uri)?;
@@ -468,7 +486,8 @@ where
 
     // ----- Read -----
     let (value, read_ms) = {
-        let (mut read_span, _read_guard) = SecretEnvSpan::start("secretenv.migrate.read");
+        let (mut read_span, _read_guard) =
+            SecretEnvSpan::start_mutation(MutationSpanName::MigrateRead);
         read_span
             .record_migrate_phase(MigratePhase::Read)
             .record_migrate_source_backend_type(source.backend_type());
@@ -487,7 +506,8 @@ where
 
     // ----- Write -----
     let write_ms = {
-        let (mut write_span, _write_guard) = SecretEnvSpan::start("secretenv.migrate.write");
+        let (mut write_span, _write_guard) =
+            SecretEnvSpan::start_mutation(MutationSpanName::MigrateWrite);
         write_span
             .record_migrate_phase(MigratePhase::Write)
             .record_migrate_dest_backend_type(dest.backend_type());
@@ -514,7 +534,8 @@ where
 
     // ----- Pointer flip (commit point) -----
     let flip_start = Instant::now();
-    let (mut flip_span, flip_guard) = SecretEnvSpan::start("secretenv.migrate.pointer_flip");
+    let (mut flip_span, flip_guard) =
+        SecretEnvSpan::start_mutation(MutationSpanName::MigratePointerFlip);
     flip_span.record_migrate_phase(MigratePhase::PointerFlip);
     let flip_result = migrate_registry_flip(&plan, backends).await;
     // Phase 7 audit (code-rev S5): capture elapsed even on Err so the
@@ -552,7 +573,8 @@ where
     let mut outcome = MigrateReportOutcome::Success;
     let mut delete_hint = Some(source.delete_hint(&plan.source_uri));
     if args.delete_source && post_commit_source_delete_consent(&plan) {
-        let (mut delete_span, _delete_guard) = SecretEnvSpan::start("secretenv.migrate.delete");
+        let (mut delete_span, _delete_guard) =
+            SecretEnvSpan::start_mutation(MutationSpanName::MigrateDelete);
         delete_span
             .record_migrate_phase(MigratePhase::DeleteSource)
             .record_migrate_source_backend_type(source.backend_type());

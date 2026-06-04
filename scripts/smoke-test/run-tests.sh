@@ -4523,6 +4523,59 @@ EOF
                 "$V017_WORK/blockD-sampled-traces.json" '"operationName":"secretenv.mcp.tool.set_alias"'
 
             # -------------------------------------------------------
+            # Block F — v0.18 Phase 4 schema-reserved spans (8 assertions)
+            # -------------------------------------------------------
+            #
+            # v0.18 added five schema-reserved spans + the
+            # `secretenv.manifest.path` basename-only attribute
+            # (Code-L-1 path-leak invariant). Four of the five
+            # (manifest.load, registry.load, backend.probe,
+            # exec.prepare) emit on every `run`, so they assert
+            # against the Block A trace dump captured above;
+            # doctor.registry needs a `doctor` run, added here.
+            # Backend code is untouched since v0.17 — these guard the
+            # new telemetry topology end-to-end at integration level
+            # (unit coverage: phase4_schema_reserved_spans.rs).
+
+            assert_contains "1280 v0.18 Block F — secretenv.manifest.load span (Phase 4)" \
+                "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.manifest.load"'
+            assert_contains "1281 v0.18 Block F — secretenv.registry.load span (Phase 4)" \
+                "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.registry.load"'
+            assert_contains "1282 v0.18 Block F — secretenv.backend.probe span (Phase 4)" \
+                "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.backend.probe"'
+            assert_contains "1283 v0.18 Block F — secretenv.exec.prepare span (Phase 4)" \
+                "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.exec.prepare"'
+
+            # manifest.path attribute present AND basename-only. The
+            # value MUST be the bare filename, never the absolute
+            # manifest path — SEC-INV path-leak class (Code-L-1). The
+            # v0.18 Phase 7b fix also hardened the no-basename fallback
+            # to a placeholder rather than the raw path.
+            assert_contains "1284 v0.18 Block F — secretenv.manifest.path attribute present" \
+                "$V017_WORK/blockA-traces.json" '"key":"secretenv.manifest.path"'
+            assert_contains "1285 v0.18 Block F — manifest.path is basename only (secretenv.toml)" \
+                "$V017_WORK/blockA-traces.json" '"value":"secretenv.toml"'
+            assert_not_contains "1286 v0.18 Block F — manifest.path leaks no absolute dir (Code-L-1)" \
+                "$V017_WORK/blockA-traces.json" "\"value\":\"$V017_PROJ"
+
+            # doctor.registry — needs a `doctor` run under OTLP. The
+            # endpoint set at Block A start is still exported here
+            # (Block E unsets it later). check_level attribute proves
+            # the DoctorCheckLevel closed enum emits.
+            otel_reset >/dev/null
+            (
+                cd "$V017_PROJ"
+                "$BIN" --config "$V017_CONFIG" doctor \
+                    > "$V017_WORK/blockF-doctor.log" 2>&1
+            )
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockF-traces.json" || true
+            assert_contains "1287 v0.18 Block F — secretenv.doctor.registry span (Phase 4)" \
+                "$V017_WORK/blockF-traces.json" '"operationName":"secretenv.doctor.registry"'
+            assert_contains "1288 v0.18 Block F — doctor.check_level attribute (DoctorCheckLevel enum)" \
+                "$V017_WORK/blockF-traces.json" '"key":"secretenv.doctor.check_level"'
+
+            # -------------------------------------------------------
             # Block E — Doctor + metrics (9 assertions, no Jaeger)
             # -------------------------------------------------------
 

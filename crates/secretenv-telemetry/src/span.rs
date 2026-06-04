@@ -27,7 +27,7 @@ use opentelemetry::trace::{Span as _, Tracer as _};
 use opentelemetry::KeyValue;
 
 use crate::metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
-use crate::{RedactionSource, RedactionStream, SecretEnvErrorKind};
+use crate::{BackendErrorStderr, RedactionSource, RedactionStream, SecretEnvErrorKind};
 
 /// OTel `Tracer` name. Single instance per process; the global
 /// `TracerProvider` (installed by [`crate::init`]) hands back a
@@ -47,6 +47,15 @@ const TRACER_NAME: &str = "secretenv";
 /// The `_private` field is the sealed-construction marker — it
 /// keeps `SpanGuard` un-constructible from outside this crate so
 /// the only path to obtain one is through [`SecretEnvSpan::start`].
+///
+/// v0.18 Code-N4: the sealing IS cosmetic against
+/// in-crate callers (the constructor is in the same module) but
+/// load-bearing against EXTERNAL crates — `SpanGuard { _private: () }`
+/// won't compile outside `secretenv-telemetry` because the field is
+/// private. Decision: keep the marker. Removing it would let any
+/// downstream consumer construct a guard out of thin air, which
+/// would let them satisfy the `must_use` contract without actually
+/// holding a real span scope.
 #[derive(Debug)]
 #[must_use = "dropping the SpanGuard ends the surrounding span's scope"]
 pub struct SpanGuard {
@@ -73,16 +82,432 @@ pub struct SecretEnvSpan {
     span: BoxedSpan,
 }
 
+/// Closed set of mutation span names that participate in the
+/// SEC-INV-22 non-droppable rule (see [`crate::sampler`]).
+///
+/// v0.18 Phase 2 structural lift: in v0.17 the span name was a
+/// `&'static str` chosen at the call site, and the sampler kept a
+/// parallel `&[&str]` allowlist. The two could drift — a typo at a
+/// new mutation call site would create a span the operator believed
+/// was non-droppable but which the sampler treated as ordinary.
+/// Phase 7b at `6e5cdd7` caught the drift with `mutation_real_name_sampled`
+/// but that test asserted a constant against itself; a NEW call site
+/// with a different typo would still slip past it.
+///
+/// Phase 2 makes the binding structural: the sampler matches on this
+/// enum (via [`as_str`](Self::as_str)) instead of a private allowlist,
+/// and the only way to start a mutation span is
+/// [`SecretEnvSpan::start_mutation`], which takes a variant of this
+/// enum. The compiler enforces that the span name and the sampler
+/// whitelist are the same enumeration.
+///
+/// Adding a new mutation span = adding a variant here. The sampler,
+/// the call site entry point, and the canonical name list all flow
+/// from the variant set; nothing else needs to change.
+///
+/// Closes [[v0.17-deferred-items#Sec-F-5]] / [[v0.17-deferred-items#Code-L3]]
+/// / Phase 7 H-1 follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MutationSpanName {
+    /// MCP `set_alias` tool — registry write.
+    McpSetAlias,
+    /// MCP `delete_alias` tool — registry write.
+    McpDeleteAlias,
+    /// MCP `migrate_alias` tool — invokes the migrate transaction.
+    McpMigrateAlias,
+    /// MCP `gen_password` tool — generated value is the secret.
+    McpGenPassword,
+    /// Migrate `read` phase — source-side state read.
+    MigrateRead,
+    /// Migrate `write` phase — dest-side state write.
+    MigrateWrite,
+    /// Migrate `pointer_flip` phase — registry alias swap commits the migrate.
+    MigratePointerFlip,
+    /// Migrate `delete` phase — source-side delete after a successful
+    /// migrate (only fires when `--delete-source` is set).
+    MigrateDelete,
+}
+
+impl MutationSpanName {
+    /// Canonical OTel span name. Read by both the tracer (when
+    /// starting the span via [`SecretEnvSpan::start_mutation`]) and
+    /// the sampler (when deciding whether to force-record the span).
+    ///
+    /// The match is exhaustive so adding a variant without naming it
+    /// is a compile error.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::McpSetAlias => "secretenv.mcp.tool.set_alias",
+            Self::McpDeleteAlias => "secretenv.mcp.tool.delete_alias",
+            Self::McpMigrateAlias => "secretenv.mcp.tool.migrate_alias",
+            Self::McpGenPassword => "secretenv.mcp.tool.gen_password",
+            Self::MigrateRead => "secretenv.migrate.read",
+            Self::MigrateWrite => "secretenv.migrate.write",
+            Self::MigratePointerFlip => "secretenv.migrate.pointer_flip",
+            Self::MigrateDelete => "secretenv.migrate.delete",
+        }
+    }
+
+    /// Every variant, in canonical order. Drives the sampler's
+    /// matching predicate AND the Phase 2 regression test that walks
+    /// the variant set to assert structural binding.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::McpSetAlias,
+            Self::McpDeleteAlias,
+            Self::McpMigrateAlias,
+            Self::McpGenPassword,
+            Self::MigrateRead,
+            Self::MigrateWrite,
+            Self::MigratePointerFlip,
+            Self::MigrateDelete,
+        ]
+    }
+}
+
+/// Closed enum of the CLI subcommands that emit a `secretenv.command`
+/// attribute. v0.18 Phase 7 M-4: structural type safety in place of
+/// the v0.17 `&str` interface to [`SecretEnvSpan::record_command`].
+///
+/// `#[non_exhaustive]` so adding a future subcommand variant is
+/// non-breaking for external consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SecretEnvCommand {
+    /// `secretenv run` — resolve + execve.
+    Run,
+    /// `secretenv get` — resolve + print to stdout.
+    Get,
+    /// `secretenv migrate` (top-level) and `secretenv registry migrate`.
+    Migrate,
+    /// `secretenv doctor` — diagnostic / fix.
+    Doctor,
+    /// `secretenv redact` — post-hoc scrubber.
+    Redact,
+    /// `secretenv mcp` — model context protocol server.
+    Mcp,
+    /// `secretenv registry` — registry management subcommands
+    /// (set / unset / list / history / etc.).
+    Registry,
+}
+
+impl SecretEnvCommand {
+    /// Canonical attribute value for the `secretenv.command` OTel
+    /// attribute. Matches the kebab-case CLI subcommand name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Get => "get",
+            Self::Migrate => "migrate",
+            Self::Doctor => "doctor",
+            Self::Redact => "redact",
+            Self::Mcp => "mcp",
+            Self::Registry => "registry",
+        }
+    }
+}
+
+/// Closed enum of the 15 known backend types.
+///
+/// Has an `Unknown` fallback for forward-compatibility. v0.18 Phase 7
+/// M-4: structural type safety in place of the v0.17 `&str` interface
+/// to [`SecretEnvSpan::record_backend_type`].
+///
+/// Construction from a runtime string (the value returned by a
+/// `Backend::backend_type()` impl) goes through [`Self::from_runtime_str`]
+/// so call sites can wrap a one-liner around the existing trait method.
+/// An unrecognised string lands in [`Self::Unknown`] preserving the
+/// original text — never panics, never drops the value silently.
+///
+/// `#[non_exhaustive]` so a future backend type can join the closed
+/// set without breaking external consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendType {
+    /// `local` — file-system backend.
+    Local,
+    /// `aws-ssm` — AWS Systems Manager Parameter Store.
+    AwsSsm,
+    /// `aws-secrets` — AWS Secrets Manager.
+    AwsSecrets,
+    /// `1password` — 1Password CLI (`op`).
+    OnePassword,
+    /// `vault` — HashiCorp Vault.
+    Vault,
+    /// `gcp` — Google Cloud Secret Manager.
+    Gcp,
+    /// `azure` — Azure Key Vault.
+    Azure,
+    /// `keychain` — macOS Keychain (`security`).
+    Keychain,
+    /// `doppler` — Doppler.
+    Doppler,
+    /// `infisical` — Infisical CLI.
+    Infisical,
+    /// `keeper` — Keeper Commander CLI.
+    Keeper,
+    /// `cf-kv` — Cloudflare Workers KV.
+    CfKv,
+    /// `openbao` — OpenBao (Vault fork).
+    OpenBao,
+    /// `conjur` — CyberArk Conjur.
+    Conjur,
+    /// `bitwarden-sm` — Bitwarden Secrets Manager.
+    BitwardenSm,
+    /// Forward-compat fallback for a backend type string that the
+    /// closed set above doesn't recognise. Preserves the original
+    /// runtime string so the attribute still emits accurately. Should
+    /// never fire for shipping backends; a future backend should add
+    /// a real variant and update [`Self::from_runtime_str`].
+    Unknown(String),
+}
+
+impl BackendType {
+    /// Parse a runtime `backend_type()` string (returned by the
+    /// `Backend` trait method on each backend impl) into the closed
+    /// enum. Falls back to [`Self::Unknown`] preserving the original
+    /// string for any value not in the canonical set.
+    #[must_use]
+    pub fn from_runtime_str(s: &str) -> Self {
+        match s {
+            "local" => Self::Local,
+            "aws-ssm" => Self::AwsSsm,
+            "aws-secrets" => Self::AwsSecrets,
+            "1password" => Self::OnePassword,
+            "vault" => Self::Vault,
+            "gcp" => Self::Gcp,
+            "azure" => Self::Azure,
+            "keychain" => Self::Keychain,
+            "doppler" => Self::Doppler,
+            "infisical" => Self::Infisical,
+            "keeper" => Self::Keeper,
+            "cf-kv" => Self::CfKv,
+            "openbao" => Self::OpenBao,
+            "conjur" => Self::Conjur,
+            "bitwarden-sm" => Self::BitwardenSm,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+
+    /// Render as the canonical OTel attribute value. Owned `String`
+    /// because the `Unknown` variant carries one.
+    #[must_use]
+    pub fn into_attribute_value(self) -> String {
+        match self {
+            Self::Local => "local".to_owned(),
+            Self::AwsSsm => "aws-ssm".to_owned(),
+            Self::AwsSecrets => "aws-secrets".to_owned(),
+            Self::OnePassword => "1password".to_owned(),
+            Self::Vault => "vault".to_owned(),
+            Self::Gcp => "gcp".to_owned(),
+            Self::Azure => "azure".to_owned(),
+            Self::Keychain => "keychain".to_owned(),
+            Self::Doppler => "doppler".to_owned(),
+            Self::Infisical => "infisical".to_owned(),
+            Self::Keeper => "keeper".to_owned(),
+            Self::CfKv => "cf-kv".to_owned(),
+            Self::OpenBao => "openbao".to_owned(),
+            Self::Conjur => "conjur".to_owned(),
+            Self::BitwardenSm => "bitwarden-sm".to_owned(),
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
+// =====================================================================
+// v0.18 Phase 4 closed enums — Arch-M6 subset (5 of 6 schema-reserved
+// spans). Each enum drives one or more typed `record_*` setters on
+// `SecretEnvSpan`. Pattern matches MutationSpanName / SecretEnvCommand /
+// BackendType from Phases 2-3.
+// =====================================================================
+
+/// Outcome of a `secretenv.manifest.load` span. v0.18 Phase 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ManifestOutcome {
+    /// Manifest loaded + validated successfully.
+    Ok,
+    /// No `secretenv.toml` found by the upward search.
+    NotFound,
+    /// File exists but is not parseable TOML or fails the typed
+    /// deserialization.
+    ParseError,
+    /// Parses but fails [`crate::SecretDecl`]-shape validation
+    /// (e.g. an alias `from` field not a `secretenv://<alias>` URI).
+    ValidationError,
+}
+
+impl ManifestOutcome {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::NotFound => "not_found",
+            Self::ParseError => "parse_error",
+            Self::ValidationError => "validation_error",
+        }
+    }
+}
+
+/// Kind of registry selection that drove a `secretenv.registry.load`
+/// span.
+///
+/// Mirrors `secretenv_core::RegistrySelection` from the consumer
+/// side without leaking the underlying type into this crate. v0.18
+/// Phase 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegistrySelectionKind {
+    /// `RegistrySelection::Name(_)` — selected by `[registries.<name>]`.
+    ByName,
+    /// `RegistrySelection::Uri(_)` — direct backend URI.
+    Uri,
+}
+
+impl RegistrySelectionKind {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ByName => "by_name",
+            Self::Uri => "uri",
+        }
+    }
+}
+
+/// Depth of a backend probe. v0.18 Phase 4 + the rolling D-3.1
+/// `backend.probe.level` setter slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendProbeLevel {
+    /// Connectivity-only probe — the backend's `check()` path.
+    Connectivity,
+    /// Full probe — connectivity AND permission/scope verification.
+    Full,
+}
+
+impl BackendProbeLevel {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connectivity => "connectivity",
+            Self::Full => "full",
+        }
+    }
+}
+
+/// Outcome of a backend probe. v0.18 Phase 4 + the rolling D-3.1
+/// `backend.probe.outcome` setter slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendProbeOutcome {
+    /// Probe succeeded.
+    Success,
+    /// Probe timed out per [`crate::sampler`] / `with_timeout` bound.
+    Timeout,
+    /// Backend reachable but refused the probe (auth / permission).
+    PermissionDenied,
+    /// Other error — backend-level fault.
+    Error,
+}
+
+impl BackendProbeOutcome {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Timeout => "timeout",
+            Self::PermissionDenied => "permission_denied",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Depth of a `secretenv doctor` invocation. v0.18 Phase 4 + the
+/// rolling D-3.1 `doctor.check_level` setter slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DoctorCheckLevel {
+    /// Level 1 + 2 (config + auth probe) only.
+    Quick,
+    /// Level 1 + 2 + `--fix` remediation pass.
+    Standard,
+    /// Level 1 + 2 + 3 (`--extensive` — registry/source reachability).
+    Extensive,
+}
+
+impl DoctorCheckLevel {
+    /// Canonical attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Standard => "standard",
+            Self::Extensive => "extensive",
+        }
+    }
+}
+
 impl SecretEnvSpan {
     /// Start a new span with a static-str name (e.g. `"redact.match"`,
     /// `"resolve.alias"`, `"backend.get"`). Returns the typed builder
     /// alongside a [`SpanGuard`] kept by the caller for scope.
+    ///
+    /// **For mutation spans, use [`Self::start_mutation`] instead.**
+    /// Mutation spans participate in the SEC-INV-22 non-droppable
+    /// rule; the typed entry point binds the span name and the
+    /// sampler whitelist to the same closed enum so they cannot
+    /// drift. v0.18 Phase 2 Sec-F-5 / Code-L3.
     #[must_use = "the span must be held for its scope; \
                   dropping it immediately ends the span"]
     pub fn start(name: &'static str) -> (Self, SpanGuard) {
+        // v0.18 Phase 7b Arch-F-1: in debug/test builds, surface
+        // accidental bypass of `start_mutation`. The sampler matches
+        // on the wire name, so a misuse is still force-sampled
+        // correctly — but the structural-binding claim ("the only
+        // way to land a mutation span is `start_mutation`") needs a
+        // runtime guardrail until the marker-type split lands
+        // (Arch-W-5 / v0.19). Release builds compile this out.
+        // `start_mutation` bypasses this check via `start_inner`.
+        debug_assert!(
+            !MutationSpanName::all().iter().any(|m| m.as_str() == name),
+            "SecretEnvSpan::start({name:?}) was called with a mutation \
+             span name; use `start_mutation(MutationSpanName::…)` instead. \
+             v0.18 Phase 7b Arch-F-1.",
+        );
+        Self::start_inner(name)
+    }
+
+    /// Shared body of [`start`] and [`start_mutation`]. The mutation
+    /// entry point goes through here directly so it does not trip the
+    /// Arch-F-1 debug-assert guarding the raw `start` surface.
+    fn start_inner(name: &'static str) -> (Self, SpanGuard) {
         let tracer = global::tracer(TRACER_NAME);
         let span = tracer.start(name);
         (Self { name, span }, SpanGuard { _private: () })
+    }
+
+    /// Start a **mutation** span — one that participates in the
+    /// SEC-INV-22 non-droppable rule.
+    ///
+    /// v0.18 Phase 2 Sec-F-5 / Code-L3 / Phase 7 H-1 follow-up: this
+    /// is the sole entry point for mutation spans. The closed
+    /// [`MutationSpanName`] enum is shared between this constructor
+    /// and [`crate::sampler::MutationNonDroppableSampler`], so a new
+    /// mutation tool's span is automatically force-sampled by the
+    /// sampler without any second-place update — adding a variant
+    /// to the enum is the entire change.
+    #[must_use = "the span must be held for its scope; \
+                  dropping it immediately ends the span"]
+    pub fn start_mutation(name: MutationSpanName) -> (Self, SpanGuard) {
+        Self::start_inner(name.as_str())
     }
 
     /// `secretenv.version` — the SecretEnv release that produced
@@ -98,10 +523,12 @@ impl SecretEnvSpan {
         self
     }
 
-    /// `secretenv.command` — `run` / `get` / `migrate` / `doctor` /
-    /// `mcp` / `redact`. ALLOW.
-    pub fn record_command(&mut self, cmd: &str) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.command", cmd.to_owned()));
+    /// `secretenv.command` — closed enum of CLI subcommands. ALLOW.
+    /// v0.18 Phase 7 M-4: was `&str`; closed enum now binds the
+    /// attribute value to a compile-checked set so call sites
+    /// cannot smuggle a typo.
+    pub fn record_command(&mut self, cmd: SecretEnvCommand) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.command", cmd.as_str()));
         self
     }
 
@@ -157,9 +584,14 @@ impl SecretEnvSpan {
         self
     }
 
-    /// `secretenv.backend.type`. ALLOW.
-    pub fn record_backend_type(&mut self, ty: &str) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.backend.type", ty.to_owned()));
+    /// `secretenv.backend.type`. ALLOW. v0.18 Phase 7 M-4: was
+    /// `&str`; now consumes [`BackendType`], a closed enum of the
+    /// 15 known backend types with an `Unknown(String)` fallback
+    /// for forward compatibility (a future backend's `backend_type()`
+    /// string that hasn't been added to the enum yet still emits
+    /// without panicking).
+    pub fn record_backend_type(&mut self, ty: BackendType) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.type", ty.into_attribute_value()));
         self
     }
 
@@ -202,6 +634,157 @@ impl SecretEnvSpan {
         self.span.set_attribute(KeyValue::new(
             "secretenv.backend.error.kind",
             kind.as_attribute_value(),
+        ));
+        self
+    }
+
+    /// `secretenv.backend.error.message` — opt-in scrubbed backend
+    /// stderr text. Dual-state ALLOW per `docs/reference/opentelemetry.md`
+    /// §2: default DENY (`opt_in = false` → attribute structurally
+    /// absent); opt-in scrubbed-ALLOW (`opt_in = true` → emit the
+    /// scrubbed payload). The opt-in is driven by the CLI flag
+    /// `--otel-include-error-detail` on `secretenv run` (and the
+    /// corresponding [`crate::init::RunOptions`] field). v0.18 D-5.1.
+    ///
+    /// SEC-INV-20 enforcement is structural: the `msg` parameter is
+    /// `&BackendErrorStderr`, and that type's only constructor runs
+    /// the shape-based scrubber (URI shapes / AWS 12-digit account
+    /// IDs / high-entropy tokens). A caller that holds a
+    /// `BackendErrorStderr` has, by construction, scrubbed the input.
+    pub fn record_backend_error_message_scrubbed(
+        &mut self,
+        msg: &BackendErrorStderr,
+        opt_in: bool,
+    ) -> &mut Self {
+        if opt_in {
+            self.span.set_attribute(KeyValue::new(
+                "secretenv.backend.error.message",
+                msg.as_str().to_owned(),
+            ));
+        }
+        self
+    }
+
+    // ----- v0.18 Phase 4: schema-reserved span attribute setters -----
+
+    /// `secretenv.manifest.path` — manifest file path AFTER the
+    /// caller has reduced it to a non-leaking representation
+    /// (basename only in v0.18, per the
+    /// `Manifest::load_from` emission site at `secretenv-core`).
+    /// The method name carries the contract: a caller passing the
+    /// raw absolute path is a SEC-INV-04-class bug — the value must
+    /// already be path-leak-safe before reaching this setter. ALLOW.
+    /// v0.18 Phase 4. v0.18 Phase 7b Code-F-2: doc clarified — was
+    /// previously described as "workspace-relative", but the only
+    /// production caller emits the basename, so the doc rewording
+    /// matches reality without re-shaping the wire emission.
+    pub fn record_manifest_path_relative(&mut self, path: &std::path::Path) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.manifest.path",
+            path.to_string_lossy().into_owned(),
+        ));
+        self
+    }
+
+    /// `secretenv.manifest.alias_count` — number of `SecretDecl::Alias`
+    /// entries in the manifest. ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_alias_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.manifest.alias_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.manifest.default_count` — number of `SecretDecl::Default`
+    /// entries in the manifest. ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_default_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.manifest.default_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.manifest.outcome` — closed enum [`ManifestOutcome`].
+    /// ALLOW. v0.18 Phase 4.
+    pub fn record_manifest_outcome(&mut self, outcome: ManifestOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.manifest.outcome", outcome.as_str()));
+        self
+    }
+
+    /// `secretenv.registry.selection` — closed enum
+    /// [`RegistrySelectionKind`]. ALLOW. v0.18 Phase 4.
+    pub fn record_registry_selection(&mut self, kind: RegistrySelectionKind) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.registry.selection", kind.as_str()));
+        self
+    }
+
+    /// `secretenv.registry.source_count` — number of cascade-layer
+    /// sources contributing to the resolved `AliasMap`. ALLOW. v0.18
+    /// Phase 4.
+    pub fn record_registry_source_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.registry.source_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.registry.source_index` — zero-based index of the
+    /// current cascade-layer source within the source list. ALLOW.
+    /// v0.18 Phase 4.
+    pub fn record_registry_source_index(&mut self, idx: u32) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.registry.source_index", i64::from(idx)));
+        self
+    }
+
+    /// `secretenv.backend.probe.level` — closed enum
+    /// [`BackendProbeLevel`]. ALLOW. v0.18 Phase 4.
+    pub fn record_backend_probe_level(&mut self, level: BackendProbeLevel) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.probe.level", level.as_str()));
+        self
+    }
+
+    /// `secretenv.backend.probe.outcome` — closed enum
+    /// [`BackendProbeOutcome`]. ALLOW. v0.18 Phase 4.
+    pub fn record_backend_probe_outcome(&mut self, outcome: BackendProbeOutcome) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.backend.probe.outcome", outcome.as_str()));
+        self
+    }
+
+    /// `secretenv.backend.fetch.attempt` — 1-based retry counter for
+    /// the current fetch attempt. ALLOW. v0.18 Phase 4.
+    pub fn record_backend_fetch_attempt(&mut self, attempt: u32) -> &mut Self {
+        self.span
+            .set_attribute(KeyValue::new("secretenv.backend.fetch.attempt", i64::from(attempt)));
+        self
+    }
+
+    /// `secretenv.doctor.check_level` — closed enum
+    /// [`DoctorCheckLevel`]. ALLOW. v0.18 Phase 4.
+    pub fn record_doctor_check_level(&mut self, level: DoctorCheckLevel) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.doctor.check_level", level.as_str()));
+        self
+    }
+
+    /// `secretenv.doctor.backend_count` — total number of backends
+    /// the doctor pass evaluated. ALLOW. v0.18 Phase 4.
+    pub fn record_doctor_backend_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.doctor.backend_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
+        ));
+        self
+    }
+
+    /// `secretenv.doctor.failure_count` — number of backends in a
+    /// non-Authenticated state after the doctor pass. ALLOW. v0.18
+    /// Phase 4.
+    pub fn record_doctor_failure_count(&mut self, n: u64) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.doctor.failure_count",
+            i64::try_from(n).unwrap_or(i64::MAX),
         ));
         self
     }
@@ -423,6 +1006,24 @@ impl SecretEnvSpan {
         self
     }
 
+    /// `secretenv.migrate.collapsed`. ALLOW. v0.18 M-9.
+    ///
+    /// `true` when the source + dest backend pair lets the
+    /// three-phase transaction (read → write → pointer-flip) collapse
+    /// into a single backend-side transaction (e.g. same-backend
+    /// migrations where the backend exposes an atomic `cas_set`
+    /// surface). `false` for the regular three-phase flow.
+    ///
+    /// v0.18 emits this attribute as `false` at the parent migrate
+    /// span unconditionally — backend-pair collapse detection is not
+    /// yet wired (no backend currently exposes `cas_set`). The
+    /// attribute reserves the slot so future collapse paths can
+    /// flip it without spec churn.
+    pub fn record_migrate_collapsed(&mut self, collapsed: bool) -> &mut Self {
+        self.span.set_attribute(KeyValue::new("secretenv.migrate.collapsed", collapsed));
+        self
+    }
+
     /// The span name, for tests + diagnostic logging.
     #[must_use]
     pub const fn name(&self) -> &'static str {
@@ -596,7 +1197,7 @@ mod tests {
         let (mut span, _guard) = SecretEnvSpan::start("redact.match");
         span.record_version("0.17.0")
             .record_run_id("11111111-1111-1111-1111-111111111111")
-            .record_command("run")
+            .record_command(SecretEnvCommand::Run)
             .record_redact_match_count(3)
             .record_alias_outcome(AliasOutcome::Ok);
         assert_eq!(span.name(), "redact.match");

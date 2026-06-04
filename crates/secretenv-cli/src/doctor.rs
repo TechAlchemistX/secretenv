@@ -287,6 +287,13 @@ struct FixAction {
 /// reports a non-`Ok` status (after remediation, when `--fix` is on),
 /// even though the human report is still printed normally. This makes
 /// `secretenv doctor` usable as a CI pre-flight gate.
+// v0.18 Phase 4: the doctor.registry span scope pushed this function
+// past the soft 100-line cap. Splitting would not aid readability —
+// the function is a sequence of distinct passes (auth check, backend
+// per-instance status, registry cascade reachability, optional
+// extensive probes, optional OTel reachability, trace drain, report
+// emit). The line-count is a smell, not a defect.
+#[allow(clippy::too_many_lines)]
 pub async fn run_doctor(
     config: &Config,
     backends: &BackendRegistry,
@@ -299,8 +306,21 @@ pub async fn run_doctor(
     // ---- locally and we can render the trace section after the
     // ---- normal report. doctor --trace is a one-shot, so the
     // ---- global-provider swap has no downstream consequence.
-    let trace_capture =
-        if opts.trace { Some(secretenv_telemetry::LocalTraceCapture::install()) } else { None };
+    //
+    // v0.18 Sec-M-2: install() returns Result. `doctor --trace` is
+    // a one-shot command at the top of the process; an already-
+    // installed capture here means a programming error (no other
+    // call site exists in the workspace). Map Err -> anyhow and
+    // bubble; the operator sees a clear diagnostic instead of a
+    // silently-swapped global provider.
+    let trace_capture = if opts.trace {
+        Some(
+            secretenv_telemetry::LocalTraceCapture::install()
+                .map_err(|e| anyhow::anyhow!("doctor --trace: {e}"))?,
+        )
+    } else {
+        None
+    };
 
     // ---- Pass 1: initial Level 1+2 check across all backends ----
     let mut statuses = check_all_backends(&list).await;
@@ -332,6 +352,14 @@ pub async fn run_doctor(
     // re-running `check()`. Keyed by `instance_name` (the scheme).
     let mut statuses_by_instance: HashMap<String, DoctorStatus> = HashMap::new();
     let mut entries: Vec<DoctorEntry> = Vec::with_capacity(list.len());
+    // v0.18 Phase 4: capture aggregate counts BEFORE the zip consumes
+    // `statuses` so the doctor.registry span can emit them.
+    // v0.18 Phase 7b Code-L-6: was `as u64` residue from Phase 4;
+    // saturating per Phase 6 convention.
+    let backend_count = u64::try_from(statuses.len()).unwrap_or(u64::MAX);
+    let failure_count =
+        u64::try_from(statuses.iter().filter(|s| !matches!(s, BackendStatus::Ok { .. })).count())
+            .unwrap_or(u64::MAX);
     for (b, s) in list.iter().zip(statuses) {
         let doctor_status: DoctorStatus = s.into();
         statuses_by_instance.insert(b.instance_name().to_owned(), doctor_status.clone());
@@ -345,18 +373,40 @@ pub async fn run_doctor(
     entries.sort_by(|a, b| a.instance_name.cmp(&b.instance_name));
 
     // ---- Per-registry cascade reachability ----
-    let mut registry_names: Vec<&String> = config.registries.keys().collect();
-    registry_names.sort();
-    let mut registries: Vec<RegistryReport> = Vec::with_capacity(registry_names.len());
-    for name in registry_names {
-        let cfg = &config.registries[name];
-        let mut sources: Vec<RegistrySourceReport> = Vec::with_capacity(cfg.sources.len());
-        for raw in &cfg.sources {
-            let status = source_status(raw, &statuses_by_instance);
-            sources.push(RegistrySourceReport { uri: raw.clone(), status });
+    // v0.18 Phase 4 — `secretenv.doctor.registry` schema-reserved span
+    // (Arch-M6 subset). Wraps the per-registry cascade-reachability
+    // pass with aggregate doctor-level attributes. Sibling of the
+    // existing per-backend `secretenv.doctor.backend` spans rather
+    // than parent (Arch-M1 deferred to v0.20).
+    let registries = {
+        let (mut registry_span, _registry_guard) =
+            secretenv_telemetry::SecretEnvSpan::start("secretenv.doctor.registry");
+        let check_level = if opts.extensive {
+            secretenv_telemetry::DoctorCheckLevel::Extensive
+        } else if opts.fix {
+            secretenv_telemetry::DoctorCheckLevel::Standard
+        } else {
+            secretenv_telemetry::DoctorCheckLevel::Quick
+        };
+        registry_span
+            .record_doctor_check_level(check_level)
+            .record_doctor_backend_count(backend_count)
+            .record_doctor_failure_count(failure_count);
+
+        let mut registry_names: Vec<&String> = config.registries.keys().collect();
+        registry_names.sort();
+        let mut registries: Vec<RegistryReport> = Vec::with_capacity(registry_names.len());
+        for name in registry_names {
+            let cfg = &config.registries[name];
+            let mut sources: Vec<RegistrySourceReport> = Vec::with_capacity(cfg.sources.len());
+            for raw in &cfg.sources {
+                let status = source_status(raw, &statuses_by_instance);
+                sources.push(RegistrySourceReport { uri: raw.clone(), status });
+            }
+            registries.push(RegistryReport { name: name.clone(), sources });
         }
-        registries.push(RegistryReport { name: name.clone(), sources });
-    }
+        registries
+    };
 
     // ---- Optional --extensive depth probes ----
     if opts.extensive {
@@ -417,7 +467,10 @@ async fn check_all_backends(list: &[&dyn Backend]) -> Vec<BackendStatus> {
         let started = std::time::Instant::now();
         let (mut span, _guard) =
             secretenv_telemetry::SecretEnvSpan::start("secretenv.doctor.backend");
-        span.record_backend_type(b.backend_type()).record_backend_instance(b.instance_name());
+        span.record_backend_type(secretenv_telemetry::BackendType::from_runtime_str(
+            b.backend_type(),
+        ))
+        .record_backend_instance(b.instance_name());
         let label = format!("{}::check", b.instance_name());
         let status = match with_timeout(DEFAULT_CHECK_TIMEOUT, &label, async {
             Ok(b.check().await)
@@ -766,8 +819,21 @@ async fn probe_otel_status() -> OtelStatus {
 /// Parses host:port from URLs of the shape `http://host:port`,
 /// `https://host:port`, or `grpc://host:port`. Falls back to assuming
 /// the input is already a `host:port` pair otherwise.
+///
+/// v0.18 Code-N5 / Phase 7 M-2: respects `OTEL_EXPORTER_OTLP_PROTOCOL`
+/// when no explicit port is set on the endpoint. `http/protobuf` and
+/// `http/json` default to port 4318 (OTLP/HTTP); `grpc` (and unset)
+/// keep the prior 4317 default. Operators running an HTTP/protobuf
+/// exporter no longer see a false "unreachable" diagnostic.
 async fn probe_otel_reachability(endpoint: &str) -> OtelReachability {
-    let host_port = parse_endpoint_host_port(endpoint);
+    let protocol_default_port =
+        match std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").as_deref().unwrap_or("") {
+            "http/protobuf" | "http/json" => 4318,
+            // grpc (default) and any unknown value fall back to the
+            // OTLP/gRPC standard port.
+            _ => 4317,
+        };
+    let host_port = parse_endpoint_host_port(endpoint, protocol_default_port);
     let started = std::time::Instant::now();
     let connect_fut = tokio::net::TcpStream::connect(&host_port);
     match tokio::time::timeout(std::time::Duration::from_secs(1), connect_fut).await {
@@ -790,15 +856,17 @@ async fn probe_otel_reachability(endpoint: &str) -> OtelReachability {
 }
 
 /// Strip the scheme + path from an OTLP endpoint URL and return
-/// `host:port`. Defaults to port 4317 (the OTLP/gRPC standard) when
-/// the URL omits an explicit port.
-fn parse_endpoint_host_port(endpoint: &str) -> String {
+/// `host:port`. Defaults to `default_port` when the URL omits an
+/// explicit port. v0.18 Code-N5 / Phase 7 M-2: callers pass
+/// 4317 (gRPC) or 4318 (HTTP) based on
+/// `OTEL_EXPORTER_OTLP_PROTOCOL`.
+fn parse_endpoint_host_port(endpoint: &str, default_port: u16) -> String {
     let after_scheme = endpoint.split_once("://").map_or(endpoint, |(_, rest)| rest);
     let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
     if host_port.contains(':') {
         host_port.to_owned()
     } else {
-        format!("{host_port}:4317")
+        format!("{host_port}:{default_port}")
     }
 }
 

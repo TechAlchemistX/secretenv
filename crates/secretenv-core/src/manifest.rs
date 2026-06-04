@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
+use secretenv_telemetry::{ManifestOutcome, SecretEnvSpan};
 use serde::Deserialize;
 
 use crate::uri::BackendUri;
@@ -88,11 +89,57 @@ impl Manifest {
     /// # Errors
     /// Same as [`load`](Self::load) minus the not-found case.
     pub fn load_from(path: &Path) -> Result<Self> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read manifest at '{}'", path.display()))?;
-        let manifest: Self = toml::from_str(&contents)
-            .with_context(|| format!("failed to parse manifest at '{}'", path.display()))?;
-        manifest.validate().with_context(|| format!("invalid manifest at '{}'", path.display()))?;
+        // v0.18 Phase 4 — `secretenv.manifest.load` schema-reserved
+        // span (Arch-M6 subset). Path is reduced to its filename
+        // basename for emission so an absolute path on the operator's
+        // workstation never reaches OTel; this is the same SEC-INV
+        // discipline as the `command_name` basename guard.
+        //
+        // v0.18 Phase 7b Code-L-1: if `path.file_name()` returns None
+        // (the path is `/`, `..`, or empty), the previous fallback
+        // emitted the raw path itself — leaking the very absolute
+        // path the basename reduction was meant to hide. Falls back
+        // to a literal placeholder instead. Matches the existing
+        // PROCESS_COMMAND_NAME_EMPTY sentinel pattern.
+        let span_path = path
+            .file_name()
+            .map_or_else(|| std::path::PathBuf::from("<no-basename>"), std::path::PathBuf::from);
+        let (mut span, _guard) = SecretEnvSpan::start("secretenv.manifest.load");
+        span.record_manifest_path_relative(&span_path);
+
+        let contents = match fs::read_to_string(path)
+            .with_context(|| format!("failed to read manifest at '{}'", path.display()))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                span.record_manifest_outcome(ManifestOutcome::NotFound);
+                return Err(e);
+            }
+        };
+        let manifest: Self = match toml::from_str(&contents)
+            .with_context(|| format!("failed to parse manifest at '{}'", path.display()))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                span.record_manifest_outcome(ManifestOutcome::ParseError);
+                return Err(e);
+            }
+        };
+        if let Err(e) =
+            manifest.validate().with_context(|| format!("invalid manifest at '{}'", path.display()))
+        {
+            span.record_manifest_outcome(ManifestOutcome::ValidationError);
+            return Err(e);
+        }
+
+        let (alias_count, default_count) =
+            manifest.secrets.values().fold((0u64, 0u64), |(aliases, defaults), decl| match decl {
+                SecretDecl::Alias { .. } => (aliases + 1, defaults),
+                SecretDecl::Default { .. } => (aliases, defaults + 1),
+            });
+        span.record_manifest_alias_count(alias_count)
+            .record_manifest_default_count(default_count)
+            .record_manifest_outcome(ManifestOutcome::Ok);
         Ok(manifest)
     }
 

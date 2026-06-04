@@ -170,6 +170,10 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.manifest.path", AttributeClassification::Allow),
     ("secretenv.manifest.alias_count", AttributeClassification::Allow),
     ("secretenv.manifest.default_count", AttributeClassification::Allow),
+    // v0.18 Phase 4 — Arch-M6 subset. `manifest.outcome` is the
+    // closed-enum result of `Manifest::load_from` (ok / not_found /
+    // parse_error / validation_error).
+    ("secretenv.manifest.outcome", AttributeClassification::Allow),
     // Phase 9b — Sec F-3. Spec §2.9 doctor aggregates.
     ("secretenv.doctor.check_level", AttributeClassification::Allow),
     ("secretenv.doctor.backend_count", AttributeClassification::Allow),
@@ -220,6 +224,11 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     // the deletion outcome (which surfaces via migrate.outcome).
     ("secretenv.migrate.delete_source", AttributeClassification::Allow),
     ("secretenv.migrate.transaction_id", AttributeClassification::Allow),
+    // v0.18 M-9. Forward-compat slot for the dual-control collapse
+    // detection. Emitted as `false` in v0.18 (no backend currently
+    // exposes an atomic cas_set surface); future collapse paths
+    // flip the bit at the parent migrate span.
+    ("secretenv.migrate.collapsed", AttributeClassification::Allow),
     // v0.17 Phase 9c — Sec F-3 residue. Spec §2.7 ALLOW (closed enum,
     // same shape as `migrate.phase`; identifies which phase failed
     // when migrate.outcome=partial-failure).

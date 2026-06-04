@@ -52,12 +52,18 @@ enum ExporterMode {
     OtlpGrpc,
 }
 
-/// Error surface from [`init`]. Wraps the OTel SDK's builder error.
+/// Error surface from [`init`].
+///
+/// Wraps the OTel SDK's builder error with the structured cause
+/// preserved so downstream `?` propagates the chain. v0.18 Arch-F-7
+/// / Arch-L-2: was `Exporter(String)` in v0.17, which threw away the
+/// source error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum InitError {
     /// The configured OTLP exporter failed to build.
-    #[error("failed to build OTLP exporter: {0}")]
-    Exporter(String),
+    #[error("failed to build OTLP exporter")]
+    Exporter(#[from] opentelemetry_otlp::ExporterBuildError),
 }
 
 /// Inspect env vars and decide which exporter to install.
@@ -103,14 +109,18 @@ where
 ///
 /// Per `docs/reference/opentelemetry.md` §7 and §2.10:
 /// - `service.name` defaults to `secretenv`; overridden by `OTEL_SERVICE_NAME`.
-/// - `service.version` comes from `CARGO_PKG_VERSION`.
+/// - `service.version` comes from the per-binary `service_version` arg
+///   passed in by the call site. v0.17 hard-coded
+///   `env!("CARGO_PKG_VERSION")` of the telemetry crate; v0.18 Arch-F-5
+///   accepts the binary's own version so library embedders can set
+///   their own.
 /// - `host.name`, `host.arch`, `os.type`, `process.pid` are emitted from
 ///   the OTel standard resource conventions (v0.17 Phase 7b arch F-3).
 /// - `OTEL_RESOURCE_ATTRIBUTES` is honored as additional k=v pairs.
 ///   Operator-supplied attributes override our defaults — `Resource::builder`'s
 ///   `with_attributes` semantics already do last-write-wins, so we
 ///   apply the parsed pairs after the defaults to get override behavior.
-fn build_resource<F>(env: F) -> Resource
+fn build_resource<F>(env: F, service_version: &str) -> Resource
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -124,7 +134,7 @@ where
 
     let mut builder = Resource::builder()
         .with_service_name(service_name)
-        .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+        .with_attribute(KeyValue::new("service.version", service_version.to_owned()))
         .with_attribute(KeyValue::new("host.name", host_name))
         .with_attribute(KeyValue::new("host.arch", std::env::consts::ARCH))
         .with_attribute(KeyValue::new("os.type", std::env::consts::OS))
@@ -254,21 +264,30 @@ fn percent_decode(s: &str) -> String {
 /// No-op when no `OTEL_*` env var is set: zero overhead, no global
 /// state mutated, no tonic/grpc connection attempted.
 ///
+/// `service_version` is the binary's own version string (typically
+/// `env!("CARGO_PKG_VERSION")` at the call site). v0.18 Arch-F-5
+/// makes this per-binary instead of v0.17's hard-coded
+/// `CARGO_PKG_VERSION` of the telemetry crate, so library embedders
+/// can set their own `service.version` resource attribute.
+///
 /// # Errors
 ///
 /// Returns [`InitError::Exporter`] when an OTLP exporter is requested
 /// (endpoint set or `OTEL_TRACES_EXPORTER=otlp`) but the SDK fails to
 /// build it — for example, a malformed endpoint URL.
-pub fn init() -> Result<TelemetryGuard, InitError> {
-    init_with_env(|k| std::env::var(k).ok())
+pub fn init(service_version: &str) -> Result<TelemetryGuard, InitError> {
+    init_with_env(|k| std::env::var(k).ok(), service_version)
 }
 
-/// `init` with a pluggable env reader for tests.
+/// `init` with a pluggable env reader for tests. Hidden from public
+/// docs — test-injection seam, not part of the supported API surface.
+/// v0.18 Arch-L-3.
 ///
 /// # Errors
 ///
 /// Same as [`init`].
-pub fn init_with_env<F>(env: F) -> Result<TelemetryGuard, InitError>
+#[doc(hidden)]
+pub fn init_with_env<F>(env: F, service_version: &str) -> Result<TelemetryGuard, InitError>
 where
     F: Fn(&str) -> Option<String> + Copy,
 {
@@ -285,12 +304,12 @@ where
             // operator-configured ratio sampling can never silently
             // drop a registry mutation from the audit stream.
             let tracer_provider = SdkTracerProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_sampler(sampler_from_env(env))
                 .with_batch_exporter(opentelemetry_stdout::SpanExporter::default())
                 .build();
             let meter_provider = SdkMeterProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_reader(
                     PeriodicReader::builder(opentelemetry_stdout::MetricExporter::default())
                         .build(),
@@ -311,8 +330,7 @@ where
             {
                 span_builder = span_builder.with_timeout(Duration::from_millis(timeout_ms));
             }
-            let span_exporter =
-                span_builder.build().map_err(|e| InitError::Exporter(format!("{e}")))?;
+            let span_exporter = span_builder.build().map_err(InitError::from)?;
 
             // Metric exporter — same endpoint family, with its own
             // per-signal override if the operator set one.
@@ -327,16 +345,15 @@ where
             {
                 metric_builder = metric_builder.with_timeout(Duration::from_millis(timeout_ms));
             }
-            let metric_exporter =
-                metric_builder.build().map_err(|e| InitError::Exporter(format!("{e}")))?;
+            let metric_exporter = metric_builder.build().map_err(InitError::from)?;
 
             let tracer_provider = SdkTracerProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_sampler(sampler_from_env(env))
                 .with_batch_exporter(span_exporter)
                 .build();
             let meter_provider = SdkMeterProvider::builder()
-                .with_resource(build_resource(env))
+                .with_resource(build_resource(env, service_version))
                 .with_reader(PeriodicReader::builder(metric_exporter).build())
                 .build();
             Ok(install(tracer_provider, meter_provider, env))
@@ -453,18 +470,38 @@ pub struct TelemetryGuard {
     _parent_ctx_guard: Option<opentelemetry::ContextGuard>,
 }
 
+/// v0.18 Sec-M-3 bounded drop timeout. Sized to be small enough that
+/// CTRL-C against a `secretenv run` with a slow/unreachable OTLP
+/// collector still returns the shell promptly, but large enough that
+/// a healthy collector finishes the flush in well under the bound.
+const TELEMETRY_GUARD_DROP_TIMEOUT: Duration = Duration::from_secs(1);
+
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        // Best-effort. Failures during shutdown cannot be surfaced to
-        // the operator usefully — process is exiting either way.
-        if let Some(meter_provider) = self.meter_provider.take() {
-            let _ = meter_provider.force_flush();
-            let _ = meter_provider.shutdown();
+        // v0.17 unbounded `force_flush + shutdown` could hang the
+        // process indefinitely if the OTLP collector was slow or
+        // unreachable — operators triaging a stuck CTRL-C blamed
+        // secretenv rather than their collector. v0.18 Sec-M-3 wraps
+        // the entire teardown in the same bounded-worker-thread
+        // pattern as `flush_before_exec` (extracted as
+        // `run_bounded_or_detach`). On timeout, the worker thread is
+        // detached and the process continues exit; the OTel batch
+        // processors will be torn down by process termination.
+        let meter = self.meter_provider.take();
+        let tracer = self.tracer_provider.take();
+        if meter.is_none() && tracer.is_none() {
+            return;
         }
-        if let Some(tracer_provider) = self.tracer_provider.take() {
-            let _ = tracer_provider.force_flush();
-            let _ = tracer_provider.shutdown();
-        }
+        run_bounded_or_detach(TELEMETRY_GUARD_DROP_TIMEOUT, move || {
+            if let Some(m) = meter {
+                let _ = m.force_flush();
+                let _ = m.shutdown();
+            }
+            if let Some(t) = tracer {
+                let _ = t.force_flush();
+                let _ = t.shutdown();
+            }
+        });
     }
 }
 
@@ -499,7 +536,7 @@ where
 ///
 /// Implements SEC-INV-22's bounded-flush requirement: a slow or
 /// unreachable collector cannot turn `secretenv run` into a latency
-/// cliff. On timeout, pending data drops and a `tracing::debug!` event
+/// cliff. On timeout, pending data drops and a `tracing::warn!` event
 /// is emitted.
 ///
 /// No-op when [`init`] installed no provider (the no-op exporter mode).
@@ -509,34 +546,50 @@ pub fn flush_before_exec(timeout: Duration) {
     if tracer.is_none() && meter.is_none() {
         return;
     }
-    // Worker thread + recv_timeout: keeps the timeout bound enforceable
-    // without requiring a tokio runtime context at the exec call site
-    // (`secretenv-core::runner::exec_with_env` is sync). The single
-    // bound covers both signals — meter flush first because the
-    // PeriodicReader's batch is usually larger than the span batch.
-    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let worker = std::thread::spawn(move || {
+    // Meter flush first because the PeriodicReader's batch is usually
+    // larger than the span batch. Single timeout bound covers both.
+    run_bounded_or_detach(timeout, move || {
         if let Some(m) = meter {
             let _ = m.force_flush();
         }
         if let Some(t) = tracer {
             let _ = t.force_flush();
         }
+    });
+}
+
+/// v0.18 Sec-M-3: bounded worker-thread runner used by both
+/// [`flush_before_exec`] (pre-exec flush bound) and
+/// [`TelemetryGuard::drop`] (post-process bound for CTRL-C
+/// responsiveness). Spawns `work` in a thread, waits up to `timeout`
+/// for completion, and detaches the thread on timeout while emitting
+/// a `tracing::warn!` event.
+///
+/// Kept here (not factored to a separate module) so the only OTel
+/// teardown path in the crate uses one shared implementation;
+/// behavior changes apply uniformly.
+fn run_bounded_or_detach<F>(timeout: Duration, work: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let worker = std::thread::spawn(move || {
+        work();
         let _ = tx.send(());
     });
     match rx.recv_timeout(timeout) {
         Ok(()) => {
-            // Flush completed within bound. Worker thread exits cleanly.
+            // Work completed within bound. Worker thread exits cleanly.
             let _ = worker.join();
         }
         Err(_) => {
-            // Phase 9b — Sec L-1. Bumped from `debug!` to `warn!` so
-            // operators triaging "spans not appearing in collector"
-            // get a signal at the default `secretenv=warn` filter
-            // level. One event per exec; low noise.
+            // Phase 9b — Sec L-1. `warn!` so operators triaging
+            // "spans not appearing in collector" get a signal at the
+            // default `secretenv=warn` filter level. One event per
+            // exec or process exit; low noise.
             tracing::warn!(
                 timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-                "otel flush timed out; dropping pending spans + metrics",
+                "otel teardown timed out; dropping pending spans + metrics",
             );
             // Detach the worker thread; the OTel batch processors will
             // either complete or be torn down by Drop / exec() itself.
@@ -587,12 +640,52 @@ mod tests {
     #[test]
     fn noop_init_returns_guard_without_provider() {
         let env = |_: &str| None;
-        let Ok(guard) = init_with_env(env) else {
+        let Ok(guard) = init_with_env(env, "0.0.0-test") else {
             panic!("noop init never fails");
         };
         assert!(guard.tracer_provider.is_none());
         assert!(guard.meter_provider.is_none());
         drop(guard);
+    }
+
+    // v0.18 Sec-M-3: the bounded-flush helper underlies both
+    // `flush_before_exec` (pre-exec) and `TelemetryGuard::drop`
+    // (process-exit). A test that proves the timeout is enforced
+    // regardless of what the work closure does covers both call
+    // sites structurally.
+    #[test]
+    fn run_bounded_or_detach_returns_within_timeout_when_work_blocks() {
+        let timeout = Duration::from_millis(100);
+        let started = std::time::Instant::now();
+        run_bounded_or_detach(timeout, || {
+            // Simulate an unreachable OTLP collector: the flush call
+            // would block indefinitely. The bounded helper must
+            // detach this thread and return at the deadline.
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        let elapsed = started.elapsed();
+        // 4x slack vs the 100ms bound to absorb scheduler jitter on
+        // loaded CI runners while still catching an unbounded hang
+        // (which would be 5000ms+).
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "bounded helper exceeded slack: {elapsed:?} (timeout was {timeout:?})"
+        );
+    }
+
+    #[test]
+    fn run_bounded_or_detach_completes_quickly_when_work_returns_fast() {
+        let timeout = Duration::from_secs(5);
+        let started = std::time::Instant::now();
+        run_bounded_or_detach(timeout, || {
+            // Work returns immediately. The helper must not wait for
+            // the timeout to elapse.
+        });
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "bounded helper waited unnecessarily: {elapsed:?}"
+        );
     }
 
     #[test]

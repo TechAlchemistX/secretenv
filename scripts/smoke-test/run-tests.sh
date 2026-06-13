@@ -2181,11 +2181,26 @@ EOF
     # tells us wrangler's error model still surfaces missing keys
     # (which our backend depends on for its `is_not_found_stderr`
     # heuristic to fire).
-    wrangler kv key get --namespace-id "$CFKV_NS" --remote --text CFKV_DELETE_PROBE > "$RUNS/353-v091-cfkv-postdel.log" 2>&1
+    #
+    # v0.19 smoke-hardening: Cloudflare Workers KV reads are EVENTUALLY
+    # CONSISTENT — a `get` immediately after a `delete` can return a
+    # stale edge-cached value even though the delete has propagated to
+    # the authoritative store (asst 354's `kv key list` is the
+    # authoritative canary). So poll the read up to ~60s (CF's global
+    # propagation window) until the 404 surfaces, rather than asserting
+    # on a single immediate read. This does NOT weaken the invariant: a
+    # delete that genuinely failed never 404s, the loop times out, and
+    # 353 + 354 both fail.
+    for _cfkv_i in $(seq 1 12); do
+        wrangler kv key get --namespace-id "$CFKV_NS" --remote --text CFKV_DELETE_PROBE \
+            > "$RUNS/353-v091-cfkv-postdel.log" 2>&1
+        grep -q '404' "$RUNS/353-v091-cfkv-postdel.log" && break
+        sleep 5
+    done
     # wrangler 4.85.0 surfaces 404s with "404: Not Found" (capital N)
     # in stderr. Match on the literal status string rather than the
     # word "not found" — same evidence, immune to case-shifts.
-    assert_contains "353 v0.9.1 cf-kv post-delete read surfaces 404" \
+    assert_contains "353 v0.9.1 cf-kv post-delete read surfaces 404 (eventually-consistent; bounded retry)" \
       "$RUNS/353-v091-cfkv-postdel.log" '404'
 
     # Direct wrangler list canary — the most authoritative check.
@@ -4360,6 +4375,19 @@ if section_active_for 36; then
             )
             sleep 3
             otel_query_traces "secretenv" 30 > "$V017_WORK/blockB-posthoc-traces.json" || true
+            # v0.19 smoke-hardening (OTEL-SMOKE-CI-HARDENING): the
+            # post-hoc redact span's `redact.mode` attribute can lag the
+            # batch-flush + Jaeger-ingest window under load, so a single
+            # post-sleep query intermittently misses it (the same
+            # flush-timing class as the GHA Block-A flakes). Poll until
+            # the awaited `post-hoc` value lands (bounded ~20s) rather
+            # than relying on one query. A genuinely-absent span still
+            # times out and fails 1237.
+            for _ph_i in $(seq 1 10); do
+                grep -q '"value":"post-hoc"' "$V017_WORK/blockB-posthoc-traces.json" && break
+                sleep 2
+                otel_query_traces "secretenv" 30 > "$V017_WORK/blockB-posthoc-traces.json" || true
+            done
             # Phase 8c closed 1233-1237: redact spans now emit from
             # `core::runner::emit_redact_event_span` (runtime mode, one
             # per non-empty stream) and from `cli::cmd_redact` post-hoc
@@ -4589,15 +4617,36 @@ EOF
             # OTLP collector; scrub-correctness itself is unit-covered
             # (TS-12 + backend_error_redaction Sec-F-1/F-6 tests).
             #
-            # A dedicated single-alias project (separate from the Block A
-            # manifest, which must keep resolving cleanly) points at the
-            # `otel_failing` registry alias — a valid `local-otel://` URI
+            # A dedicated SELF-CONTAINED project (its own config +
+            # registry + manifest, written inline below) resolves a
+            # single `otel_failing` alias — a valid `local-otel://` URI
             # whose target file is never seeded, so `Backend::get` fails
             # AFTER the fetch span opens. The run exits non-zero (guarded
             # `|| true`); spans still flush via the TelemetryGuard drop on
             # the error path (no execve, unlike the Block A success path).
+            #
+            # CRITICAL (v0.19): the failing alias lives in THIS block's
+            # OWN registry, NOT the shared v0.17-otel default registry.
+            # `secretenv redact` (Block B) resolves the FULL default
+            # registry to build its scrub set, and the resolver aborts on
+            # the first unresolvable alias — so a failing alias in the
+            # default registry would abort redact before it emits its
+            # post-hoc span (breaking asst 1237). Isolating it here keeps
+            # every other command's default-registry resolution clean.
             SECF5_PROJ="$V017_WORK/secf5-proj"
             mkdir -p "$SECF5_PROJ"
+            # Self-contained config: a local backend instance + a default
+            # registry whose ONLY source is this block's failing-alias map.
+            cat > "$SECF5_PROJ/config.toml" <<SECF5_CONFIG
+[backends.local-otel]
+type = "local"
+
+[registries.default]
+sources = ["local-otel://$SECF5_PROJ/secf5-registry.toml"]
+SECF5_CONFIG
+            cat > "$SECF5_PROJ/secf5-registry.toml" <<SECF5_REG
+otel_failing = "local-otel://$SECF5_PROJ/does-not-exist.txt"
+SECF5_REG
             cat > "$SECF5_PROJ/secretenv.toml" <<'SECF5_MANIFEST'
 [secrets]
 SECF5_FAIL = { from = "secretenv://otel_failing" }
@@ -4607,7 +4656,7 @@ SECF5_MANIFEST
             otel_reset >/dev/null
             (
                 cd "$SECF5_PROJ"
-                "$BIN" --config "$V017_CONFIG" run --otel-include-error-detail \
+                "$BIN" --config "$SECF5_PROJ/config.toml" run --otel-include-error-detail \
                     -- /bin/echo secf5-on \
                     > "$V017_WORK/blockG-on.log" 2>&1 || true
             )
@@ -4628,7 +4677,7 @@ SECF5_MANIFEST
             otel_reset >/dev/null
             (
                 cd "$SECF5_PROJ"
-                "$BIN" --config "$V017_CONFIG" run \
+                "$BIN" --config "$SECF5_PROJ/config.toml" run \
                     -- /bin/echo secf5-off \
                     > "$V017_WORK/blockG-off.log" 2>&1 || true
             )

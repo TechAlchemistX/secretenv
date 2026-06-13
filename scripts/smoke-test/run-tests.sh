@@ -132,6 +132,16 @@ SECTIONS=(
     # MCP boundary; v0.16 ships with local + SEC-INV-20 + value-grep
     # as the must-have surface.
     "35|v0.16 secretenv mcp — protocol smoke + SEC-INV-20 + value-grep|no"
+    # Section 36 (v0.17 OTel) was added in v0.17 but never registered in
+    # this metadata array, so it was invisible to --list-sections and
+    # excluded from --local-only (it ran only on a full run or an
+    # explicit `--sections 36`). v0.19 registers it as cloud=no: the
+    # section uses ONLY the local-otel backend fixture (no cloud creds),
+    # and self-SKIPs cleanly when `docker` or `jq` is missing. Registering
+    # it gives the OTel suite (incl. v0.19 Block G — Sec-F-5 error-detail
+    # emission) --local-only / CI coverage on runners that have docker
+    # (GHA ubuntu does); on a host without docker it records a single SKIP.
+    "36|v0.17 OpenTelemetry — span emission + cardinality + sampler|no"
 )
 
 print_section_inventory() {

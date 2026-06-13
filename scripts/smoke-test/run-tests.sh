@@ -4576,6 +4576,68 @@ EOF
                 "$V017_WORK/blockF-traces.json" '"key":"secretenv.doctor.check_level"'
 
             # -------------------------------------------------------
+            # Block G — v0.19 Sec-F-5 opt-in scrubbed error detail (3 assertions)
+            # -------------------------------------------------------
+            #
+            # v0.19 wired the `--otel-include-error-detail` flag (shipped
+            # INERT in v0.18) to a real caller: on a FAILED backend fetch,
+            # the scrubbed error chain is emitted on the
+            # `secretenv.backend.fetch` span's
+            # `secretenv.backend.error.message` attribute — gated on the
+            # flag, default-absent. This block proves the live WIRE-UP
+            # (present-when-flagged / absent-when-not) against the real
+            # OTLP collector; scrub-correctness itself is unit-covered
+            # (TS-12 + backend_error_redaction Sec-F-1/F-6 tests).
+            #
+            # A dedicated single-alias project (separate from the Block A
+            # manifest, which must keep resolving cleanly) points at the
+            # `otel_failing` registry alias — a valid `local-otel://` URI
+            # whose target file is never seeded, so `Backend::get` fails
+            # AFTER the fetch span opens. The run exits non-zero (guarded
+            # `|| true`); spans still flush via the TelemetryGuard drop on
+            # the error path (no execve, unlike the Block A success path).
+            SECF5_PROJ="$V017_WORK/secf5-proj"
+            mkdir -p "$SECF5_PROJ"
+            cat > "$SECF5_PROJ/secretenv.toml" <<'SECF5_MANIFEST'
+[secrets]
+SECF5_FAIL = { from = "secretenv://otel_failing" }
+SECF5_MANIFEST
+
+            # Arm 1: flag ON → attribute present on the failing fetch span.
+            otel_reset >/dev/null
+            (
+                cd "$SECF5_PROJ"
+                "$BIN" --config "$V017_CONFIG" run --otel-include-error-detail \
+                    -- /bin/echo secf5-on \
+                    > "$V017_WORK/blockG-on.log" 2>&1 || true
+            )
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockG-on-traces.json" || true
+            assert_contains "1289 v0.19 Block G — backend.error.message emitted under --otel-include-error-detail (Sec-F-5)" \
+                "$V017_WORK/blockG-on-traces.json" '"key":"secretenv.backend.error.message"'
+            # SEC-INV-04 defense-in-depth: no fixture sentinel value in the
+            # error-detail spans (the failing run never fetches it, but a
+            # future regression that folded a value into the error chain
+            # would surface here).
+            assert_not_contains "1290 v0.19 Block G — sentinel value absent from error-detail spans" \
+                "$V017_WORK/blockG-on-traces.json" "$V017_SENTINEL_VALUE"
+
+            # Arm 2: flag OFF (default) → attribute structurally absent.
+            # otel_reset stops + restarts the collector (fresh trace
+            # store) so this query sees ONLY the flag-off run's spans.
+            otel_reset >/dev/null
+            (
+                cd "$SECF5_PROJ"
+                "$BIN" --config "$V017_CONFIG" run \
+                    -- /bin/echo secf5-off \
+                    > "$V017_WORK/blockG-off.log" 2>&1 || true
+            )
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockG-off-traces.json" || true
+            assert_not_contains "1291 v0.19 Block G — backend.error.message absent without the flag (default-deny)" \
+                "$V017_WORK/blockG-off-traces.json" '"key":"secretenv.backend.error.message"'
+
+            # -------------------------------------------------------
             # Block E — Doctor + metrics (9 assertions, no Jaeger)
             # -------------------------------------------------------
 

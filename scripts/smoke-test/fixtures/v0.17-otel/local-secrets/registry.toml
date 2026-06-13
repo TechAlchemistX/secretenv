@@ -4,3 +4,10 @@ otel_sentinel = "local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/sentinel.
 # the smoke; the seed value distinguishes a successful pointer flip
 # from a no-op.
 otel_migrate_src = "local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/migrate-src.txt"
+# v0.19 Sec-F-5 — deliberately-failing alias for the
+# `--otel-include-error-detail` emission block (Block G). Resolves to a
+# valid `local-otel://` URI whose target file is NEVER seeded, so
+# `Backend::get` fails AFTER the `secretenv.backend.fetch` span opens —
+# exercising the scrubbed-error-detail emission path. Not referenced by
+# any other block's manifest, so it is inert elsewhere.
+otel_failing = "local-otel://@@RUNTIME_DIR@@/v0.17-otel/local-secrets/does-not-exist.txt"

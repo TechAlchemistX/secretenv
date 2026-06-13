@@ -69,8 +69,8 @@ fn every_active_setter_emits_its_typed_attribute() {
             .record_redact_source(RedactionSource::ModeA)
             .record_migrate_phase(MigratePhase::PointerFlip)
             .record_migrate_outcome(MigrateOutcome::Ok)
-            .record_migrate_source_backend_type("aws-ssm")
-            .record_migrate_dest_backend_type("vault")
+            .record_migrate_source_backend_type(BackendType::AwsSsm)
+            .record_migrate_dest_backend_type(BackendType::Vault)
             .record_migrate_delete_source(true)
             .record_migrate_transaction_id("22222222-2222-2222-2222-222222222222");
     } // span drops → ends → SimpleSpanProcessor flushes synchronously

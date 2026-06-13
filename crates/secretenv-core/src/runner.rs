@@ -1001,6 +1001,12 @@ async fn fetch_one(
 /// error, not a recoverable runtime condition — surface it as a
 /// panic rather than a silent `Ok(())`-style fallthrough that would
 /// hide the missing guard at a future call site.
+///
+/// v0.19 Arch-W-6: evaluated for a type-level lift (a `NonEmpty<_>`
+/// input that makes the empty case unrepresentable). Kept as a
+/// documented by-construction precondition — a newtype is
+/// disproportionate for one internal caller already guarded by
+/// `!errors.is_empty()`. See CONTRIBUTING "Panics in production code".
 fn aggregate_errors(mut errors: Vec<anyhow::Error>) -> anyhow::Error {
     if errors.len() == 1 {
         // Single-failure path: preserve the original error chain
@@ -1380,8 +1386,9 @@ mod tests {
         const PROBE_ENV: &str = "SECF5WIREUPPROBE";
         const PROBE_ALIAS_NAME: &str = "test_secf5wireupprobe";
         const PROBE_PATH: &str = "/secf5/locked";
-        let probe_uri = format!("fake://{PROBE_PATH}");
 
+        // Defined before the first statement to satisfy
+        // clippy::items_after_statements.
         fn probe_fetch_error_message(spans: &[LocalTraceSpan]) -> Option<String> {
             spans
                 .iter()
@@ -1398,6 +1405,8 @@ mod tests {
                         .map(|(_, v)| v.clone())
                 })
         }
+
+        let probe_uri = format!("fake://{PROBE_PATH}");
 
         // Arm 1: flag ON → attribute present on the failing fetch span.
         let on_spans = {

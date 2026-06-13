@@ -973,17 +973,27 @@ impl SecretEnvSpan {
     /// the backend INSTANCE name (instance names can carry
     /// environment hints like `prod` that fingerprint the operator's
     /// infra topology and stay DENY).
-    pub fn record_migrate_source_backend_type(&mut self, ty: &str) -> &mut Self {
-        self.span
-            .set_attribute(KeyValue::new("secretenv.migrate.source_backend_type", ty.to_owned()));
+    ///
+    /// v0.19 Arch-W-4 / F-5: takes the closed [`BackendType`] enum
+    /// rather than a raw `&str`, closing the Phase 7 M-4 half-closure
+    /// so the migrate setters match the `record_backend_type` shape and
+    /// a typo or instance-name string cannot reach the attribute.
+    pub fn record_migrate_source_backend_type(&mut self, ty: BackendType) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.migrate.source_backend_type",
+            ty.into_attribute_value(),
+        ));
         self
     }
 
     /// `secretenv.migrate.dest_backend_type`. ALLOW. Same shape as
-    /// source — TYPE only, not instance name.
-    pub fn record_migrate_dest_backend_type(&mut self, ty: &str) -> &mut Self {
-        self.span
-            .set_attribute(KeyValue::new("secretenv.migrate.dest_backend_type", ty.to_owned()));
+    /// source — TYPE only, not instance name. v0.19 Arch-W-4 / F-5:
+    /// takes [`BackendType`] (see source-setter doc).
+    pub fn record_migrate_dest_backend_type(&mut self, ty: BackendType) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.migrate.dest_backend_type",
+            ty.into_attribute_value(),
+        ));
         self
     }
 
@@ -1219,8 +1229,8 @@ mod tests {
         let (mut span, _guard) = SecretEnvSpan::start("registry.migrate");
         span.record_migrate_phase(MigratePhase::Probe)
             .record_migrate_outcome(MigrateOutcome::Ok)
-            .record_migrate_source_backend_type("aws-ssm")
-            .record_migrate_dest_backend_type("vault")
+            .record_migrate_source_backend_type(BackendType::AwsSsm)
+            .record_migrate_dest_backend_type(BackendType::Vault)
             .record_migrate_delete_source(false)
             .record_migrate_transaction_id("11111111-1111-1111-1111-111111111111");
         assert_eq!(span.name(), "registry.migrate");

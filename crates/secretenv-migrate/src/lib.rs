@@ -465,7 +465,9 @@ where
         let (mut probe_span, _probe_guard) = SecretEnvSpan::start("secretenv.migrate.probe");
         probe_span
             .record_migrate_phase(MigratePhase::Probe)
-            .record_migrate_source_backend_type(BackendType::from_runtime_str(source.backend_type()))
+            .record_migrate_source_backend_type(BackendType::from_runtime_str(
+                source.backend_type(),
+            ))
             .record_migrate_dest_backend_type(BackendType::from_runtime_str(dest.backend_type()));
         let r = probe_phase(&plan, source, dest).await?;
         probe_span.record_migrate_outcome(MigrateOutcome::Ok);
@@ -490,9 +492,9 @@ where
     let (value, read_ms) = {
         let (mut read_span, _read_guard) =
             SecretEnvSpan::start_mutation(MutationSpanName::MigrateRead);
-        read_span
-            .record_migrate_phase(MigratePhase::Read)
-            .record_migrate_source_backend_type(BackendType::from_runtime_str(source.backend_type()));
+        read_span.record_migrate_phase(MigratePhase::Read).record_migrate_source_backend_type(
+            BackendType::from_runtime_str(source.backend_type()),
+        );
         match migrate_read(&plan, source).await {
             Ok(v) => {
                 read_span.record_migrate_outcome(MigrateOutcome::Ok);
@@ -579,7 +581,9 @@ where
             SecretEnvSpan::start_mutation(MutationSpanName::MigrateDelete);
         delete_span
             .record_migrate_phase(MigratePhase::DeleteSource)
-            .record_migrate_source_backend_type(BackendType::from_runtime_str(source.backend_type()));
+            .record_migrate_source_backend_type(BackendType::from_runtime_str(
+                source.backend_type(),
+            ));
         match migrate_source_delete(&plan, source).await {
             Ok(ms) => {
                 source_delete_ms = Some(ms);

@@ -198,8 +198,8 @@ where
             }
         }
         Ok(
-            decision @ (MutationOperatorDecision::Approved
-            | MutationOperatorDecision::AutoApproved),
+            decision
+            @ (MutationOperatorDecision::Approved | MutationOperatorDecision::AutoApproved),
         ) => {
             let write_result = write().await;
             let (outcome, error_message) = match write_result {
@@ -214,13 +214,12 @@ where
                 decision: helpers::echo_decision(decision),
                 error_message,
             }
-        }
-        // v0.19 Arch-W-1: `enforce_mutation_policy` now returns
-        // `MutationOperatorDecision`, which has no `DryRun` variant — so
-        // the match above is exhaustive WITHOUT a DryRun arm. The v0.18
-        // "structurally unreachable but defensively matched" DryRun arm
-        // is gone: DryRun is unrepresentable here at the type level, not
-        // guarded at runtime. Migrate dry-run logging happens at the
-        // tools/mod.rs call site via `MigrateOperatorDecision::DryRun`.
+        } // v0.19 Arch-W-1: `enforce_mutation_policy` now returns
+          // `MutationOperatorDecision`, which has no `DryRun` variant — so
+          // the match above is exhaustive WITHOUT a DryRun arm. The v0.18
+          // "structurally unreachable but defensively matched" DryRun arm
+          // is gone: DryRun is unrepresentable here at the type level, not
+          // guarded at runtime. Migrate dry-run logging happens at the
+          // tools/mod.rs call site via `MigrateOperatorDecision::DryRun`.
     }
 }

@@ -994,20 +994,28 @@ async fn fetch_one(
 ///
 /// # Preconditions (v0.14.x code-hygiene)
 ///
-/// `errors` must be non-empty. The sole caller in [`build_env`] only
-/// invokes `aggregate_errors` inside a `!errors.is_empty()` guard, so
-/// the empty-input branch is unreachable in practice. Passing an
-/// empty `Vec` panics on `swap_remove(0)`; this is a programming
-/// error, not a recoverable runtime condition — surface it as a
-/// panic rather than a silent `Ok(())`-style fallthrough that would
-/// hide the missing guard at a future call site.
+/// `errors` must be non-empty — the sole caller in [`build_env`] only
+/// invokes `aggregate_errors` inside a `!errors.is_empty()` guard. The
+/// leading `assert!` below enforces this as a by-construction
+/// precondition: an empty `Vec` is a programming error (a future call
+/// site that dropped the guard), surfaced as a panic rather than a
+/// silent malformed `"0 secrets failed to resolve"` error that would
+/// hide the missing guard.
 ///
-/// v0.19 Arch-W-6: evaluated for a type-level lift (a `NonEmpty<_>`
-/// input that makes the empty case unrepresentable). Kept as a
-/// documented by-construction precondition — a newtype is
-/// disproportionate for one internal caller already guarded by
-/// `!errors.is_empty()`. See CONTRIBUTING "Panics in production code".
+/// v0.19 Arch-F-1 / Code-F-3: the prior doc claimed the empty case
+/// panicked "on `swap_remove(0)`", but the `len() == 1` guard skips
+/// `swap_remove` for an empty `Vec` — empty input fell through to a
+/// nonsensical zero-count error instead. The explicit `assert!` makes
+/// the documented panic real and the CONTRIBUTING "Panics in
+/// production code" exemplar accurate. (v0.19 Arch-W-6: evaluated a
+/// `NonEmpty<_>` type-lift; a newtype is disproportionate for one
+/// internal caller already guarded.)
 fn aggregate_errors(mut errors: Vec<anyhow::Error>) -> anyhow::Error {
+    assert!(
+        !errors.is_empty(),
+        "aggregate_errors requires a non-empty error list; the sole caller in build_env \
+         guards with !errors.is_empty() — reaching here empty means a call site dropped that guard"
+    );
     if errors.len() == 1 {
         // Single-failure path: preserve the original error chain
         // intact so operators see the same shape as v0.1 when only
@@ -1356,6 +1364,20 @@ mod tests {
         assert!(msg.contains("LOCKED"), "env-var in context: {msg}");
         assert!(msg.contains("fake:///locked"), "uri in context: {msg}");
         assert!(msg.contains("simulated backend error"), "root cause preserved: {msg}");
+    }
+
+    // ---- aggregate_errors precondition (v0.19 Arch-F-1 / Code-F-3) ----
+
+    /// The documented by-construction precondition: an empty error list
+    /// is a programming error (a call site that dropped the
+    /// `!errors.is_empty()` guard) and panics via the leading `assert!`.
+    /// Pins that the panic is REAL — the prior code fell through to a
+    /// malformed `"0 secrets failed to resolve"` error instead of
+    /// panicking, contradicting the doc + the CONTRIBUTING exemplar.
+    #[test]
+    #[should_panic(expected = "non-empty error list")]
+    fn aggregate_errors_panics_on_empty() {
+        let _ = aggregate_errors(Vec::new());
     }
 
     // ---- v0.19 Sec-F-5: --otel-include-error-detail emission wire-up ----

@@ -1024,9 +1024,7 @@ impl Server {
                     response.error_message = Some(safe_error_message(&e));
                     return Json(response);
                 }
-                Ok(
-                    d @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout),
-                ) => {
+                Ok(d @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout)) => {
                     let entry = MutationLogEntry {
                         ts_unix_secs: helpers::now_secs(),
                         tool_name: "gen_password".to_owned(),
@@ -1360,9 +1358,7 @@ impl Server {
                     );
                     return Json(response);
                 }
-                Ok(
-                    d @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout),
-                ) => {
+                Ok(d @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout)) => {
                     response.outcome = if d == MutationOperatorDecision::Timeout {
                         MutationOutcome::Timeout
                     } else {

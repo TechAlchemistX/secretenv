@@ -96,17 +96,29 @@ fn uri_regex() -> &'static Regex {
     // scrub() call, not in a production user path.
     #[allow(clippy::expect_used)]
     RE.get_or_init(|| {
-        // Three arms:
-        //   1. Scheme-prefixed: `https?://<non-whitespace>+`
-        //   2. Bare host-with-path: `<host>(:port)?/<path>` — requires
-        //      a `/` after the host segment so we don't strip every
-        //      colon-prefixed value (a hex digest, for instance).
-        //   3. Bare host-with-port (no path): `<host>:<port>` — added
-        //      in v0.18 Phase 7b Sec-F-1. Catches stderr of the form
-        //      `connection refused: vault.prod.internal:8200` that
+        // Three arms (each bare-host arm carries an optional
+        // `userinfo@` prefix — v0.19 Sec-F-1):
+        //   1. Scheme-prefixed: `https?://<non-whitespace>+` (already
+        //      swallows any `user:pass@` userinfo via the greedy tail).
+        //   2. Bare host-with-path: `(userinfo@)?<host>(:port)?/<path>`
+        //      — requires a `/` after the host segment so we don't strip
+        //      every colon-prefixed value (a hex digest, for instance).
+        //   3. Bare host-with-port (no path): `(userinfo@)?<host>:<port>`
+        //      — added in v0.18 Phase 7b Sec-F-1. Catches stderr of the
+        //      form `connection refused: vault.prod.internal:8200` that
         //      arm 2 missed. Gated on a literal port so we don't
         //      over-match arbitrary dotted prose like "filename.ext"
         //      or "module.path:42" line refs.
+        //
+        // v0.19 Sec-F-1 (Phase 7b): the optional `(?:[^\s'"/@]+@)?`
+        // userinfo prefix on arms 2 + 3 strips a SCHEME-LESS credential
+        // URL like `user:s3cr3t@vault.internal:8200/v1` whose leading
+        // `user:s3cr3t@` the prior pattern left intact (the password
+        // survived if <32 chars, below the token-arm threshold). The
+        // prefix is gated by the same port-or-path requirement as the
+        // host, so a bare email (`john@example.com`, no port/path) is
+        // NOT matched — the surgical fix closes the credential case
+        // without newly stripping addresses.
         //
         // Host segment: at least one dot to avoid matching plain words.
         Regex::new(
@@ -115,11 +127,13 @@ fn uri_regex() -> &'static Regex {
             (?:
               https?://[^\s'\u{0022}]+
               |
+              (?:[^\s'\u{0022}/@]+@)?
               [A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?
               (?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)+
               (?::\d{1,5})?
               /[^\s'\u{0022}]*
               |
+              (?:[^\s'\u{0022}/@]+@)?
               [A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?
               (?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?)+
               :\d{1,5}\b
@@ -239,6 +253,36 @@ mod tests {
         let once = BackendErrorStderr::scrub(raw);
         let twice = BackendErrorStderr::scrub(once.as_str());
         assert_eq!(once.as_str(), twice.as_str(), "second pass changed output");
+    }
+
+    #[test]
+    fn strips_scheme_less_userinfo_credential_url() {
+        // v0.19 Sec-F-1 (Phase 7b regression). A scheme-less credential
+        // URL carries `user:password@` userinfo the prior pattern left
+        // intact (arm 2/3 started at the host); a <32-char password
+        // also slipped past the token arm. The userinfo prefix on the
+        // bare-host arms now consumes the whole cluster.
+        let raw = "auth failed: connect user:s3cr3tpw@vault.prod.internal:8200/v1/secret rejected";
+        let scrubbed = BackendErrorStderr::scrub(raw);
+        let s = scrubbed.as_str();
+        assert!(!s.contains("s3cr3tpw"), "userinfo password leaked: {s}");
+        assert!(!s.contains("vault.prod.internal"), "host leaked: {s}");
+        assert!(!s.contains("user:"), "userinfo username leaked: {s}");
+        assert!(s.contains(URI_REPLACEMENT), "placeholder missing: {s}");
+        // Surrounding context preserved.
+        assert!(s.contains("auth failed") && s.contains("rejected"), "over-stripped: {s}");
+    }
+
+    #[test]
+    fn preserves_bare_email_without_port_or_path() {
+        // The Sec-F-1 userinfo prefix is gated by the same port-or-path
+        // requirement as the host arm, so a bare email address (no
+        // `:port`, no `/path` after the host) is NOT a credential URL
+        // and must survive — the fix is surgical, not an email scrubber.
+        let raw = "notification sent to ops-oncall@example.com for review";
+        let scrubbed = BackendErrorStderr::scrub(raw);
+        let s = scrubbed.as_str();
+        assert!(s.contains("ops-oncall@example.com"), "bare email over-stripped: {s}");
     }
 
     #[test]

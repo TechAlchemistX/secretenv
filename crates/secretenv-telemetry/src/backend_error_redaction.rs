@@ -240,4 +240,27 @@ mod tests {
         let twice = BackendErrorStderr::scrub(once.as_str());
         assert_eq!(once.as_str(), twice.as_str(), "second pass changed output");
     }
+
+    #[test]
+    fn strips_sha256_hex_digest_documented_overmatch() {
+        // v0.19 Sec-F-6 / Sec-P9-4. The token arm is `[A-Za-z0-9+/=_-]{32,}`,
+        // so a 64-char SHA-256 hex digest matches and is stripped. This
+        // is a deliberate, documented OVER-match: a content hash is not
+        // a secret, but the scrubber errs toward stripping any
+        // high-entropy 32+ char run rather than risk leaking a real
+        // token that happens to be hex-shaped (an API key, a bearer
+        // token). This test pins that behavior so a future regex
+        // tightening that narrowed the token arm — and silently started
+        // emitting digests — would fail loudly and force a deliberate
+        // decision rather than an accidental disclosure-surface change.
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(digest.len(), 64, "fixture must be a 64-char SHA-256 hex");
+        let raw = format!("integrity check failed: expected {digest} got mismatch");
+        let scrubbed = BackendErrorStderr::scrub(&raw);
+        let s = scrubbed.as_str();
+        assert!(!s.contains(digest), "64-hex digest survived the token scrubber: {s}");
+        assert!(s.contains(TOKEN_REPLACEMENT), "token placeholder missing: {s}");
+        // The non-entropy context around it is preserved.
+        assert!(s.contains("integrity check failed"), "context over-stripped: {s}");
+    }
 }

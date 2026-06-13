@@ -635,6 +635,52 @@ mod tests {
         assert_eq!(parsed_1.operator_decision, OperatorDecision::Denied);
     }
 
+    #[test]
+    fn dry_run_decision_audit_log_round_trip() {
+        // v0.19 Sec-F-8. Compliance-trail proof loop: a migrate dry-run
+        // records intent without mutating, tagged `DryRun`. Prove that
+        // decision survives the on-disk JSON-Lines serialization
+        // round-trip (write -> tail read-back) AND the post-Arch-W-1
+        // marker-type projection (`MigrateOperatorDecision::DryRun` is
+        // the ONLY way a non-mutation decision reaches the log, via
+        // `Decision::to_audit`).
+        assert_eq!(
+            MigrateOperatorDecision::DryRun.to_audit(),
+            OperatorDecision::DryRun,
+            "migrate DryRun must project to the on-disk DryRun decision"
+        );
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("dryrun.log");
+        let log = MutationLog::open(&path).unwrap();
+
+        let entry = MutationLogEntry::now(
+            "migrate_alias",
+            "agent wanted to preview the migration",
+            MigrateOperatorDecision::DryRun.to_audit(),
+            "claude-code/0.0",
+        );
+        log.append(&entry).unwrap();
+
+        // Read back through the production tail reader (full JSON
+        // deserialize), not a hand-rolled parse.
+        let tail = tail_entries(&path, 1).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(
+            tail[0].operator_decision,
+            OperatorDecision::DryRun,
+            "DryRun decision must survive the JSON-Lines round-trip"
+        );
+        assert_eq!(tail[0].tool_name, "migrate_alias");
+
+        // Lowercase serde rename is part of the on-disk contract.
+        let line = serde_json::to_string(&entry).unwrap();
+        assert!(
+            line.contains("\"operator_decision\":\"dryrun\""),
+            "on-disk DryRun rename drifted: {line}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn unix_file_is_0600() {

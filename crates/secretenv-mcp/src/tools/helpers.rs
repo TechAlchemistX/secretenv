@@ -14,7 +14,9 @@
 use rmcp::service::Peer;
 use rmcp::RoleServer;
 
-use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
+use crate::audit_log::{
+    Decision, MigrateOperatorDecision, MutationLog, MutationLogEntry, OperatorDecision,
+};
 use crate::boundary::OperatorDecisionEcho;
 use crate::tools::args::MigrateAliasArgs;
 
@@ -39,7 +41,7 @@ pub fn client_id_from_peer(peer: &Peer<RoleServer>) -> String {
 pub fn audit_migrate(
     mutation_log: &MutationLog,
     args: &MigrateAliasArgs,
-    decision: OperatorDecision,
+    decision: MigrateOperatorDecision,
     client_id: &str,
 ) {
     let entry = MutationLogEntry {
@@ -51,7 +53,10 @@ pub fn audit_migrate(
                 .map_or_else(|_| "<invalid-uri>".to_owned(), |u| u.scheme),
         ),
         agent_reason: args.reason.clone(),
-        operator_decision: decision,
+        // v0.19 Arch-W-1: `audit_migrate` is the ONLY audit path that
+        // accepts a `DryRun`-capable decision; project to the on-disk
+        // form here. A non-migrate tool cannot reach this function.
+        operator_decision: decision.to_audit(),
         mcp_client_id: client_id.to_owned(),
     };
     // v0.16.2 audit Sec F-1: surface audit-log append failures via
@@ -65,13 +70,21 @@ pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Map [`OperatorDecision`] (audit-log enum) to its agent-facing
+/// Map any per-tool [`Decision`] to its agent-facing
 /// [`OperatorDecisionEcho`] twin in `boundary.rs`. Two enums because
 /// the audit-log set is shared with future non-tool surfaces, and
 /// adding `PolicyRefusal` to it would force every audit-log writer
 /// to handle a never-emitted variant.
-pub const fn echo_decision(decision: OperatorDecision) -> OperatorDecisionEcho {
-    match decision {
+///
+/// v0.19 Arch-W-1: generic over [`Decision`] so it accepts the
+/// `MutationOperatorDecision` / `MigrateOperatorDecision` marker types
+/// (and the on-disk [`OperatorDecision`]) without per-type overloads.
+/// The mapping is driven by [`Decision::to_audit`], so the echo and
+/// the audit-log entry can never classify the same decision
+/// differently. No longer `const` (trait methods are not const-stable);
+/// all callers are runtime handlers.
+pub fn echo_decision(decision: impl Decision) -> OperatorDecisionEcho {
+    match decision.to_audit() {
         OperatorDecision::Approved => OperatorDecisionEcho::Approved,
         OperatorDecision::Denied => OperatorDecisionEcho::Denied,
         OperatorDecision::Timeout => OperatorDecisionEcho::Timeout,

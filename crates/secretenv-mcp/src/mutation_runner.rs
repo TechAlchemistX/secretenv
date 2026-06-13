@@ -51,7 +51,9 @@ use anyhow::Result;
 use rmcp::service::Peer;
 use rmcp::RoleServer;
 
-use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
+use crate::audit_log::{
+    Decision, MutationLog, MutationLogEntry, MutationOperatorDecision, OperatorDecision,
+};
 use crate::boundary::{MutationOutcome, OperatorDecisionEcho};
 use crate::config::McpConfig;
 use crate::error::safe_error_message;
@@ -180,13 +182,13 @@ where
                 error_message: Some(safe_error_message(&e)),
             }
         }
-        Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
-            let outcome = if decision == OperatorDecision::Timeout {
+        Ok(decision @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout)) => {
+            let outcome = if decision == MutationOperatorDecision::Timeout {
                 MutationOutcome::Timeout
             } else {
                 MutationOutcome::Refused
             };
-            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(decision)) {
+            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(decision.to_audit())) {
                 tracing::error!(error = ?append_err, "audit-log append failed");
             }
             MutationResolution {
@@ -195,13 +197,16 @@ where
                 error_message: None,
             }
         }
-        Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
+        Ok(
+            decision @ (MutationOperatorDecision::Approved
+            | MutationOperatorDecision::AutoApproved),
+        ) => {
             let write_result = write().await;
             let (outcome, error_message) = match write_result {
                 Ok(()) => (MutationOutcome::Applied, None),
                 Err(e) => (MutationOutcome::WriteFailed, Some(safe_error_message(&e))),
             };
-            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(decision)) {
+            if let Err(append_err) = ctx.mutation_log.append(&mk_entry(decision.to_audit())) {
                 tracing::error!(error = ?append_err, "audit-log append failed");
             }
             MutationResolution {
@@ -210,27 +215,12 @@ where
                 error_message,
             }
         }
-        // v0.18 M-12. enforce_mutation_policy never returns DryRun
-        // (the prompt path runs only for real mutations); dry-run
-        // audit logging happens at the call site in tools/mod.rs
-        // BEFORE policy enforcement.
-        //
-        // Architectural note: structurally unreachable arm; remove
-        // when Arch-W-1 lands (split `OperatorDecision` into per-tool
-        // variants so `DryRun` is not in the enum returned by the
-        // policy enforcement combinator). v0.18 Phase 7b Arch-F-4.
-        Ok(OperatorDecision::DryRun) => {
-            tracing::warn!(
-                "mutation_runner: policy returned DryRun decision (should be handled at \
-                 the call site before reaching this combinator)"
-            );
-            MutationResolution {
-                outcome: MutationOutcome::Refused,
-                decision: OperatorDecisionEcho::PolicyRefusal,
-                error_message: Some(
-                    "internal: DryRun decision must be handled before mutation_runner".to_owned(),
-                ),
-            }
-        }
+        // v0.19 Arch-W-1: `enforce_mutation_policy` now returns
+        // `MutationOperatorDecision`, which has no `DryRun` variant — so
+        // the match above is exhaustive WITHOUT a DryRun arm. The v0.18
+        // "structurally unreachable but defensively matched" DryRun arm
+        // is gone: DryRun is unrepresentable here at the type level, not
+        // guarded at runtime. Migrate dry-run logging happens at the
+        // tools/mod.rs call site via `MigrateOperatorDecision::DryRun`.
     }
 }

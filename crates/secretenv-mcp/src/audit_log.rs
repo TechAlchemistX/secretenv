@@ -79,6 +79,122 @@ pub enum OperatorDecision {
     DryRun,
 }
 
+/// Decisions a NON-migrate mutation tool can produce.
+///
+/// Structurally excludes [`OperatorDecision::DryRun`] — only the
+/// migrate path runs dry. This is the type [`enforce_mutation_policy`]
+/// returns and the type the `run_mutation` combinator + the inline
+/// `redact_file` / `gen_password` handlers match on.
+///
+/// **v0.19 Arch-W-1.** In v0.18 every non-migrate handler carried a
+/// `Ok(OperatorDecision::DryRun) => <contract violation>` arm that was
+/// "structurally unreachable but defensively matched" — exactly the
+/// shape v0.16-Sec-F-2 removed for `ResolvedConfirmVia`. Splitting the
+/// policy-return type so `DryRun` is *unrepresentable* makes those
+/// arms a compile error rather than a runtime guard; the type system,
+/// not a `tracing::warn!`, now proves a non-migrate tool can never see
+/// `DryRun`.
+///
+/// In-memory only — the on-disk audit form is [`OperatorDecision`],
+/// reached via [`Decision::to_audit`].
+///
+/// [`enforce_mutation_policy`]: crate::policy::enforce_mutation_policy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MutationOperatorDecision {
+    /// Operator approved the mutation.
+    Approved,
+    /// Operator denied the mutation.
+    Denied,
+    /// No response before the prompt timeout — treated as deny.
+    Timeout,
+    /// `allow_mutations = "always"` was in effect; auto-approved.
+    AutoApproved,
+}
+
+/// Decisions the migrate tool can produce: the [`MutationOperatorDecision`]
+/// set PLUS [`MigrateOperatorDecision::DryRun`].
+///
+/// **v0.19 Arch-W-1.** Migrate is the one tool whose `dry_run = true`
+/// path records intent without touching backend state, so it is the
+/// one tool whose decision type carries `DryRun`. [`audit_migrate`]
+/// takes this type, so only the migrate path can log a `DryRun`
+/// decision. A real-mutation migrate decision arrives as a
+/// [`MutationOperatorDecision`] from the policy gate and is lifted via
+/// `From`.
+///
+/// In-memory only — the on-disk audit form is [`OperatorDecision`].
+///
+/// [`audit_migrate`]: crate::tools::helpers::audit_migrate
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MigrateOperatorDecision {
+    /// Operator approved the migration.
+    Approved,
+    /// Operator denied the migration.
+    Denied,
+    /// No response before the prompt timeout — treated as deny.
+    Timeout,
+    /// `allow_mutations = "always"` was in effect; auto-approved.
+    AutoApproved,
+    /// `dry_run = true`; no backend state changed (v0.18 M-12).
+    DryRun,
+}
+
+impl From<MutationOperatorDecision> for MigrateOperatorDecision {
+    fn from(d: MutationOperatorDecision) -> Self {
+        match d {
+            MutationOperatorDecision::Approved => Self::Approved,
+            MutationOperatorDecision::Denied => Self::Denied,
+            MutationOperatorDecision::Timeout => Self::Timeout,
+            MutationOperatorDecision::AutoApproved => Self::AutoApproved,
+        }
+    }
+}
+
+/// Projection from a typed per-tool decision to the on-disk audit
+/// form [`OperatorDecision`].
+///
+/// **v0.19 Arch-W-1.** The audit-log append path + the response-echo
+/// path (`crate::tools::helpers::echo_decision`) are the same for
+/// every tool; this trait is where the per-tool decision types meet
+/// that shared serialization path. Keeps the trait free of any
+/// `boundary` dependency — the echo mapping lives in `helpers` and is
+/// driven by [`Decision::to_audit`].
+pub trait Decision: Copy {
+    /// Project to the serialized audit-log decision.
+    fn to_audit(self) -> OperatorDecision;
+}
+
+impl Decision for OperatorDecision {
+    fn to_audit(self) -> OperatorDecision {
+        self
+    }
+}
+
+impl Decision for MutationOperatorDecision {
+    fn to_audit(self) -> OperatorDecision {
+        match self {
+            Self::Approved => OperatorDecision::Approved,
+            Self::Denied => OperatorDecision::Denied,
+            Self::Timeout => OperatorDecision::Timeout,
+            Self::AutoApproved => OperatorDecision::AutoApproved,
+        }
+    }
+}
+
+impl Decision for MigrateOperatorDecision {
+    fn to_audit(self) -> OperatorDecision {
+        match self {
+            Self::Approved => OperatorDecision::Approved,
+            Self::Denied => OperatorDecision::Denied,
+            Self::Timeout => OperatorDecision::Timeout,
+            Self::AutoApproved => OperatorDecision::AutoApproved,
+            Self::DryRun => OperatorDecision::DryRun,
+        }
+    }
+}
+
 /// One audit-log entry. JSON-Lines serialization on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MutationLogEntry {

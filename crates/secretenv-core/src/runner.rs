@@ -237,7 +237,15 @@ pub async fn run_with_options(
     }
 
     let resolution_started = std::time::Instant::now();
-    let env = match build_env(resolved, backends, options.dry_run, options.verbose).await {
+    let env = match build_env(
+        resolved,
+        backends,
+        options.dry_run,
+        options.verbose,
+        options.otel_include_error_detail,
+    )
+    .await
+    {
         Ok(env) => {
             run_span.record_run_failed_alias_count(0);
             env
@@ -629,11 +637,18 @@ async fn forward_signals_to(child_pid: Option<u32>) {
 /// troubleshooting a misconfigured environment see every broken alias
 /// in one pass rather than fixing one, re-running, fixing the next,
 /// and so on.
+///
+/// `otel_include_error_detail` drives the v0.19 Sec-F-5 opt-in: when
+/// `true`, a failed fetch emits its scrubbed error chain on the
+/// `secretenv.backend.fetch` span (`secretenv.backend.error.message`).
+/// When `false` (the default), the attribute stays structurally
+/// absent. Threaded down to [`fetch_one`].
 pub async fn build_env(
     resolved: &[ResolvedSecret],
     backends: &BackendRegistry,
     dry_run: bool,
     verbose: bool,
+    otel_include_error_detail: bool,
 ) -> Result<Vec<EnvEntry>> {
     // Output preserves `resolved`'s declaration order. We collect into
     // a `Vec<Option<EnvEntry>>` of the same length and then drop the
@@ -671,7 +686,9 @@ pub async fn build_env(
     // nothing to inject), `Ok(Some(entry, timing))` on success. The
     // `AliasTiming` lets us print a per-alias summary table after all
     // fetches return.
-    let fetches = uri_indices.iter().map(|&idx| fetch_one(&resolved[idx], backends, dry_run));
+    let fetches = uri_indices
+        .iter()
+        .map(|&idx| fetch_one(&resolved[idx], backends, dry_run, otel_include_error_detail));
     let results = futures::future::join_all(fetches).await;
 
     // Collect successes into their original slots; aggregate every
@@ -780,10 +797,11 @@ async fn fetch_one(
     secret: &ResolvedSecret,
     backends: &BackendRegistry,
     dry_run: bool,
+    otel_include_error_detail: bool,
 ) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
     use secretenv_telemetry::{
-        BackendProbeLevel, BackendProbeOutcome, BackendType, FetchOutcome, ResolutionOutcome,
-        SecretEnvSpan,
+        BackendErrorStderr, BackendProbeLevel, BackendProbeOutcome, BackendType, FetchOutcome,
+        ResolutionOutcome, SecretEnvSpan,
     };
 
     let started = std::time::Instant::now();
@@ -890,12 +908,28 @@ async fn fetch_one(
         let r = crate::with_timeout(backend.timeout(), &op_label, backend.get(target)).await;
         let ms = u64::try_from(fetch_started.elapsed().as_millis()).unwrap_or(u64::MAX);
         fetch_span.record_backend_fetch_duration_ms(ms);
-        let probe_outcome = if r.is_ok() {
-            fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok);
-            BackendProbeOutcome::Success
-        } else {
-            fetch_span.record_backend_fetch_outcome(FetchOutcome::Error);
-            BackendProbeOutcome::Error
+        let probe_outcome = match &r {
+            Ok(_) => {
+                fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok);
+                BackendProbeOutcome::Success
+            }
+            Err(e) => {
+                fetch_span.record_backend_fetch_outcome(FetchOutcome::Error);
+                // v0.19 Sec-F-5 — opt-in scrubbed backend error detail.
+                // The anyhow chain rendering (`{:#}`) folds in the
+                // backend CLI's stderr; `BackendErrorStderr::scrub` runs
+                // the SEC-INV-20 shape scrubber (URI / AWS-account /
+                // high-entropy-token strip) and is the ONLY constructor
+                // for the type the setter accepts — so emitting raw,
+                // un-scrubbed text here is structurally impossible. The
+                // setter no-ops unless `otel_include_error_detail` is set
+                // (driven by `--otel-include-error-detail`), keeping the
+                // attribute structurally absent in the default posture.
+                let scrubbed = BackendErrorStderr::scrub(&format!("{e:#}"));
+                fetch_span
+                    .record_backend_error_message_scrubbed(&scrubbed, otel_include_error_detail);
+                BackendProbeOutcome::Error
+            }
         };
         probe_span.record_backend_probe_outcome(probe_outcome);
         (r, ms)
@@ -1258,7 +1292,7 @@ mod tests {
             secret_default("LOG_LEVEL", "info"),
             secret_alias("DATABASE_URL", "fake:///prod/db"),
         ];
-        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let env = build_env(&resolved, &backends, false, false, false).await.unwrap();
 
         assert_eq!(env.len(), 3);
         assert_eq!(env[0].key, "STRIPE");
@@ -1279,7 +1313,7 @@ mod tests {
             secret_alias("STRIPE", "fake:///prod/stripe"),
             secret_default("LOG_LEVEL", "info"),
         ];
-        let env = build_env(&resolved, &backends, true, false).await.unwrap();
+        let env = build_env(&resolved, &backends, true, false, false).await.unwrap();
 
         assert_eq!(count.load(Ordering::SeqCst), 0, "dry-run must not fetch");
         // Env still includes Default entries (they're non-secret manifest data).
@@ -1295,7 +1329,7 @@ mod tests {
     async fn missing_backend_instance_errors_with_env_var_name() {
         let (backends, _) = set_up(&[("/x", "v")], None);
         let resolved = vec![secret_alias("KEY", "nonexistent:///x")];
-        let Err(err) = build_env(&resolved, &backends, false, false).await else {
+        let Err(err) = build_env(&resolved, &backends, false, false, false).await else {
             panic!("expected build_env to error");
         };
         let msg = format!("{err:#}");
@@ -1309,13 +1343,95 @@ mod tests {
     async fn backend_get_error_propagates_with_context() {
         let (backends, _) = set_up(&[], Some("/locked"));
         let resolved = vec![secret_alias("LOCKED", "fake:///locked")];
-        let Err(err) = build_env(&resolved, &backends, false, false).await else {
+        let Err(err) = build_env(&resolved, &backends, false, false, false).await else {
             panic!("expected build_env to error");
         };
         let msg = format!("{err:#}");
         assert!(msg.contains("LOCKED"), "env-var in context: {msg}");
         assert!(msg.contains("fake:///locked"), "uri in context: {msg}");
         assert!(msg.contains("simulated backend error"), "root cause preserved: {msg}");
+    }
+
+    // ---- v0.19 Sec-F-5: --otel-include-error-detail emission wire-up ----
+
+    /// Sec-F-5 wire-up: a failed fetch emits the scrubbed backend error
+    /// chain on the `secretenv.backend.fetch` span's
+    /// `secretenv.backend.error.message` attribute IFF
+    /// `otel_include_error_detail` is set; with the flag off the
+    /// attribute is structurally absent.
+    ///
+    /// This is the integration counterpart to the telemetry crate's
+    /// TS-12 test (`ts12_stderr_in_otel.rs`), which proves the scrubber
+    /// + setter in isolation. Here we prove the runner's fetch-error
+    /// path actually CALLS the setter with the flag threaded down from
+    /// `RunOptions`. Scrubbing correctness stays TS-12's job.
+    ///
+    /// Robust against in-binary test concurrency: this module runs many
+    /// `#[tokio::test]`s in parallel, several of which emit their own
+    /// `secretenv.backend.fetch` spans into whatever global provider is
+    /// live. We install a `LocalTraceCapture` and then select OUR span
+    /// by a unique `secretenv.alias.name`, so a sibling test's fetch
+    /// span can't be mistaken for the probe.
+    #[tokio::test]
+    async fn sec_f5_error_detail_emitted_only_when_opted_in() {
+        use secretenv_telemetry::{LocalTraceCapture, LocalTraceSpan};
+
+        // `secret_alias` derives alias.name as `test_<lowercased env>`.
+        const PROBE_ENV: &str = "SECF5WIREUPPROBE";
+        const PROBE_ALIAS_NAME: &str = "test_secf5wireupprobe";
+        const PROBE_PATH: &str = "/secf5/locked";
+        let probe_uri = format!("fake://{PROBE_PATH}");
+
+        fn probe_fetch_error_message(spans: &[LocalTraceSpan]) -> Option<String> {
+            spans
+                .iter()
+                .filter(|s| s.name == "secretenv.backend.fetch")
+                .find(|s| {
+                    s.attributes
+                        .iter()
+                        .any(|(k, v)| k == "secretenv.alias.name" && v == PROBE_ALIAS_NAME)
+                })
+                .and_then(|s| {
+                    s.attributes
+                        .iter()
+                        .find(|(k, _)| k == "secretenv.backend.error.message")
+                        .map(|(_, v)| v.clone())
+                })
+        }
+
+        // Arm 1: flag ON → attribute present on the failing fetch span.
+        let on_spans = {
+            let capture = LocalTraceCapture::install().expect("install capture (arm 1)");
+            let (backends, _) = set_up(&[], Some(PROBE_PATH));
+            let resolved = vec![secret_alias(PROBE_ENV, &probe_uri)];
+            assert!(
+                build_env(&resolved, &backends, false, false, true).await.is_err(),
+                "fetch must fail for the wire-up probe"
+            );
+            capture.drain()
+        };
+        let on_msg = probe_fetch_error_message(&on_spans)
+            .expect("flag ON: secretenv.backend.error.message must be present on the fetch span");
+        assert!(
+            on_msg.contains("simulated backend error"),
+            "flag ON: the scrubbed backend error must flow through: `{on_msg}`"
+        );
+
+        // Arm 2: flag OFF → attribute structurally absent.
+        let off_spans = {
+            let capture = LocalTraceCapture::install().expect("install capture (arm 2)");
+            let (backends, _) = set_up(&[], Some(PROBE_PATH));
+            let resolved = vec![secret_alias(PROBE_ENV, &probe_uri)];
+            assert!(
+                build_env(&resolved, &backends, false, false, false).await.is_err(),
+                "fetch must fail for the wire-up probe"
+            );
+            capture.drain()
+        };
+        assert!(
+            probe_fetch_error_message(&off_spans).is_none(),
+            "flag OFF: secretenv.backend.error.message must be structurally absent"
+        );
     }
 
     // ---- Parallel fetch + multi-error aggregation (Phase 2) ----
@@ -1347,7 +1463,7 @@ mod tests {
         ];
 
         let start = std::time::Instant::now();
-        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let env = build_env(&resolved, &backends, false, false, false).await.unwrap();
         let elapsed = start.elapsed();
 
         assert_eq!(env.len(), 5, "every alias returned");
@@ -1373,7 +1489,7 @@ mod tests {
             secret_alias("THIRD", "fake:///b"),
             secret_alias("LAST", "fake:///c"),
         ];
-        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let env = build_env(&resolved, &backends, false, false, false).await.unwrap();
         let keys: Vec<_> = env.iter().map(|e| e.key.clone()).collect();
         assert_eq!(keys, vec!["FIRST", "MIDDLE", "THIRD", "LAST"]);
     }
@@ -1393,7 +1509,7 @@ mod tests {
             secret_alias("BETA", "fake:///ok"),
             secret_alias("GAMMA", "fake:///bad2"),
         ];
-        let Err(err) = build_env(&resolved, &backends, false, false).await else {
+        let Err(err) = build_env(&resolved, &backends, false, false, false).await else {
             panic!("expected build_env to error on two failing aliases");
         };
         let msg = format!("{err:#}");
@@ -1420,7 +1536,7 @@ mod tests {
     async fn build_env_single_failure_passes_error_through_unwrapped() {
         let (backends, _) = set_up_full(&[], &["/only".to_owned()], std::time::Duration::ZERO);
         let resolved = vec![secret_alias("ONLY", "fake:///only")];
-        let Err(err) = build_env(&resolved, &backends, false, false).await else {
+        let Err(err) = build_env(&resolved, &backends, false, false, false).await else {
             panic!("expected build_env to error");
         };
         let msg = format!("{err:#}");
@@ -1467,7 +1583,7 @@ mod tests {
             secret_alias("SECOND", "fake:///b"),
             secret_alias("THIRD", "fake:///c"),
         ];
-        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let env = build_env(&resolved, &backends, false, false, false).await.unwrap();
         let keys: Vec<_> = env.iter().map(|e| e.key.clone()).collect();
         assert_eq!(keys, vec!["FIRST", "SECOND", "THIRD"]);
     }
@@ -1478,7 +1594,7 @@ mod tests {
     async fn env_entries_can_be_consumed_as_str() {
         let (backends, _) = set_up(&[("/k", "the-secret-value")], None);
         let resolved = vec![secret_alias("K", "fake:///k")];
-        let env = build_env(&resolved, &backends, false, false).await.unwrap();
+        let env = build_env(&resolved, &backends, false, false, false).await.unwrap();
         // Sanity: `value()` returns `&str` without exposing the inner
         // `Secret<String>` newtype; consumers (the exec path) only
         // ever borrow.

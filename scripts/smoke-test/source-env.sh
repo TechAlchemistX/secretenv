@@ -71,10 +71,13 @@ _secretenv_smoke_skipped=0
 
 for _var in "${_secretenv_smoke_vars[@]}"; do
   # `op read` returns 0 with the value on stdout, or non-zero if the
-  # field doesn't exist on the item. --reveal exposes the secret value
-  # rather than masking it. stderr is suppressed because missing fields
-  # are expected (operators may not have provisioned every backend).
-  _val=$(op read "${_secretenv_smoke_op_item}/${_var}" --reveal 2>/dev/null)
+  # field doesn't exist on the item. It reveals the secret value by
+  # default — there is NO `--reveal` flag on `op read` (that flag
+  # belongs to `op item get`); passing it makes op v2.34+ reject the
+  # invocation, which silently zeroed out every export here. stderr is
+  # suppressed because missing fields are expected (operators may not
+  # have provisioned every backend). v0.19 smoke-harness chip.
+  _val=$(op read "${_secretenv_smoke_op_item}/${_var}" 2>/dev/null)
   if [[ -n "$_val" ]]; then
     # Defensive: BWS_ACCESS_TOKEN must NOT be wrapped in quotes — bws v2
     # doesn't strip them and reads the result as a 96-char token instead

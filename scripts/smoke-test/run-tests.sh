@@ -4571,6 +4571,18 @@ EOF
                 "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.registry.load"'
             assert_contains "1282 v0.18 Block F — secretenv.backend.probe span (Phase 4)" \
                 "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.backend.probe"'
+            # v0.19 probe-vocabulary unification (Arch-W-2 partial). The
+            # run-path probe wraps a real backend.get() (a read), so it now
+            # emits the unified ProbeLevel/ProbeOutcome values `l3-read` / `ok`
+            # — the removed BackendProbeLevel/BackendProbeOutcome span enums
+            # used to emit `connectivity` / `success`. These two assertions
+            # prove the LIVE binary writes the unified VALUES end-to-end (the
+            # span-existence check above is value-agnostic; the value mapping
+            # is also unit-covered in phase4_schema_reserved_spans.rs).
+            assert_contains "1282a v0.19 — backend.probe.level value is l3-read (probe-vocab unification)" \
+                "$V017_WORK/blockA-traces.json" '"key":"secretenv.backend.probe.level","type":"string","value":"l3-read"'
+            assert_contains "1282b v0.19 — backend.probe.outcome value is ok (probe-vocab unification)" \
+                "$V017_WORK/blockA-traces.json" '"key":"secretenv.backend.probe.outcome","type":"string","value":"ok"'
             assert_contains "1283 v0.18 Block F — secretenv.exec.prepare span (Phase 4)" \
                 "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.exec.prepare"'
 

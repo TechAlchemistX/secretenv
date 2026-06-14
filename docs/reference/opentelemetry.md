@@ -296,7 +296,7 @@ Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password
 |---|---|---|---|---|
 | `secretenv.resolution.duration` | Histogram | `ms` | `registry.name`, `run.outcome`, `alias_count_bucket` | `alias_count` is bucketed (1-5, 6-10, 11-20, 20+); `alias.name` is **NOT** an attribute |
 | `secretenv.resolution.count` | Counter | `{resolution}` | `registry.name`, `run.outcome` | Low |
-| `secretenv.backend.probe.count` | Counter | `{probe}` | `backend.type`, `backend.instance_name`, `probe.level`, `probe.outcome` | O(instances × 12) |
+| `secretenv.backend.probe.count` | Counter | `{probe}` | `backend.type`, `backend.instance_name`, `probe.level`, `probe.outcome` | O(instances × 18) |
 | `secretenv.backend.fetch.duration` | Histogram | `ms` | `backend.type`, `backend.instance_name`, `fetch.outcome` | O(backends × 3); `alias.name` explicitly excluded |
 | `secretenv.redact.events` | Counter | `{event}` | `redact.mode`, `redact.match_context` | Low; `alias.name` excluded per SEC-INV-19 |
 | `secretenv.mcp.tool.calls` | Counter | `{call}` | `mcp.tool_name`, `mcp.outcome` | Low (closed enum tool names) |

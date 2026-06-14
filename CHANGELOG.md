@@ -14,9 +14,7 @@ deferred follow-up, or contract that would surprise an operator). Future
 cycles should reach for this subsection rather than burying limitations in
 prose. Cross-reference the kb wiki for the long-form ticket.
 
-## [0.19.0] - UNRELEASED
-
-_(Release date pending tag — Phase 10.)_
+## [0.19.0] - 2026-06-14
 
 **Headline:** v0.19 is the **second non-backend hardening minor** ("hardening #2"), consuming the v0.18 carry-forward queue and folding in the deferred post-release documentation phase. No new backends (total stays at **15**); no new crates (workspace package count is **24** — the v0.18 build-log's "22" reflects a pre-existing undercount; v0.19 added zero). Live-backend smoke: **779 PASS / 0 FAIL / 2 expected SKIP** across all 15 backends. Authoritative plan: `kb/wiki/build-plan-v0.19-hardening.md`. Ledger: `kb/wiki/v0.19-deferred-items.md`. PR #90.
 

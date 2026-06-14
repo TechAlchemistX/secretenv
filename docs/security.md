@@ -133,10 +133,12 @@ For organizations that need to answer "who fetched the production database passw
 
 ## Self-hosted Domains
 
-Two backends accept a user-supplied HTTPS endpoint:
+Four backends accept a user-supplied endpoint:
 
 - **Infisical** — `infisical_domain` (defaults to `app.infisical.com`).
 - **Vault** — `vault_address` (no default; required).
+- **OpenBao** — `bao_address` (no default; required). Same threat model as Vault — routes via `BAO_ADDR`.
+- **CyberArk Conjur** — `conjur_url` (no default; required). Routes via `CONJUR_APPLIANCE_URL`.
 
 The domain IS the trust boundary. A hostile endpoint receives every token and URI the backend routes through it — for Infisical that includes `$INFISICAL_TOKEN` on every CLI invocation; for Vault it includes every request to `/v1/...` carrying the client token.
 
@@ -152,6 +154,8 @@ Per-backend specifics:
 
 - [backends/infisical.md](backends/infisical.md) — Infisical's `infisical_domain` threat model.
 - [backends/vault.md](backends/vault.md) — Vault's `vault_address` and namespace scoping.
+- [backends/openbao.md](backends/openbao.md) — OpenBao's `bao_address`.
+- [backends/conjur.md](backends/conjur.md) — Conjur's `conjur_url`.
 
 ---
 

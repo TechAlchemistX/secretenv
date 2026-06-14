@@ -22,7 +22,7 @@ secretenv run [--registry <name|uri>] [--dry-run] [--verbose]
 |---|---|---|
 | `--redact` | off | Force pipe-based redaction even when stdin is a TTY. PTY-bound children (`psql`, `vim`, `ssh`) may misbehave. |
 | `--no-redact` | off | Disable redaction entirely; fall back to the pre-v0.14 `exec()` path. Requires `--i-know`. |
-| `--i-know` | off | Acknowledge the audit consequences of `--no-redact`. Required by `--i-know` on non-TTY parents so CI typos don't silently print secrets. |
+| `--i-know` | off | Acknowledge the audit consequences of `--no-redact`. Required by `--no-redact` on non-TTY parents so CI typos don't silently print secrets. |
 | `--redact-token <s>` | (alias-aware) | Override the substitution: emit `<s>` for every match regardless of which alias produced it. |
 
 ### Default dispatch (`Auto`)

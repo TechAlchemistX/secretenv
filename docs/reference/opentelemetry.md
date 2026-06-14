@@ -1,6 +1,6 @@
 # OpenTelemetry
 
-SecretEnv emits OpenTelemetry traces, metrics, and logs for every secret resolution, backend probe, MCP tool call, redaction event, and migration. Telemetry is **opt-in** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, the OTel collector itself). With no endpoint configured, SecretEnv installs no exporter and has zero startup overhead.
+SecretEnv emits OpenTelemetry traces and metrics for every secret resolution, backend probe, MCP tool call, redaction event, and migration. Telemetry is **opt-in** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, the OTel collector itself). With no endpoint configured, SecretEnv installs no exporter and has zero startup overhead.
 
 This document is the **audit-facing contract**. Every attribute SecretEnv emits is enumerated below with an explicit ALLOW/DENY classification. The classifications are enforced at compile time: the typed `SecretEnvSpan` builder in `secretenv-telemetry` exposes one method per ALLOW attribute and no method for any DENY attribute. There is no `set_attribute(key, value)` escape hatch.
 
@@ -32,9 +32,12 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 |---|---|---|
 | `secretenv.version` | ALLOW | Static binary version |
 | `secretenv.run_id` | ALLOW | UUIDv4 per invocation |
-| `secretenv.command` | ALLOW | Closed enum: `run` / `get` / `migrate` / `doctor` / `mcp` / `redact` |
+| `secretenv.command` | ALLOW | Closed enum: `run` / `get` / `migrate` / `doctor` / `mcp` / `redact` / `registry` |
 | `secretenv.exit_code` | ALLOW | int |
 | `secretenv.duration_ms` | ALLOW | int |
+| `secretenv.process.command_name` | ALLOW | Basename of the invoking process `argv[0]` (path stripped); the process-level sibling of `run.command_name` |
+| `secretenv.process.argv` | **DENY** | Full argv may contain secrets |
+| `secretenv.process.env_var_count` | ALLOW | Aggregate count of environment variables |
 
 ### 2.2 Alias
 
@@ -44,7 +47,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.alias.env_var` | ALLOW | Env var name (e.g. `STRIPE_KEY`); never the value |
 | `secretenv.alias.count` | ALLOW | Aggregate |
 | `secretenv.alias.cascade_layer_index` | ALLOW | Which cascade layer satisfied the lookup |
-| `secretenv.alias.outcome` | ALLOW | Closed enum: `resolved` / `not_found` / `default` |
+| `secretenv.alias.outcome` | ALLOW | Closed enum: `ok` / `default` / `failed` / `dry-run` |
 | `secretenv.alias.is_default` | ALLOW | bool |
 | `secretenv.alias.uri` / `.uri.raw` / `.uri.path` | **DENY** | Topology leak |
 | `secretenv.alias.uri_scheme` | **DENY** | Scheme + path together reconstruct topology |
@@ -64,9 +67,9 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.backend.cli.name` | ALLOW | Binary name (e.g. `op`, `vault`) |
 | `secretenv.backend.cli.version` | ALLOW | Useful for triage |
 | `secretenv.backend.cli.identity` | **DENY** | Account email / ARN |
-| `secretenv.backend.auth_method` | ALLOW | Closed enum: `oidc` / `token` / `iam` / `env`; never the credential |
-| `secretenv.backend.probe.level` | ALLOW | `connectivity` / `full` (run-path `secretenv.backend.probe` span; the doctor 3-level model uses `secretenv.doctor.check_level`) |
-| `secretenv.backend.probe.outcome` | ALLOW | Closed enum |
+| `secretenv.backend.auth_method` | ALLOW | Closed enum: `env-token` / `cli-session` / `instance-role` / `service-account-key` / `oauth-refresh` / `none` / `unknown`; never the credential |
+| `secretenv.backend.probe.level` | ALLOW | Closed enum `l1-cli` / `l2-auth` / `l3-read` (per-backend probe depth, shared with the `backend.probe.count` metric). Distinct from `secretenv.doctor.check_level` (the doctor invocation mode). The run-path `secretenv.backend.probe` span emits `l3-read` (it wraps a real read; v0.20 Arch-W-2 will stage true L1/L2/L3 probing). |
+| `secretenv.backend.probe.outcome` | ALLOW | Closed enum `ok` / `cli-missing` / `not-authenticated` / `registry-unreachable` / `timeout` / `unknown` (shared with the `backend.probe.count` metric) |
 | `secretenv.backend.error.kind` | ALLOW | Closed enum `SecretEnvErrorKind` |
 | `secretenv.backend.error.message` | **DENY by default** | Per-run opt-in via `--otel-include-error-detail`; even then, scrubbed via SEC-INV-20 before any emission |
 | `secretenv.backend.error.cli_stderr` | **DENY** | Raw stderr; topology + credential leak risk |
@@ -87,6 +90,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.manifest.path` | ALLOW (basename only) | Filename basename only (e.g. `secretenv.toml`); never an absolute path. Empty/`/`/`..` paths emit the `<no-basename>` sentinel |
 | `secretenv.manifest.alias_count` | ALLOW | Aggregate |
 | `secretenv.manifest.default_count` | ALLOW | Aggregate |
+| `secretenv.manifest.outcome` | ALLOW | Closed enum: `ok` / `not_found` / `parse_error` / `validation_error` |
 
 ### 2.5 Resolution & run
 
@@ -109,14 +113,14 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 
 | Attribute | ALLOW/DENY | Notes |
 |---|---|---|
-| `secretenv.redact.mode` | ALLOW | `runtime` / `post_hoc` / `disabled` |
+| `secretenv.redact.mode` | ALLOW | `runtime` / `post-hoc` / `disabled` |
 | `secretenv.redact.match_count` | ALLOW | Aggregate |
 | `secretenv.redact.byte_count` | ALLOW | Aggregate |
-| `secretenv.redact.stream` | ALLOW | `stdout` / `stderr` |
+| `secretenv.redact.stream` | ALLOW | `stdout` / `stderr` / `file` |
 | `secretenv.redact.line_number` | ALLOW | |
 | `secretenv.redact.replacement_token` | ALLOW | The literal token written in place of the match |
-| `secretenv.redact.match_context` | ALLOW | `exact` / `substring` / `base64_form` |
-| `secretenv.redact.source` | ALLOW | Closed enum: `mode-a` (runtime pipe) / `mode-b` (post-hoc file rewrite) / `stripped`. Distinguishes which redaction path scrubbed the match for percentile-by-mode triage. |
+| `secretenv.redact.match_context` | ALLOW | `exact` / `substring` / `base64-form` |
+| `secretenv.redact.source` | ALLOW | Closed enum: `mode-a` (runtime pipe) / `mode-b` (post-hoc file rewrite). Distinguishes which redaction path scrubbed the match for percentile-by-mode triage. |
 | `secretenv.redact.alias_name` | **DENY in OTel** | SEC-INV-19. The alias name appears in the operator-local redaction token; it does **not** appear as an OTel attribute. (Resolves the conflict between the OTel spec's permissive position and the security invariant; security wins for OTel emission.) |
 | `secretenv.redact.matched_value` / `.value_length` | **DENY** | |
 
@@ -124,16 +128,19 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 
 | Attribute | ALLOW/DENY | Notes |
 |---|---|---|
-| `secretenv.migrate.alias_name` | ALLOW | |
+| `secretenv.migrate.alias_name` | **DENY** | Fail-closed guard; migrate spans use `secretenv.alias.name` (via `record_alias_name`) rather than a migrate-scoped variant |
 | `secretenv.migrate.source_backend_type` | ALLOW | |
 | `secretenv.migrate.dest_backend_type` | ALLOW | |
 | `secretenv.migrate.source_uri` | **DENY** | Topology |
 | `secretenv.migrate.dest_uri` | **DENY** | Topology |
-| `secretenv.migrate.phase` | ALLOW | Closed enum: `probe` / `read` / `write` / `pointer_flip` / `delete` |
+| `secretenv.migrate.source_backend_instance` / `.dest_backend_instance` | **DENY** | Instance names carry env hints (`prod`/`staging`) that fingerprint topology; only backend TYPE is ALLOW |
+| `secretenv.migrate.value` | **DENY** | The migrated secret value never appears on any attribute; explicit fail-closed guard row |
+| `secretenv.migrate.phase` | ALLOW | Closed enum: `probe` / `read` / `write` / `pointer-flip` / `delete-source` |
 | `secretenv.migrate.outcome` | ALLOW | Closed enum |
-| `secretenv.migrate.partial_failure_stage` | ALLOW | Closed enum (same as `phase`) |
+| `secretenv.migrate.partial_failure_stage` | ALLOW | Closed enum (same as `phase`); reserved — schema slot is locked but no typed setter is wired yet (a caller lands when the partial-failure path emits it) |
 | `secretenv.migrate.delete_source` | ALLOW | bool |
 | `secretenv.migrate.transaction_id` | ALLOW | UUIDv4 |
+| `secretenv.migrate.collapsed` | ALLOW | bool; `true` when the transaction collapses into a single backend-side atomic operation (no backend exposes this yet; emitted as `false` in v0.18) |
 
 ### 2.8 MCP
 
@@ -172,7 +179,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions. **v0.18 Sec-L-3 note:** `host.name` is set from `hostname::get()`, which on corporate CI runners and bare-metal hosts may surface an FQDN like `ip-10-0-1-23.us-west-2.compute.internal` or `runner-prod-build-42.corp.example.com` — those carry network topology hints. Operators who want to scrub or pin this attribute can override via `OTEL_RESOURCE_ATTRIBUTES=host.name=<override>` at the process env layer; it's last-write-wins against our default emission. |
 | `deployment.environment.name` | ALLOW (opt-in only) | NOT auto-inferred from `CI=true`; operator-supplied via `[otel]` config or `OTEL_RESOURCE_ATTRIBUTES` |
 
-**Matrix totals:** 51 ALLOW · 25 DENY · 76 entries.
+**Matrix totals:** 74 ALLOW · 31 DENY (30 hard-DENY + 1 DENY-by-default) · **105 attributes** — mirrors the authoritative `secretenv-telemetry::policy::CANONICAL` table one-for-one. (A few rows group sibling attributes — e.g. the three `.alias.uri*` variants and the three `.value*` variants share a row — so the visible row count is lower than 105.)
 
 ---
 
@@ -185,9 +192,9 @@ SecretEnv classifies every data element into one of two tiers:
 
 **Set-site enforcement (SEC-INV-04).** Every ALLOW attribute that any code path emits has exactly one typed method on `SecretEnvSpan` (e.g. `record_alias_name`, `record_backend_type`). v0.17 ships the 26 setters active callers in `secretenv-core` / `secretenv-migrate` / `secretenv-mcp` / `secretenv-cli` need; the remaining ALLOW attributes listed in §2 are part of the locked schema and gain typed setters as Phase 4/6 work (metrics, operator UX) or downstream cycles wire callers for them — adding a new setter is itself a PR-reviewed code change, so a setter cannot land without the corresponding doc entry. The builder does **not** expose a generic `set_attribute(key: &str, value: &str)`, so no call site can smuggle an attribute that lacks a setter. A CI grep gate (`scripts/check_tracing_leaks.sh`) fails the build if any call site references `Secret::expose_secret`, `{value}`, `{uri.raw}`, or `{secret}` inside a `tracing::*!` macro argument list.
 
-**Scrubbing of `backend.error.message`.** The single exception to the "no free-string attribute" rule is `backend.error.message`, which is **DENY by default**. Operators may opt in per-run via `--otel-include-error-detail`. Even when opted in, the message is passed through the SEC-INV-20 scrubber before emission: URI-shaped substrings, AWS 12-digit account numbers, and high-entropy tokens (> 20 chars mixed case + digits) are replaced with `<redacted>`. Raw backend stderr (`backend.error.cli_stderr`) remains DENY in all cases.
+**Scrubbing of `backend.error.message`.** The single exception to the "no free-string attribute" rule is `backend.error.message`, which is **DENY by default**. Operators may opt in per-run via `--otel-include-error-detail`. Even when opted in, the message is passed through the SEC-INV-20 scrubber before emission: URI-shaped substrings are replaced with `<uri-stripped>`, AWS 12-digit account numbers with `<aws-account-stripped>`, and high-entropy tokens (32+ chars from the base64-safe alphabet `A-Za-z0-9+/=_-`) with `<token-stripped>`. Raw backend stderr (`backend.error.cli_stderr`) remains DENY in all cases.
 
-> **v0.17 status.** The `--otel-include-error-detail` flag is **not yet shipped** — `backend.error.message` is unconditionally DENY in v0.17 (structurally enforced by absence of the `SecretEnvSpan::record_error_message` setter). The flag + scrubber wiring lands in v0.18. The DENY-by-default posture above is therefore the only posture in v0.17. Tracked at [[v0.17-deferred-items]] as the only spec-promised surface explicitly deferred from v0.17.0.
+> **Status (v0.19).** The `--otel-include-error-detail` flag, the SEC-INV-20 scrubber, and the actual emission of `secretenv.backend.error.message` all ship as of v0.19 (Sec-F-5 wire-up). Prior to v0.19 the flag and scrubber existed but emission was a reserved no-op; v0.19 closes that gap. The DENY-by-default posture remains: `secretenv.backend.error.message` is structurally absent from any span unless the operator passes `--otel-include-error-detail` at run time. Even when opted in, the message is passed through the SEC-INV-20 scrubber before emission. Raw backend stderr (`backend.error.cli_stderr`) remains DENY in all cases.
 
 ---
 
@@ -289,14 +296,14 @@ Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password
 |---|---|---|---|---|
 | `secretenv.resolution.duration` | Histogram | `ms` | `registry.name`, `run.outcome`, `alias_count_bucket` | `alias_count` is bucketed (1-5, 6-10, 11-20, 20+); `alias.name` is **NOT** an attribute |
 | `secretenv.resolution.count` | Counter | `{resolution}` | `registry.name`, `run.outcome` | Low |
-| `secretenv.backend.probe.count` | Counter | `{probe}` | `backend.type`, `backend.instance_name`, `probe.level`, `probe.outcome` | O(instances × 12) |
+| `secretenv.backend.probe.count` | Counter | `{probe}` | `backend.type`, `backend.instance_name`, `probe.level`, `probe.outcome` | O(instances × 18) |
 | `secretenv.backend.fetch.duration` | Histogram | `ms` | `backend.type`, `backend.instance_name`, `fetch.outcome` | O(backends × 3); `alias.name` explicitly excluded |
 | `secretenv.redact.events` | Counter | `{event}` | `redact.mode`, `redact.match_context` | Low; `alias.name` excluded per SEC-INV-19 |
 | `secretenv.mcp.tool.calls` | Counter | `{call}` | `mcp.tool_name`, `mcp.outcome` | Low (closed enum tool names) |
 | `secretenv.mcp.tool.duration` | Histogram | `ms` | `mcp.tool_name`, `mcp.outcome` | Low |
 | `secretenv.doctor.failure.count` | Counter | `{failure}` | `backend.type`, `backend.instance_name`, `probe.outcome` | Low (failure only; success silent) |
 | `secretenv.migrate.operation.count` | Counter | `{operation}` | `migrate.phase`, `migrate.outcome` | Low |
-| `secretenv.registry.alias_count` | Gauge (observed) | `{alias}` | `registry.name`, `registry.source_index` | Low |
+| `secretenv.registry.alias_count` | Gauge (synchronous) | `{alias}` | `registry.name`, `registry.source_index` | Low |
 
 **Histogram buckets:**
 - Resolution duration: `50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000` ms

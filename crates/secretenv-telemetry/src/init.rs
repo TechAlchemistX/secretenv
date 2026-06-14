@@ -568,6 +568,30 @@ pub fn flush_before_exec(timeout: Duration) {
 /// Kept here (not factored to a separate module) so the only OTel
 /// teardown path in the crate uses one shared implementation;
 /// behavior changes apply uniformly.
+///
+/// # Thread-leak budget (v0.19 Arch-F-9)
+///
+/// Each timeout *detaches* the worker rather than blocking process
+/// exit — the right call for `secretenv run`, where a wedged collector
+/// must not turn teardown into a latency cliff. The tradeoff: a
+/// detached worker holds `Arc` clones of the provider stack (tracer +
+/// meter + their batch processors) until it eventually returns or the
+/// process exits. This is bounded in every real path:
+///
+/// - **`secretenv run`** replaces the process via `execve` immediately
+///   after [`flush_before_exec`], so at most one detached worker can
+///   exist and it dies with the replaced image — no accumulation.
+/// - **One-shot CLI subcommands** init + drop once per process.
+///
+/// The budget question is therefore only relevant to a caller that
+/// performs *many* `init()`/drop cycles in a single long-lived process
+/// under a persistently wedged collector (e.g. a test harness, or a
+/// hypothetical future `secretenv` subcommand looping over init). Such
+/// callers should share a single [`TelemetryGuard`] for the process
+/// rather than re-init per iteration, or accept the bounded thread
+/// accumulation. This is a deliberate availability-over-tidiness
+/// tradeoff, documented here so the detach is not mistaken for a leak
+/// bug.
 fn run_bounded_or_detach<F>(timeout: Duration, work: F)
 where
     F: FnOnce() + Send + 'static,

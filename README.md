@@ -9,7 +9,7 @@
 [![Crates.io](https://img.shields.io/crates/v/secretenv.svg)](https://crates.io/crates/secretenv)
 [![Build](https://img.shields.io/github/actions/workflow/status/TechAlchemistX/secretenv/ci.yml?branch=main)](https://github.com/TechAlchemistX/secretenv/actions)
 [![Backends](https://img.shields.io/badge/backends-15-green)](#supported-backends)
-[![Smoke](https://img.shields.io/badge/live--smoke-508_assertions-brightgreen)](#stability-proof)
+[![Smoke](https://img.shields.io/badge/live--smoke-796_assertions-brightgreen)](#stability-proof)
 
 ### One registry. Every repo. Every backend. Migrate without touching a single repo.
 
@@ -461,7 +461,7 @@ Exit code is non-zero if any backend reports anything other than `Ok`. `doctor -
 
 ## Observability
 
-SecretEnv emits OpenTelemetry traces, metrics, and logs for every resolution, backend probe, MCP tool call, and registry mutation. Telemetry is **opt-in** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, the OTel collector). With no endpoint configured, SecretEnv installs no exporter and has zero startup overhead.
+SecretEnv emits OpenTelemetry traces and metrics for every resolution, backend probe, MCP tool call, and registry mutation. Telemetry is **opt-in** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, the OTel collector). With no endpoint configured, SecretEnv installs no exporter and has zero startup overhead.
 
 **Production onramp** — two env vars and you're done:
 
@@ -471,11 +471,11 @@ export OTEL_SERVICE_NAME=payments-secretenv   # optional; defaults to "secretenv
 secretenv run -- ./deploy.sh
 ```
 
-The first var turns telemetry on; the second overrides the default `secretenv` service name (useful when multiple teams ship SecretEnv-wrapped CI jobs to a shared collector and want per-project tagging). Every standard `OTEL_*` env var works — exporter protocol, headers, timeout, sampler, resource attributes, propagators — per [`docs/reference/opentelemetry.md`](docs/reference/opentelemetry.md) §7.
+The first var turns telemetry on; the second overrides the default `secretenv` service name (useful when multiple teams ship SecretEnv-wrapped CI jobs to a shared collector and want per-project tagging). Standard `OTEL_*` env vars work for endpoint, timeout, sampler, resource attributes, and W3C `TRACEPARENT`/`TRACESTATE` propagation. The exporter transport is OTLP/gRPC only; `OTEL_EXPORTER_OTLP_PROTOCOL` is not consulted. Full details: [`docs/reference/opentelemetry.md`](docs/reference/opentelemetry.md) §7.
 
 The full attribute schema, span topology, metric inventory, and the audit-facing redaction taxonomy are documented in [`docs/reference/opentelemetry.md`](docs/reference/opentelemetry.md). Every emitted attribute is enumerated with an explicit ALLOW/DENY classification, enforced at compile time by the typed `SecretEnvSpan` builder — there is no `set_attribute(key, value)` escape hatch.
 
-For observability without a collector: `secretenv run --verbose` shows per-alias timing, and `secretenv doctor --trace` renders an in-process span table from a dry-run resolution pass.
+For observability without a collector: `secretenv run --verbose` shows per-alias timing, and `secretenv doctor --trace` renders an in-process span table from the doctor backend probe pass — no OTLP collector required.
 
 ---
 
@@ -483,7 +483,7 @@ For observability without a collector: `secretenv run --verbose` shows per-alias
 
 Every backend tool claims stability. SecretEnv proves it.
 
-The smoke harness exercises the **real binary** against **real backend CLIs** in **real shells** — not mocks, not contract tests. Every assertion validates: spawn the CLI, route input via tempfile or stdin, parse stdout, handle stderr, observe exit code. **508 assertions across 15 backends as of v0.13.0.**
+The smoke harness exercises the **real binary** against **real backend CLIs** in **real shells** — not mocks, not contract tests. Every assertion validates: spawn the CLI, route input via tempfile or stdin, parse stdout, handle stderr, observe exit code. **796 assertions across 15 backends as of v0.18.0.**
 
 In the v0.13 cycle, this harness caught a latent pipe-deadlock in the Infisical backend that had survived **15 days and 6 release cycles** since Infisical shipped in v0.7.0. CI was green every release. Unit tests passed. Three-agent audits passed. Only the live-backend smoke — running the real binary against the real CLI in a real shell — surfaced it. The fix was one line; the lesson was the harness.
 
@@ -501,6 +501,10 @@ In the v0.13 cycle, this harness caught a latent pipe-deadlock in the Infisical 
 | v0.11.0 | 2026-04-30 | 14 | 479 | +CyberArk Conjur |
 | v0.12.0 | 2026-05-05 | 15 | 508 | +Bitwarden Secrets Manager |
 | v0.13.0 | 2026-05-07 | 15 | 508 | Hygiene cycle — caught the v0.7-era pipe-deadlock |
+| v0.15.0 | 2026-05-20 | 15 | 690 | +registry migrate |
+| v0.16.0 | 2026-05-24 | 15 | 712 | +MCP server (v0.16) |
+| v0.17.0 | 2026-05-28 | 15 | 767 | +OpenTelemetry (v0.17) |
+| v0.18.0 | 2026-06-04 | 15 | 796 | Hardening cycle (non-backend) |
 
 Test surface grew with feature surface across ~3 weeks of single-backend-per-minor-release cadence.
 
@@ -508,7 +512,7 @@ Test surface grew with feature surface across ~3 weeks of single-backend-per-min
 
 ## Supported Backends
 
-SecretEnv delegates all authentication to each backend's native CLI. The version column below is what the v0.13.0 release smoke ran against.
+SecretEnv delegates all authentication to each backend's native CLI. The version column below is what the v0.18.0 release smoke ran against.
 
 
 | Backend | Type | URI Scheme | Tested CLI version | Status |
@@ -551,7 +555,7 @@ The URI scheme is your named instance. Multiple instances of the same backend ty
 
 ```bash
 # run — primary use case
-secretenv run [--registry <name-or-uri>] [--dry-run] [--verbose] -- <command>
+secretenv run [--registry <name-or-uri>] [--dry-run] [--verbose] [--redact] [--no-redact --i-know] [--redact-token <token>] -- <command>
 
 # registry — alias CRUD + history + onboarding helpers
 secretenv registry list    [--registry <name-or-uri>]
@@ -569,14 +573,24 @@ secretenv profile update    [<name>]
 secretenv profile uninstall <name>
 
 # doctor — three-level health checks (L1 CLI + L2 auth + L3 read)
-secretenv doctor [--json] [--fix] [--extensive]
+secretenv doctor [--json] [--fix] [--extensive] [--trace]
 
 # setup — bootstrap config wizard
 secretenv setup <registry-uri> [--region R] [--profile P] [--account A] [--vault-address ...] [--force] [--skip-doctor]
 
+# redact — post-hoc file scrubber (v0.14+)
+secretenv redact <path> [--registry <name-or-uri>] [--in-place] [--backup <suffix>] [--dry-run] [--redact-token <token>]
+
+# mcp — Model Context Protocol server (v0.16+)
+secretenv mcp serve   [--allow-mutations <never|confirm|always>] [--confirm-via <auto|elicitation|tty|notification|none>]
+secretenv mcp disable [--duration <30m|2h|1d>]
+secretenv mcp enable
+secretenv mcp setup   [--ide <name>] [--list-ides] [--write] [--force] [--merge] [--check-overrides]
+secretenv mcp audit tail [--lines <N>] [--path <path>]
+
 # completions, resolve, get
 secretenv completions <bash|zsh|fish> [--output <path>]
-secretenv resolve <alias> [--registry <name-or-uri>]
+secretenv resolve <alias> [--registry <name-or-uri>] [--json]
 secretenv get <alias> [--registry <name-or-uri>] [--yes]
 ```
 
@@ -590,7 +604,7 @@ SECRETENV_PROFILE_URL=<base-url>   # override the default profile fetch base
 RUST_LOG=secretenv=debug           # structured logging (default: secretenv=warn)
 ```
 
-All commands are available as of v0.13.0. Full per-flag reference + exit codes: [docs/reference/cli-reference-full.md](docs/reference/cli-reference-full.md).
+Full per-flag reference + exit codes: [docs/reference/cli-reference-full.md](docs/reference/cli-reference-full.md).
 
 ---
 

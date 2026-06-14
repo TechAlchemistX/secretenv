@@ -135,7 +135,7 @@ Shorthand fragments and non-integer versions are rejected with a migration hint.
 
 ## History API support
 
-Partial. `secretenv registry history <alias>` surfaces version number and creation timestamp via `gcloud secrets versions list`. Actor name and change descriptions are not available via the `gcloud` CLI.
+Not implemented. The backend returns the trait-default "not implemented" error. GCP Secret Manager exposes version lists via `gcloud secrets versions list` and the REST API, but this backend does not yet call that surface. Version history is available in the GCP Console or via `gcloud` directly.
 
 ## Limitations
 

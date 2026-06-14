@@ -25,11 +25,11 @@ use rmcp::RoleServer;
 use serde::Deserialize;
 use tokio::time::timeout;
 
-use crate::audit_log::OperatorDecision;
+use crate::audit_log::MutationOperatorDecision;
 use crate::config::{AllowMutations, ConfirmVia, McpConfig};
 
 /// TTY prompt wall-clock timeout. No response = treated as deny per
-/// the existing [`OperatorDecision::Timeout`] semantics.
+/// the existing [`MutationOperatorDecision::Timeout`] semantics.
 const TTY_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Hard cap on rendered prompt-fragment length. Anything past this is
@@ -225,8 +225,12 @@ impl schemars::JsonSchema for MutationApproval {
 rmcp::elicit_safe!(MutationApproval);
 
 /// Apply the [`McpConfig::allow_mutations`] policy to one mutation
-/// request. Returns the [`OperatorDecision`] the handler should write
-/// to the audit log, or an error if the policy refuses outright.
+/// request.
+///
+/// Returns the [`MutationOperatorDecision`] the handler should write to
+/// the audit log, or an error if the policy refuses outright. `DryRun`
+/// is unrepresentable here — only the migrate dry-run path, handled
+/// before the policy gate, records it (v0.19 Arch-W-1).
 ///
 /// The `peer` argument is the MCP server's link to the client and is
 /// used by [`ConfirmVia::Elicitation`] / [`ConfirmVia::Auto`] to surface
@@ -261,7 +265,7 @@ pub async fn enforce_mutation_policy(
     mcp_config: &McpConfig,
     request: &MutationRequest<'_>,
     peer: Option<&Peer<RoleServer>>,
-) -> Result<OperatorDecision> {
+) -> Result<MutationOperatorDecision> {
     match mcp_config.allow_mutations {
         AllowMutations::Never => {
             bail!(
@@ -270,7 +274,7 @@ pub async fn enforce_mutation_policy(
                 request.tool_name
             );
         }
-        AllowMutations::Always => Ok(OperatorDecision::AutoApproved),
+        AllowMutations::Always => Ok(MutationOperatorDecision::AutoApproved),
         AllowMutations::Confirm => {
             let resolved = resolve_confirm_via(mcp_config.confirm_via, peer)?;
             match resolved {
@@ -436,7 +440,7 @@ fn resolve_confirm_via(
 async fn prompt_via_elicitation(
     request: &MutationRequest<'_>,
     peer: &Peer<RoleServer>,
-) -> Result<OperatorDecision> {
+) -> Result<MutationOperatorDecision> {
     // The full message is the dialog body the IDE renders. Sanitize
     // the same way we do for the TTY prompt — agent-controlled
     // fragments (alias names, target URIs) flow through here too.
@@ -456,12 +460,12 @@ async fn prompt_via_elicitation(
     // every documented `ElicitationError` variant onto an
     // `OperatorDecision` per Phase 7c task #2 design.
     match peer.elicit_with_timeout::<MutationApproval>(message, Some(TTY_PROMPT_TIMEOUT)).await {
-        Ok(Some(MutationApproval {})) => Ok(OperatorDecision::Approved),
+        Ok(Some(MutationApproval {})) => Ok(MutationOperatorDecision::Approved),
         Ok(None) | Err(ElicitationError::UserDeclined | ElicitationError::UserCancelled) => {
-            Ok(OperatorDecision::Denied)
+            Ok(MutationOperatorDecision::Denied)
         }
         Err(ElicitationError::Service(rmcp::ServiceError::Timeout { .. })) => {
-            Ok(OperatorDecision::Timeout)
+            Ok(MutationOperatorDecision::Timeout)
         }
         Err(ElicitationError::CapabilityNotSupported) => bail!(
             "MCP client did not declare elicitation capability at the initialize \
@@ -473,7 +477,7 @@ async fn prompt_via_elicitation(
     }
 }
 
-async fn prompt_via_tty(request: &MutationRequest<'_>) -> Result<OperatorDecision> {
+async fn prompt_via_tty(request: &MutationRequest<'_>) -> Result<MutationOperatorDecision> {
     // SEC-INV-20 / M6: sanitize agent-controlled fragments before
     // they reach /dev/tty. `tool_name` is a string literal in handler
     // code (safe by construction) but `action_summary` interpolates
@@ -485,14 +489,14 @@ async fn prompt_via_tty(request: &MutationRequest<'_>) -> Result<OperatorDecisio
     );
 
     match timeout(TTY_PROMPT_TIMEOUT, read_tty_line(prompt)).await {
-        Err(_) => Ok(OperatorDecision::Timeout),
+        Err(_) => Ok(MutationOperatorDecision::Timeout),
         Ok(Err(e)) => Err(e),
         Ok(Ok(line)) => {
             let trimmed = line.trim();
             if trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes") {
-                Ok(OperatorDecision::Approved)
+                Ok(MutationOperatorDecision::Approved)
             } else {
-                Ok(OperatorDecision::Denied)
+                Ok(MutationOperatorDecision::Denied)
             }
         }
     }
@@ -579,7 +583,7 @@ mod tests {
     async fn always_auto_approves_without_io() {
         let cfg = McpConfig { allow_mutations: AllowMutations::Always, ..McpConfig::default() };
         let decision = enforce_mutation_policy(&cfg, &req(), None).await.unwrap();
-        assert_eq!(decision, OperatorDecision::AutoApproved);
+        assert_eq!(decision, MutationOperatorDecision::AutoApproved);
     }
 
     #[tokio::test]

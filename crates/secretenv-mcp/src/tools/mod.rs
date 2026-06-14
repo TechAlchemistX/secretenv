@@ -53,7 +53,10 @@ use rmcp::{tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use secretenv_core::Config;
 use secretenv_telemetry::span::{MutationSpanName, SecretEnvSpan};
 
-use crate::audit_log::{MutationLog, MutationLogEntry, OperatorDecision};
+use crate::audit_log::{
+    Decision, MigrateOperatorDecision, MutationLog, MutationLogEntry, MutationOperatorDecision,
+    OperatorDecision,
+};
 use crate::boundary::{
     AuthStatus, BackendListing, DeleteAliasResponse, DetectPasswordManagersResponse,
     DoctorResponse, GenPasswordResponse, GettingStartedResponse, InitProjectResponse,
@@ -789,8 +792,11 @@ impl Server {
                     response.error_message = Some(safe_error_message(&e));
                     return Json(response);
                 }
-                Ok(decision @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
-                    let outcome = if decision == OperatorDecision::Timeout {
+                Ok(
+                    decision @ (MutationOperatorDecision::Denied
+                    | MutationOperatorDecision::Timeout),
+                ) => {
+                    let outcome = if decision == MutationOperatorDecision::Timeout {
                         MutationOutcome::Timeout
                     } else {
                         MutationOutcome::Refused
@@ -801,7 +807,7 @@ impl Server {
                         alias_name: None,
                         backend_instance: None,
                         agent_reason: args.reason.clone(),
-                        operator_decision: decision,
+                        operator_decision: decision.to_audit(),
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     if let Err(append_err) = self.mutation_log.append(&entry) {
@@ -811,47 +817,18 @@ impl Server {
                     response.decision = helpers::echo_decision(decision);
                     return Json(response);
                 }
-                Ok(decision @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => {
-                    (decision, MutationOutcome::Applied)
-                }
-                // v0.18 M-12. DryRun is reserved for the migrate path
-                // call site BEFORE policy enforcement; reaching here
-                // is a contract violation.
-                //
-                // Architectural note: structurally unreachable arm;
-                // remove when Arch-W-1 lands (split `OperatorDecision`
-                // into per-tool variants). v0.18 Phase 7b Arch-F-4.
-                //
-                // v0.18 Phase 7b Code-F-3: populate `error_message`
-                // and append an audit-log entry so the contract
-                // violation is OBSERVABLE in both the tool response
-                // and the on-disk trail — was previously silent.
-                Ok(OperatorDecision::DryRun) => {
-                    tracing::warn!(
-                        tool = "redact_file",
-                        "policy returned DryRun (should be handled at call site)"
-                    );
-                    let entry = MutationLogEntry {
-                        ts_unix_secs: helpers::now_secs(),
-                        tool_name: "redact_file".to_owned(),
-                        alias_name: None,
-                        backend_instance: None,
-                        agent_reason: args.reason.clone(),
-                        operator_decision: OperatorDecision::Denied,
-                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
-                    };
-                    if let Err(append_err) = self.mutation_log.append(&entry) {
-                        tracing::error!(error = ?append_err, "audit-log append failed");
-                    }
-                    response.outcome = MutationOutcome::Refused;
-                    response.decision = OperatorDecisionEcho::PolicyRefusal;
-                    response.error_message = Some(
-                        "internal: policy returned DryRun for a non-migrate tool \
-                         (contract violation; see secretenv-mcp v0.18 M-12)"
-                            .to_owned(),
-                    );
-                    return Json(response);
-                }
+                // v0.19 Arch-W-1: `enforce_mutation_policy` returns
+                // `MutationOperatorDecision`, which has no `DryRun`
+                // variant — so this match is exhaustive without the
+                // v0.18 "structurally unreachable DryRun arm". The
+                // contract violation is now a compile-time impossibility
+                // rather than a runtime guard. `decision.to_audit()`
+                // projects to the on-disk `OperatorDecision` the
+                // downstream code threads through the response.
+                Ok(
+                    decision @ (MutationOperatorDecision::Approved
+                    | MutationOperatorDecision::AutoApproved),
+                ) => (decision.to_audit(), MutationOutcome::Applied),
             }
         } else {
             // Dry-run: pretend AutoApproved so the decision-echo
@@ -1047,20 +1024,20 @@ impl Server {
                     response.error_message = Some(safe_error_message(&e));
                     return Json(response);
                 }
-                Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
+                Ok(d @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout)) => {
                     let entry = MutationLogEntry {
                         ts_unix_secs: helpers::now_secs(),
                         tool_name: "gen_password".to_owned(),
                         alias_name: Some(args.alias.clone()),
                         backend_instance: Some(backend_instance.clone()),
                         agent_reason: args.reason.clone(),
-                        operator_decision: d,
+                        operator_decision: d.to_audit(),
                         mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
                     };
                     if let Err(append_err) = self.mutation_log.append(&entry) {
                         tracing::error!(error = ?append_err, "audit-log append failed");
                     }
-                    response.outcome = if d == OperatorDecision::Timeout {
+                    response.outcome = if d == MutationOperatorDecision::Timeout {
                         MutationOutcome::Timeout
                     } else {
                         MutationOutcome::Refused
@@ -1068,41 +1045,15 @@ impl Server {
                     response.decision = helpers::echo_decision(d);
                     return Json(response);
                 }
-                Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
-                // v0.18 M-12.
-                //
-                // Architectural note: structurally unreachable arm;
-                // remove when Arch-W-1 lands. v0.18 Phase 7b Arch-F-4.
-                //
-                // v0.18 Phase 7b Code-F-3: populate `error_message`
-                // and append an audit-log entry so the contract
-                // violation is OBSERVABLE.
-                Ok(OperatorDecision::DryRun) => {
-                    tracing::warn!(
-                        tool = "gen_password",
-                        "policy returned DryRun (should be handled at call site)"
-                    );
-                    let entry = MutationLogEntry {
-                        ts_unix_secs: helpers::now_secs(),
-                        tool_name: "gen_password".to_owned(),
-                        alias_name: Some(args.alias.clone()),
-                        backend_instance: Some(backend_instance.clone()),
-                        agent_reason: args.reason.clone(),
-                        operator_decision: OperatorDecision::Denied,
-                        mcp_client_id: helpers::client_id_from_peer(&ctx.peer),
-                    };
-                    if let Err(append_err) = self.mutation_log.append(&entry) {
-                        tracing::error!(error = ?append_err, "audit-log append failed");
-                    }
-                    response.outcome = MutationOutcome::Refused;
-                    response.decision = OperatorDecisionEcho::PolicyRefusal;
-                    response.error_message = Some(
-                        "internal: policy returned DryRun for a non-migrate tool \
-                         (contract violation; see secretenv-mcp v0.18 M-12)"
-                            .to_owned(),
-                    );
-                    return Json(response);
-                }
+                // v0.19 Arch-W-1: no `DryRun` arm — `MutationOperatorDecision`
+                // cannot represent it, so the match is exhaustive and the
+                // v0.18 structurally-unreachable contract-violation arm is
+                // gone. `d.to_audit()` projects to the on-disk decision the
+                // rest of the handler threads through.
+                Ok(
+                    d @ (MutationOperatorDecision::Approved
+                    | MutationOperatorDecision::AutoApproved),
+                ) => d.to_audit(),
             };
 
         // Approved — build registry + parse target URI + generate + set + register alias.
@@ -1331,9 +1282,9 @@ impl Server {
                 // DryRun decision so the audit trail records the
                 // attempted-but-not-built migration.
                 let decision = if args.dry_run {
-                    OperatorDecision::DryRun
+                    MigrateOperatorDecision::DryRun
                 } else {
-                    OperatorDecision::AutoApproved
+                    MigrateOperatorDecision::AutoApproved
                 };
                 helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
                 return Json(response);
@@ -1362,9 +1313,9 @@ impl Server {
                         Some(format!("building migration plan: {}", safe_error_message(&e)));
                     // v0.18 M-12: log even when dry_run.
                     let decision = if args.dry_run {
-                        OperatorDecision::DryRun
+                        MigrateOperatorDecision::DryRun
                     } else {
-                        OperatorDecision::AutoApproved
+                        MigrateOperatorDecision::AutoApproved
                     };
                     helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
                     return Json(response);
@@ -1374,8 +1325,12 @@ impl Server {
         response.transaction_id = Some(plan.transaction_id.clone());
 
         // Policy gate (skipped for dry-run; dry-run is read-only).
+        // `decision` is the real-mutation decision used for the response
+        // echo + the final non-dry-run audit entry; the dry-run audit
+        // tag (`MigrateOperatorDecision::DryRun`) is applied separately
+        // at the foot of the handler. v0.19 Arch-W-1.
         let decision = if args.dry_run {
-            OperatorDecision::AutoApproved
+            MutationOperatorDecision::AutoApproved
         } else {
             let policy_request = MutationRequest {
                 tool_name: "migrate_alias",
@@ -1398,57 +1353,35 @@ impl Server {
                     helpers::audit_migrate(
                         &self.mutation_log,
                         &args,
-                        OperatorDecision::Denied,
+                        MigrateOperatorDecision::Denied,
                         &client_id,
                     );
                     return Json(response);
                 }
-                Ok(d @ (OperatorDecision::Denied | OperatorDecision::Timeout)) => {
-                    response.outcome = if d == OperatorDecision::Timeout {
+                Ok(d @ (MutationOperatorDecision::Denied | MutationOperatorDecision::Timeout)) => {
+                    response.outcome = if d == MutationOperatorDecision::Timeout {
                         MutationOutcome::Timeout
                     } else {
                         MutationOutcome::Refused
                     };
                     response.decision = helpers::echo_decision(d);
-                    helpers::audit_migrate(&self.mutation_log, &args, d, &client_id);
+                    // Lift the mutation decision into the migrate audit
+                    // type (v0.19 Arch-W-1: `audit_migrate` is DryRun-
+                    // capable; a real-mutation decision arrives as a
+                    // `MutationOperatorDecision` and is widened via `From`).
+                    helpers::audit_migrate(&self.mutation_log, &args, d.into(), &client_id);
                     return Json(response);
                 }
-                Ok(d @ (OperatorDecision::Approved | OperatorDecision::AutoApproved)) => d,
-                // v0.18 M-12. Migrate's dry-run path bypasses the
-                // policy gate (this enforce branch is the
-                // real-mutation path). A DryRun decision arriving
-                // here is a contract violation.
-                //
-                // Architectural note: structurally unreachable arm;
-                // remove when Arch-W-1 lands (split `OperatorDecision`
-                // into Migrate vs Mutation variants). v0.18 Phase 7b
-                // Arch-F-4.
-                //
-                // v0.18 Phase 7b Code-F-3: populate `error_message`
-                // and append an audit-log entry so the contract
-                // violation is OBSERVABLE.
-                Ok(OperatorDecision::DryRun) => {
-                    tracing::warn!(
-                        tool = "migrate_alias",
-                        "policy returned DryRun (should be handled at call site)"
-                    );
-                    helpers::audit_migrate(
-                        &self.mutation_log,
-                        &args,
-                        OperatorDecision::Denied,
-                        &client_id,
-                    );
-                    response.outcome = MutationOutcome::Refused;
-                    response.decision = OperatorDecisionEcho::PolicyRefusal;
-                    response.error_message = Some(
-                        "internal: policy returned DryRun for the real-mutation \
-                         migrate branch (contract violation; dry-run handling \
-                         should occur before policy enforcement; see \
-                         secretenv-mcp v0.18 M-12)"
-                            .to_owned(),
-                    );
-                    return Json(response);
-                }
+                // v0.19 Arch-W-1: no `DryRun` arm — the policy gate
+                // returns `MutationOperatorDecision`, so DryRun is
+                // unrepresentable on this (real-mutation) branch. The
+                // v0.18 structurally-unreachable contract-violation arm
+                // is gone; migrate dry-run logging happens before the
+                // policy gate and at the foot of the handler.
+                Ok(
+                    d @ (MutationOperatorDecision::Approved
+                    | MutationOperatorDecision::AutoApproved),
+                ) => d,
             }
         };
 
@@ -1522,9 +1455,16 @@ impl Server {
         // the original semantics (decision = Approved / Denied /
         // Timeout / AutoApproved per the confirmation prompt).
         if args.dry_run {
-            helpers::audit_migrate(&self.mutation_log, &args, OperatorDecision::DryRun, &client_id);
+            helpers::audit_migrate(
+                &self.mutation_log,
+                &args,
+                MigrateOperatorDecision::DryRun,
+                &client_id,
+            );
         } else {
-            helpers::audit_migrate(&self.mutation_log, &args, decision, &client_id);
+            // Widen the real-mutation decision into the migrate audit
+            // type (v0.19 Arch-W-1).
+            helpers::audit_migrate(&self.mutation_log, &args, decision.into(), &client_id);
         }
         Json(response)
     }

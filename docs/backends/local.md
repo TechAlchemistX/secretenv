@@ -115,7 +115,7 @@ No fragment directives. Any `#...` fragment is rejected at URI-parse time.
 
 ## History API support
 
-Not implemented. The local backend reads files; there's no version history at the filesystem level. If you need history for a local file, version-control it (git, etc.).
+Supported via `git log --follow`. `secretenv registry history <alias>` shells out to `git log` against the registry file and returns one entry per commit, with the short SHA as `version`, the ISO-8601 author timestamp, and the author name/email as `actor`. The file must be inside a git repository; a clear error is returned if it is not tracked. The fragment is rejected before the git call fires.
 
 ## Limitations
 

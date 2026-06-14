@@ -41,6 +41,30 @@ use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSp
 /// collision as a typed [`LocalTraceCaptureError`].
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// RAII guard for the [`INSTALLED`] flag, live only across the
+/// [`LocalTraceCapture::install`] critical section between the
+/// `compare_exchange` and the construction of the owning
+/// `LocalTraceCapture`. Clears the flag on `Drop` (i.e. on an unwind
+/// through the OTel SDK setup) unless [`Self::disarm`] has run on the
+/// success path — at which point the `LocalTraceCapture`'s own `Drop`
+/// becomes the flag's owner. v0.19 Arch-W-7 / F-8.
+struct InstalledFlagGuard;
+
+impl InstalledFlagGuard {
+    /// Consume the guard WITHOUT clearing the flag — called once the
+    /// owning `LocalTraceCapture` is about to be returned and takes
+    /// over flag ownership via its own `Drop`.
+    const fn disarm(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for InstalledFlagGuard {
+    fn drop(&mut self) {
+        INSTALLED.store(false, Ordering::SeqCst);
+    }
+}
+
 /// One captured span, surfaced to non-OTel callers as a plain struct
 /// so the CLI can render without depending on `opentelemetry_sdk`.
 ///
@@ -106,11 +130,23 @@ impl LocalTraceCapture {
         if INSTALLED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
             return Err(LocalTraceCaptureError::AlreadyInstalled);
         }
+        // v0.19 Arch-W-7 / F-8: between the successful `compare_exchange`
+        // above and the `Ok(Self)` below (which registers the `Drop`
+        // that clears `INSTALLED`), a panic inside the OTel SDK builder
+        // or `set_tracer_provider` would unwind WITHOUT ever
+        // constructing `Self` — leaving `INSTALLED` stuck `true` for the
+        // process lifetime, so every later `install()` returns
+        // `AlreadyInstalled` permanently. This RAII guard clears the
+        // flag on unwind; `disarm()` on the success path hands flag
+        // ownership over to the returned `LocalTraceCapture`'s own
+        // `Drop`.
+        let reset_guard = InstalledFlagGuard;
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
             .build();
         global::set_tracer_provider(provider.clone());
+        reset_guard.disarm();
         Ok(Self { provider, exporter })
     }
 

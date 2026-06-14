@@ -231,7 +231,9 @@ const CANONICAL: &[(&str, AttributeClassification)] = &[
     ("secretenv.migrate.collapsed", AttributeClassification::Allow),
     // v0.17 Phase 9c — Sec F-3 residue. Spec §2.7 ALLOW (closed enum,
     // same shape as `migrate.phase`; identifies which phase failed
-    // when migrate.outcome=partial-failure).
+    // when migrate.outcome=partial-failure). No typed setter wired yet —
+    // reserved per the D-3.1 "no setter without a caller" convention; the
+    // setter lands when the migrate partial-failure path first emits it.
     ("secretenv.migrate.partial_failure_stage", AttributeClassification::Allow),
     // The migrated value itself NEVER appears on any attribute name —
     // these explicit DENY rows exist to fail-closed if a future call

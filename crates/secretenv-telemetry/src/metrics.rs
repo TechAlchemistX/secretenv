@@ -508,8 +508,6 @@ impl MatchContext {
 /// PR-reviewed audit-surface expansion event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum McpToolName {
-    /// `resolve_alias` — read-only alias lookup.
-    ResolveAlias,
     /// `list_aliases` — read-only registry listing.
     ListAliases,
     /// `list_backends` — read-only backend introspection.
@@ -545,7 +543,6 @@ impl McpToolName {
     #[must_use]
     pub const fn as_attribute_value(self) -> &'static str {
         match self {
-            Self::ResolveAlias => "resolve_alias",
             Self::ListAliases => "list_aliases",
             Self::ListBackends => "list_backends",
             Self::Doctor => "doctor",

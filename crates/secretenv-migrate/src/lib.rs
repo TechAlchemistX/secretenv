@@ -77,7 +77,9 @@ use secretenv_core::{
     resolve_registry, AliasMap, Backend, BackendRegistry, BackendUri, Config, RegistryCache,
     RegistrySelection, Secret,
 };
-use secretenv_telemetry::span::{MigrateOutcome, MigratePhase, MutationSpanName, SecretEnvSpan};
+use secretenv_telemetry::span::{
+    BackendType, MigrateOutcome, MigratePhase, MutationSpanName, SecretEnvSpan,
+};
 
 pub mod mcp_safe;
 
@@ -454,8 +456,8 @@ where
 
     let source = backend_for(backends, &plan.source_uri)?;
     let dest = backend_for(backends, &plan.dest_uri)?;
-    span.record_migrate_source_backend_type(source.backend_type())
-        .record_migrate_dest_backend_type(dest.backend_type())
+    span.record_migrate_source_backend_type(BackendType::from_runtime_str(source.backend_type()))
+        .record_migrate_dest_backend_type(BackendType::from_runtime_str(dest.backend_type()))
         .record_migrate_delete_source(args.delete_source);
 
     // ----- Probe phase -----
@@ -463,8 +465,10 @@ where
         let (mut probe_span, _probe_guard) = SecretEnvSpan::start("secretenv.migrate.probe");
         probe_span
             .record_migrate_phase(MigratePhase::Probe)
-            .record_migrate_source_backend_type(source.backend_type())
-            .record_migrate_dest_backend_type(dest.backend_type());
+            .record_migrate_source_backend_type(BackendType::from_runtime_str(
+                source.backend_type(),
+            ))
+            .record_migrate_dest_backend_type(BackendType::from_runtime_str(dest.backend_type()));
         let r = probe_phase(&plan, source, dest).await?;
         probe_span.record_migrate_outcome(MigrateOutcome::Ok);
         r
@@ -488,9 +492,9 @@ where
     let (value, read_ms) = {
         let (mut read_span, _read_guard) =
             SecretEnvSpan::start_mutation(MutationSpanName::MigrateRead);
-        read_span
-            .record_migrate_phase(MigratePhase::Read)
-            .record_migrate_source_backend_type(source.backend_type());
+        read_span.record_migrate_phase(MigratePhase::Read).record_migrate_source_backend_type(
+            BackendType::from_runtime_str(source.backend_type()),
+        );
         match migrate_read(&plan, source).await {
             Ok(v) => {
                 read_span.record_migrate_outcome(MigrateOutcome::Ok);
@@ -510,7 +514,7 @@ where
             SecretEnvSpan::start_mutation(MutationSpanName::MigrateWrite);
         write_span
             .record_migrate_phase(MigratePhase::Write)
-            .record_migrate_dest_backend_type(dest.backend_type());
+            .record_migrate_dest_backend_type(BackendType::from_runtime_str(dest.backend_type()));
         match migrate_write(&plan, dest, &value).await {
             Ok(ms) => {
                 write_span.record_migrate_outcome(MigrateOutcome::Ok);
@@ -577,7 +581,9 @@ where
             SecretEnvSpan::start_mutation(MutationSpanName::MigrateDelete);
         delete_span
             .record_migrate_phase(MigratePhase::DeleteSource)
-            .record_migrate_source_backend_type(source.backend_type());
+            .record_migrate_source_backend_type(BackendType::from_runtime_str(
+                source.backend_type(),
+            ));
         match migrate_source_delete(&plan, source).await {
             Ok(ms) => {
                 source_delete_ms = Some(ms);

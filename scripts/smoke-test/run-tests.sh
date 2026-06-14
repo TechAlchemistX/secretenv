@@ -2181,11 +2181,26 @@ EOF
     # tells us wrangler's error model still surfaces missing keys
     # (which our backend depends on for its `is_not_found_stderr`
     # heuristic to fire).
-    wrangler kv key get --namespace-id "$CFKV_NS" --remote --text CFKV_DELETE_PROBE > "$RUNS/353-v091-cfkv-postdel.log" 2>&1
+    #
+    # v0.19 smoke-hardening: Cloudflare Workers KV reads are EVENTUALLY
+    # CONSISTENT — a `get` immediately after a `delete` can return a
+    # stale edge-cached value even though the delete has propagated to
+    # the authoritative store (asst 354's `kv key list` is the
+    # authoritative canary). So poll the read up to ~60s (CF's global
+    # propagation window) until the 404 surfaces, rather than asserting
+    # on a single immediate read. This does NOT weaken the invariant: a
+    # delete that genuinely failed never 404s, the loop times out, and
+    # 353 + 354 both fail.
+    for _cfkv_i in $(seq 1 12); do
+        wrangler kv key get --namespace-id "$CFKV_NS" --remote --text CFKV_DELETE_PROBE \
+            > "$RUNS/353-v091-cfkv-postdel.log" 2>&1
+        grep -q '404' "$RUNS/353-v091-cfkv-postdel.log" && break
+        sleep 5
+    done
     # wrangler 4.85.0 surfaces 404s with "404: Not Found" (capital N)
     # in stderr. Match on the literal status string rather than the
     # word "not found" — same evidence, immune to case-shifts.
-    assert_contains "353 v0.9.1 cf-kv post-delete read surfaces 404" \
+    assert_contains "353 v0.9.1 cf-kv post-delete read surfaces 404 (eventually-consistent; bounded retry)" \
       "$RUNS/353-v091-cfkv-postdel.log" '404'
 
     # Direct wrangler list canary — the most authoritative check.
@@ -4360,6 +4375,19 @@ if section_active_for 36; then
             )
             sleep 3
             otel_query_traces "secretenv" 30 > "$V017_WORK/blockB-posthoc-traces.json" || true
+            # v0.19 smoke-hardening (OTEL-SMOKE-CI-HARDENING): the
+            # post-hoc redact span's `redact.mode` attribute can lag the
+            # batch-flush + Jaeger-ingest window under load, so a single
+            # post-sleep query intermittently misses it (the same
+            # flush-timing class as the GHA Block-A flakes). Poll until
+            # the awaited `post-hoc` value lands (bounded ~20s) rather
+            # than relying on one query. A genuinely-absent span still
+            # times out and fails 1237.
+            for _ph_i in $(seq 1 10); do
+                grep -q '"value":"post-hoc"' "$V017_WORK/blockB-posthoc-traces.json" && break
+                sleep 2
+                otel_query_traces "secretenv" 30 > "$V017_WORK/blockB-posthoc-traces.json" || true
+            done
             # Phase 8c closed 1233-1237: redact spans now emit from
             # `core::runner::emit_redact_event_span` (runtime mode, one
             # per non-empty stream) and from `cli::cmd_redact` post-hoc
@@ -4543,6 +4571,18 @@ EOF
                 "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.registry.load"'
             assert_contains "1282 v0.18 Block F — secretenv.backend.probe span (Phase 4)" \
                 "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.backend.probe"'
+            # v0.19 probe-vocabulary unification (Arch-W-2 partial). The
+            # run-path probe wraps a real backend.get() (a read), so it now
+            # emits the unified ProbeLevel/ProbeOutcome values `l3-read` / `ok`
+            # — the removed BackendProbeLevel/BackendProbeOutcome span enums
+            # used to emit `connectivity` / `success`. These two assertions
+            # prove the LIVE binary writes the unified VALUES end-to-end (the
+            # span-existence check above is value-agnostic; the value mapping
+            # is also unit-covered in phase4_schema_reserved_spans.rs).
+            assert_contains "1282a v0.19 — backend.probe.level value is l3-read (probe-vocab unification)" \
+                "$V017_WORK/blockA-traces.json" '"key":"secretenv.backend.probe.level","type":"string","value":"l3-read"'
+            assert_contains "1282b v0.19 — backend.probe.outcome value is ok (probe-vocab unification)" \
+                "$V017_WORK/blockA-traces.json" '"key":"secretenv.backend.probe.outcome","type":"string","value":"ok"'
             assert_contains "1283 v0.18 Block F — secretenv.exec.prepare span (Phase 4)" \
                 "$V017_WORK/blockA-traces.json" '"operationName":"secretenv.exec.prepare"'
 
@@ -4574,6 +4614,89 @@ EOF
                 "$V017_WORK/blockF-traces.json" '"operationName":"secretenv.doctor.registry"'
             assert_contains "1288 v0.18 Block F — doctor.check_level attribute (DoctorCheckLevel enum)" \
                 "$V017_WORK/blockF-traces.json" '"key":"secretenv.doctor.check_level"'
+
+            # -------------------------------------------------------
+            # Block G — v0.19 Sec-F-5 opt-in scrubbed error detail (3 assertions)
+            # -------------------------------------------------------
+            #
+            # v0.19 wired the `--otel-include-error-detail` flag (shipped
+            # INERT in v0.18) to a real caller: on a FAILED backend fetch,
+            # the scrubbed error chain is emitted on the
+            # `secretenv.backend.fetch` span's
+            # `secretenv.backend.error.message` attribute — gated on the
+            # flag, default-absent. This block proves the live WIRE-UP
+            # (present-when-flagged / absent-when-not) against the real
+            # OTLP collector; scrub-correctness itself is unit-covered
+            # (TS-12 + backend_error_redaction Sec-F-1/F-6 tests).
+            #
+            # A dedicated SELF-CONTAINED project (its own config +
+            # registry + manifest, written inline below) resolves a
+            # single `otel_failing` alias — a valid `local-otel://` URI
+            # whose target file is never seeded, so `Backend::get` fails
+            # AFTER the fetch span opens. The run exits non-zero (guarded
+            # `|| true`); spans still flush via the TelemetryGuard drop on
+            # the error path (no execve, unlike the Block A success path).
+            #
+            # CRITICAL (v0.19): the failing alias lives in THIS block's
+            # OWN registry, NOT the shared v0.17-otel default registry.
+            # `secretenv redact` (Block B) resolves the FULL default
+            # registry to build its scrub set, and the resolver aborts on
+            # the first unresolvable alias — so a failing alias in the
+            # default registry would abort redact before it emits its
+            # post-hoc span (breaking asst 1237). Isolating it here keeps
+            # every other command's default-registry resolution clean.
+            SECF5_PROJ="$V017_WORK/secf5-proj"
+            mkdir -p "$SECF5_PROJ"
+            # Self-contained config: a local backend instance + a default
+            # registry whose ONLY source is this block's failing-alias map.
+            cat > "$SECF5_PROJ/config.toml" <<SECF5_CONFIG
+[backends.local-otel]
+type = "local"
+
+[registries.default]
+sources = ["local-otel://$SECF5_PROJ/secf5-registry.toml"]
+SECF5_CONFIG
+            cat > "$SECF5_PROJ/secf5-registry.toml" <<SECF5_REG
+otel_failing = "local-otel://$SECF5_PROJ/does-not-exist.txt"
+SECF5_REG
+            cat > "$SECF5_PROJ/secretenv.toml" <<'SECF5_MANIFEST'
+[secrets]
+SECF5_FAIL = { from = "secretenv://otel_failing" }
+SECF5_MANIFEST
+
+            # Arm 1: flag ON → attribute present on the failing fetch span.
+            otel_reset >/dev/null
+            (
+                cd "$SECF5_PROJ"
+                "$BIN" --config "$SECF5_PROJ/config.toml" run --otel-include-error-detail \
+                    -- /bin/echo secf5-on \
+                    > "$V017_WORK/blockG-on.log" 2>&1 || true
+            )
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockG-on-traces.json" || true
+            assert_contains "1289 v0.19 Block G — backend.error.message emitted under --otel-include-error-detail (Sec-F-5)" \
+                "$V017_WORK/blockG-on-traces.json" '"key":"secretenv.backend.error.message"'
+            # SEC-INV-04 defense-in-depth: no fixture sentinel value in the
+            # error-detail spans (the failing run never fetches it, but a
+            # future regression that folded a value into the error chain
+            # would surface here).
+            assert_not_contains "1290 v0.19 Block G — sentinel value absent from error-detail spans" \
+                "$V017_WORK/blockG-on-traces.json" "$V017_SENTINEL_VALUE"
+
+            # Arm 2: flag OFF (default) → attribute structurally absent.
+            # otel_reset stops + restarts the collector (fresh trace
+            # store) so this query sees ONLY the flag-off run's spans.
+            otel_reset >/dev/null
+            (
+                cd "$SECF5_PROJ"
+                "$BIN" --config "$SECF5_PROJ/config.toml" run \
+                    -- /bin/echo secf5-off \
+                    > "$V017_WORK/blockG-off.log" 2>&1 || true
+            )
+            sleep 3
+            otel_query_traces "secretenv" 20 > "$V017_WORK/blockG-off-traces.json" || true
+            assert_not_contains "1291 v0.19 Block G — backend.error.message absent without the flag (default-deny)" \
+                "$V017_WORK/blockG-off-traces.json" '"key":"secretenv.backend.error.message"'
 
             # -------------------------------------------------------
             # Block E — Doctor + metrics (9 assertions, no Jaeger)

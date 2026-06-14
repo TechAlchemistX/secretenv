@@ -35,13 +35,9 @@ The registry lists every directive key SecretEnv backends recognize today. An un
 | Backend | Directive | Meaning | Since |
 |---|---|---|---|
 | `aws-secrets` | `json-key` | Extract a top-level JSON field from the secret body. Value is the field name. | v0.2.1 |
-
-Planned in upcoming releases (not yet shipped; see `kb/wiki/roadmap.md` in the project workspace):
-
-| Backend | Directive | Meaning | Expected |
-|---|---|---|---|
-| `gcp` | `version` | Pin a specific GCP Secret Manager version. `latest` is equivalent to no fragment. | v0.3 |
-| `azure` | `version` | Pin a specific Azure Key Vault secret version (GUID). | v0.3 |
+| `gcp` | `version` | Pin a specific GCP Secret Manager version. Positive integer or `latest`. `latest` is equivalent to no fragment. | v0.3 |
+| `azure` | `version` | Pin a specific Azure Key Vault secret version. 32-character lowercase hex string (server-generated) or `latest`. | v0.3 |
+| `keeper` | `field` | Select a named Keeper record field. Case-insensitive — matches custom-field label first, then typed-field label, then typed-field type name. Without this directive the `password` field is returned. Note: the `keeper` backend parses this directive directly from the raw fragment rather than through the canonical grammar parser; the directive key still follows the `key=value` shape. | v0.8 |
 
 ## Error reporting
 

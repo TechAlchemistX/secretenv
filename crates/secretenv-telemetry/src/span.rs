@@ -380,56 +380,6 @@ impl RegistrySelectionKind {
     }
 }
 
-/// Depth of a backend probe. v0.18 Phase 4 + the rolling D-3.1
-/// `backend.probe.level` setter slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BackendProbeLevel {
-    /// Connectivity-only probe — the backend's `check()` path.
-    Connectivity,
-    /// Full probe — connectivity AND permission/scope verification.
-    Full,
-}
-
-impl BackendProbeLevel {
-    /// Canonical attribute value.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Connectivity => "connectivity",
-            Self::Full => "full",
-        }
-    }
-}
-
-/// Outcome of a backend probe. v0.18 Phase 4 + the rolling D-3.1
-/// `backend.probe.outcome` setter slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BackendProbeOutcome {
-    /// Probe succeeded.
-    Success,
-    /// Probe timed out per [`crate::sampler`] / `with_timeout` bound.
-    Timeout,
-    /// Backend reachable but refused the probe (auth / permission).
-    PermissionDenied,
-    /// Other error — backend-level fault.
-    Error,
-}
-
-impl BackendProbeOutcome {
-    /// Canonical attribute value.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Success => "success",
-            Self::Timeout => "timeout",
-            Self::PermissionDenied => "permission_denied",
-            Self::Error => "error",
-        }
-    }
-}
-
 /// Depth of a `secretenv doctor` invocation. v0.18 Phase 4 + the
 /// rolling D-3.1 `doctor.check_level` setter slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -740,16 +690,32 @@ impl SecretEnvSpan {
     }
 
     /// `secretenv.backend.probe.level` — closed enum
-    /// [`BackendProbeLevel`]. ALLOW. v0.18 Phase 4.
-    pub fn record_backend_probe_level(&mut self, level: BackendProbeLevel) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.backend.probe.level", level.as_str()));
+    /// [`crate::metrics::ProbeLevel`] (the 3-tier `l1-cli` / `l2-auth` /
+    /// `l3-read` ladder, shared with the `backend.probe.count` metric).
+    /// ALLOW. v0.19 Arch-W-2 (partial): unified the probe-level vocabulary
+    /// onto the documented doctor ladder (was a 2-state `connectivity` /
+    /// `full` enum).
+    pub fn record_backend_probe_level(&mut self, level: crate::metrics::ProbeLevel) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.backend.probe.level",
+            level.as_attribute_value(),
+        ));
         self
     }
 
     /// `secretenv.backend.probe.outcome` — closed enum
-    /// [`BackendProbeOutcome`]. ALLOW. v0.18 Phase 4.
-    pub fn record_backend_probe_outcome(&mut self, outcome: BackendProbeOutcome) -> &mut Self {
-        self.span.set_attribute(KeyValue::new("secretenv.backend.probe.outcome", outcome.as_str()));
+    /// [`crate::metrics::ProbeOutcome`] (shared with the
+    /// `backend.probe.count` metric). ALLOW. v0.19 Arch-W-2 (partial):
+    /// unified onto the richer metric vocabulary (was a 4-state
+    /// `success` / `timeout` / `permission_denied` / `error` enum).
+    pub fn record_backend_probe_outcome(
+        &mut self,
+        outcome: crate::metrics::ProbeOutcome,
+    ) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.backend.probe.outcome",
+            outcome.as_attribute_value(),
+        ));
         self
     }
 
@@ -875,8 +841,8 @@ impl SecretEnvSpan {
     }
 
     /// `secretenv.mcp.tool_name`. ALLOW. Closed enum at the contract
-    /// level (the 14 v0.16 tool names); call sites pass the tool's
-    /// `&'static str` name from the tool registry.
+    /// level (the 14 registered tool names in [`crate::metrics::McpToolName`]);
+    /// call sites pass the tool's `&'static str` name from the tool registry.
     pub fn record_mcp_tool_name(&mut self, name: &str) -> &mut Self {
         self.span.set_attribute(KeyValue::new("secretenv.mcp.tool_name", name.to_owned()));
         self
@@ -973,17 +939,32 @@ impl SecretEnvSpan {
     /// the backend INSTANCE name (instance names can carry
     /// environment hints like `prod` that fingerprint the operator's
     /// infra topology and stay DENY).
-    pub fn record_migrate_source_backend_type(&mut self, ty: &str) -> &mut Self {
-        self.span
-            .set_attribute(KeyValue::new("secretenv.migrate.source_backend_type", ty.to_owned()));
+    ///
+    /// v0.19 Arch-W-4 / F-5: takes the closed [`BackendType`] enum
+    /// rather than a raw `&str`, closing the Phase 7 M-4 half-closure
+    /// so the migrate setters match the `record_backend_type` shape: a
+    /// mistyped backend-type literal at the call site is caught by the
+    /// enum rather than silently emitted as a free string. (Instance
+    /// names remain DENY by having no setter at all, not by this type;
+    /// note that `BackendType::Unknown(String)` preserves unrecognized
+    /// strings, so the type does not block an arbitrary string at the
+    /// bit level — only the absence of an instance-name setter does.)
+    pub fn record_migrate_source_backend_type(&mut self, ty: BackendType) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.migrate.source_backend_type",
+            ty.into_attribute_value(),
+        ));
         self
     }
 
     /// `secretenv.migrate.dest_backend_type`. ALLOW. Same shape as
-    /// source — TYPE only, not instance name.
-    pub fn record_migrate_dest_backend_type(&mut self, ty: &str) -> &mut Self {
-        self.span
-            .set_attribute(KeyValue::new("secretenv.migrate.dest_backend_type", ty.to_owned()));
+    /// source — TYPE only, not instance name. v0.19 Arch-W-4 / F-5:
+    /// takes [`BackendType`] (see source-setter doc).
+    pub fn record_migrate_dest_backend_type(&mut self, ty: BackendType) -> &mut Self {
+        self.span.set_attribute(KeyValue::new(
+            "secretenv.migrate.dest_backend_type",
+            ty.into_attribute_value(),
+        ));
         self
     }
 
@@ -1219,8 +1200,8 @@ mod tests {
         let (mut span, _guard) = SecretEnvSpan::start("registry.migrate");
         span.record_migrate_phase(MigratePhase::Probe)
             .record_migrate_outcome(MigrateOutcome::Ok)
-            .record_migrate_source_backend_type("aws-ssm")
-            .record_migrate_dest_backend_type("vault")
+            .record_migrate_source_backend_type(BackendType::AwsSsm)
+            .record_migrate_dest_backend_type(BackendType::Vault)
             .record_migrate_delete_source(false)
             .record_migrate_transaction_id("11111111-1111-1111-1111-111111111111");
         assert_eq!(span.name(), "registry.migrate");

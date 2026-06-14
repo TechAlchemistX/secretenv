@@ -14,9 +14,61 @@ deferred follow-up, or contract that would surprise an operator). Future
 cycles should reach for this subsection rather than burying limitations in
 prose. Cross-reference the kb wiki for the long-form ticket.
 
-## [Unreleased]
+## [0.19.0] - UNRELEASED
 
-(Empty.)
+_(Release date pending tag — Phase 10.)_
+
+**Headline:** v0.19 is the **second non-backend hardening minor** ("hardening #2"), consuming the v0.18 carry-forward queue and folding in the deferred post-release documentation phase. No new backends (total stays at **15**); no new crates (workspace package count is **24** — the v0.18 build-log's "22" reflects a pre-existing undercount; v0.19 added zero). Live-backend smoke: **779 PASS / 0 FAIL / 2 expected SKIP** across all 15 backends. Authoritative plan: `kb/wiki/build-plan-v0.19-hardening.md`. Ledger: `kb/wiki/v0.19-deferred-items.md`. PR #90.
+
+### Added
+
+- **`--otel-include-error-detail` is now live (Sec-F-5 wire-up).** The flag was reserved in v0.18 (flag + scrubber shipped, but no production call site emitted the attribute). As of v0.19 a failed `secretenv.backend.fetch` actually emits the scrubbed `secretenv.backend.error.message` span attribute when the flag is set (default OFF; attribute structurally absent otherwise). The raw error chain is passed through the SEC-INV-20 `BackendErrorStderr` scrubber before emission — the newtype's only constructor is the scrubber, so holding a `BackendErrorStderr` is the proof that scrubbing occurred. A new `#[tokio::test]` in `secretenv-core::runner` (`sec_f5_error_detail_emitted_only_when_opted_in`) uses `LocalTraceCapture` to assert present-when-ON / absent-when-OFF. Section 36 Block G adds 3 live smoke assertions (1289–1291) validated against Jaeger. Closes [[v0.18-deferred-items#v0.18-Sec-F-5]].
+
+### Changed
+
+- **`OperatorDecision` marker-type family split (Arch-W-1, BREAKING).** `OperatorDecision` is retained as the neutral on-disk serde union (audit log + JSON-Lines persistence unchanged, including the `"dryrun"` lowercase rename from v0.18). Two new marker types were introduced: `MutationOperatorDecision` (the four non-dry-run variants `Approved` / `Denied` / `Timeout` / `AutoApproved` — **no `DryRun`**, so mutation tools structurally cannot receive a dry-run decision) and `MigrateOperatorDecision` (those four plus `DryRun`). A new `Decision` trait (`to_audit() -> OperatorDecision`) is the single projection point for echo + audit-write so they cannot diverge. Consequence: the 4 dead `Ok(OperatorDecision::DryRun) => <contract violation>` match arms in `mutation_runner.rs` + `tools/mod.rs` are now compile-time impossible and were deleted. The audit trio called this "the textbook make-illegal-states-unrepresentable refactor" and "the highest-quality hardening landing in the project's enum-lift lineage."
+- **`SecretEnvSpan::record_migrate_source_backend_type` and `record_migrate_dest_backend_type` now take `BackendType`** (were `&str`). This closes the Phase-7 M-4 half-closure left open in v0.18 (`record_command` + `record_backend_type` were closed then; the migrate-specific setter pair was deferred as W-4). The migrate call sites each wrap a runtime `Backend::backend_type()` string via `BackendType::from_runtime_str`. **(BREAKING)** See `### BREAKING` below. The current typed-setter total on `SecretEnvSpan` is **57** (v0.19 added zero new setters; the "52" figure in the [0.18.0] notes is a pre-existing undercount).
+- **`LocalTraceCapture::install` uses an `InstalledFlagGuard` RAII guard (W-7).** The guard clears the `INSTALLED` `AtomicBool` on unwind if the OTel-SDK setup panics mid-install; `disarm()` hands ownership to the capture's `Drop` on success. Prevents the flag from being permanently stranded true by an install that failed partway through (would have blocked a subsequent legitimate install). No public-API change. Closes [[v0.18-deferred-items]] §D (Arch-F-8 / W-7).
+- **Internal `build_env` / `fetch_one` gained an `otel_include_error_detail: bool` parameter** for the Sec-F-5 wire-up. These are private functions in `secretenv-core`; not a public-API break.
+- **`secretenv.backend.probe.{level,outcome}` vocabularies unified (Arch-W-2 partial, BREAKING).** Both attributes previously carried two disjoint closed-enum vocabularies writing the same key — the span setters used `BackendProbeLevel` (`connectivity` / `full`) and `BackendProbeOutcome` (`success` / `timeout` / `permission_denied` / `error`), while the `backend.probe.count` metric used `ProbeLevel` (`l1-cli` / `l2-auth` / `l3-read`) and `ProbeOutcome` (`ok` / `cli-missing` / `not-authenticated` / `registry-unreachable` / `timeout` / `unknown`). The span-side enums are **removed**; the richer metric enums `ProbeLevel` (the documented L1/L2/L3 doctor ladder) and `ProbeOutcome` are now the single vocabulary for both span and metric. The run-path `secretenv.backend.probe` span — which wraps a real `backend.get()` (a read) — now emits `l3-read` (replacing the inaccurate `connectivity` placeholder) and `ok` / `unknown` (the unclassified fetch error folds to the `unknown` catch-all). The metric path remains unwired pending the v0.20 Arch-W-2 `probe()`-trait work, so only the span emits today.
+
+### BREAKING
+
+Four deliberate public-API breaks in `secretenv-telemetry`, plus the `secretenv-mcp` `OperatorDecision` family split (Arch-W-1). Within-workspace callers are all migrated; the list is for downstream library embedders.
+
+- **`SecretEnvSpan::record_migrate_source_backend_type(BackendType)`** — was `(&str)`. Migrate: pass a `BackendType` variant directly, or `BackendType::from_runtime_str(s)` to parse a runtime string from `Backend::backend_type()`.
+- **`SecretEnvSpan::record_migrate_dest_backend_type(BackendType)`** — was `(&str)`. Same migration path.
+- **`SecretEnvSpan::record_backend_probe_level(ProbeLevel)`** — was `record_backend_probe_level(BackendProbeLevel)`; the `BackendProbeLevel` enum (`Connectivity` / `Full`) is **removed**. Migrate: pass a `ProbeLevel` variant (`L1Cli` / `L2Auth` / `L3Read`). The two enums wrote the same `secretenv.backend.probe.level` attribute with conflicting value sets; `ProbeLevel` is now canonical.
+- **`SecretEnvSpan::record_backend_probe_outcome(ProbeOutcome)`** — was `record_backend_probe_outcome(BackendProbeOutcome)`; the `BackendProbeOutcome` enum (`Success` / `Timeout` / `PermissionDenied` / `Error`) is **removed**. Migrate: pass a `ProbeOutcome` variant (`Ok` / `CliMissing` / `NotAuthenticated` / `RegistryUnreachable` / `Timeout` / `Unknown`). The two enums wrote the same `secretenv.backend.probe.outcome` attribute with conflicting value sets; `ProbeOutcome` is now canonical.
+- **`secretenv-mcp` `OperatorDecision` family split (Arch-W-1):**
+  - `enforce_mutation_policy` now returns `MutationOperatorDecision` (was `OperatorDecision`). Migrate: use `MutationOperatorDecision` at the call site; the `DryRun` variant no longer exists in this type — its absence is the point. (`prompt_via_elicitation` / `prompt_via_tty` are private helpers that also changed return type but are not public API.)
+  - `audit_migrate` now takes `MigrateOperatorDecision` (was `OperatorDecision`). Migrate: pass the appropriate marker type.
+  - `echo_decision` is now generic over `impl Decision` (was a concrete `OperatorDecision` parameter). Migrate: any concrete `MutationOperatorDecision` or `MigrateOperatorDecision` value satisfies the bound; call `.to_audit()` if you need the on-disk `OperatorDecision` union directly.
+
+### Fixed
+
+- **`aggregate_errors` now panics explicitly on empty input (Arch-F-1 / Code-F-3).** `secretenv-core::runner::aggregate_errors` is documented (in CONTRIBUTING and in Phase 3 of this cycle) as "our one production panic" — unreachable on empty input by construction. The Phase 7 audit found the contract was unenforced: the `len() == 1` guard skipped `swap_remove`, so empty input fell through to a malformed `"0 secrets failed…"` error object rather than panicking. An explicit `assert!(!errors.is_empty(), …)` now matches the documented invariant; the CONTRIBUTING exemplar was corrected; a `#[should_panic]` test was added.
+
+### Security
+
+- **SEC-INV-20 scrubber gains a scheme-less userinfo arm (v0.19 Sec-F-1).** The prior scrubber arms caught `scheme://user:pass@host` but left a scheme-less `user:secret@vault.internal:8200/path` credential fragment intact when the password portion was shorter than 32 characters (the token-entropy threshold). A new optional `(?:[^\s'"/@]+@)?` userinfo-prefix arm was added to the two bare-host arms; it is gated by the same port-or-path requirement that prevents the scrubber from over-stripping bare email addresses in prose. +2 regression tests. **Note:** this is distinct from the v0.18 Sec-F-1 fix (which added the bare `host:port` without-path arm); this is a separate finding surfaced by the v0.19 Phase 7 security audit.
+
+### Documentation
+
+This Phase 8b clean-sweep covers three categories of accuracy fixes:
+
+- **`docs/reference/opentelemetry.md` status notes refreshed:** §2/§3 "not yet shipped / reserved in v0.18.0" note on `secretenv.backend.error.message` updated to reflect that the attribute is now live when `--otel-include-error-detail` is set.
+- **README OTel section corrected** — the phrase "traces, metrics, and logs" was inaccurate (`LoggerProvider` / the logs signal is deferred to v0.20; events surface via the tracing bridge as span events). Corrected to "traces and metrics."
+- **Rustdoc accuracy fixes:** `record_migrate_source_backend_type` / `record_migrate_dest_backend_type` doc softened from "instance-name string cannot reach the attribute" to "a typo'd literal at the call site cannot reach the attribute" (`BackendType::Unknown(String)` preserves an unrecognized runtime string). `echo_decision` doc no longer states "two enums" (post-Arch-W-1 there are three decision types plus the echo twin). `fresh_run_id` doc softened (see [0.18.0] edit in this sweep).
+- **CONTRIBUTING Arch-W-9** — new subsection documenting the make-illegal-states-unrepresentable + `Decision`-trait marker-type idiom (see the accompanying CONTRIBUTING edit).
+
+### Known limitations
+
+- **OTel `LoggerProvider` not installed** — `tracing::*!` events still surface as span events via the `tracing-opentelemetry` bridge, not as native OTel `LogRecord` instances. Deferred to v0.20.
+- **Flat span topology** — `secretenv.run` and its children emit as siblings rather than a parent-child tree. Trace UIs show all spans at root level. Deferred to v0.20 cycle pending a deliberate `BoxedSpan` exposure decision.
+- **`secretenv.exec.flush` schema-reserved span not emitted** — Drop cannot fire across `execve`; emitting this span correctly requires `pre_exec` hook + manual flush sequencing. Deferred to v0.20 cycle.
+- **Code-F-1 (pre-existing): migrate early-error paths log `AutoApproved` before the policy gate ran** — the Arch-W-1 rename faithfully preserved this v0.18 behavior (not a v0.19 regression). Needs a design decision (dedicated pre-gate tag, or skip the append). Deferred to v0.19.x / v0.20.
+- **OTEL-SMOKE-CI-HARDENING: section 36 not in the `--local-only`/CI gate** — 3 pre-existing flush-timing flakes (assertions 1210/1283/1237) prevent reliable CI execution of the OTel smoke block in GHA (execve flush race under CI load). Section 36 still runs on a full smoke and with explicit `--sections 36`. Own-cycle fix deferred.
 
 ## [0.18.0] - 2026-06-03
 
@@ -57,7 +109,7 @@ prose. Cross-reference the kb wiki for the long-form ticket.
 - **`LocalTraceSpan` is `#[non_exhaustive]`** — adding fields like `trace_id` for cross-process correlation in v0.19+ is no longer a breaking change. Closes [[v0.17-deferred-items#Code-M1]] + v1.0 watchlist W-11.
 - **`SecretEnvSpan::record_command` takes `SecretEnvCommand`** (was `&str`). 3 call sites migrated (`secretenv-core::runner` x1, `secretenv-migrate` x1, plus a test). Closes [[v0.17-deferred-items#Phase-7-M-4]] (partial — `record_command` half).
 - **`SecretEnvSpan::record_backend_type` takes `BackendType`** (was `&str`). 3 call sites migrated (`secretenv-core::runner` x2, `secretenv-cli::doctor` x1). Closes [[v0.17-deferred-items#Phase-7-M-4]] (partial — `record_backend_type` half).
-- **`fresh_run_id()` fallback is no longer all-zeros.** When `getrandom` fails (extremely rare on supported platforms; never observed in production through v0.17), emits a `tracing::warn!` event ONCE per process AND returns a non-zero hex string derived from `process::id()` XOR low/high 64 bits of `SystemTime::now().duration_since(UNIX_EPOCH).as_nanos()`. The v0.17 all-zero sentinel (which operators saw as `run_id=00000...0` without explanation) is gone. Closes [[v0.17-deferred-items#Arch-M3]] + [[v0.17-deferred-items#Code-L2]] + [[v0.17-deferred-items#Arch-L4]] + v1.0 watchlist W-17.
+- **`fresh_run_id()` fallback is no longer all-zeros.** When `getrandom` fails (extremely rare on supported platforms; never observed in production through v0.17), emits a `tracing::warn!` event ONCE per process AND returns a process+time-derived hex string (effectively never the all-zero sentinel) derived from `process::id()` XOR low/high 64 bits of `SystemTime::now().duration_since(UNIX_EPOCH).as_nanos()`. The v0.17 all-zero sentinel (which operators saw as `run_id=00000...0` without explanation) is gone. Closes [[v0.17-deferred-items#Arch-M3]] + [[v0.17-deferred-items#Code-L2]] + [[v0.17-deferred-items#Arch-L4]] + v1.0 watchlist W-17.
 
 ### BREAKING
 

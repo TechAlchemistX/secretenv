@@ -64,14 +64,14 @@ pub use init::{
     flush_before_exec, init, init_with_env, tracing_bridge_layer, InitError, TelemetryGuard,
 };
 pub use local_trace::{LocalTraceCapture, LocalTraceCaptureError, LocalTraceSpan};
-pub use metrics::{FetchOutcome, RedactMode, ResolutionOutcome};
+pub use metrics::{FetchOutcome, ProbeLevel, ProbeOutcome, RedactMode, ResolutionOutcome};
 pub use policy::{AttributeClassification, RedactionPolicy};
 pub use sampler::{default_sampler, MutationNonDroppableSampler};
 pub use sink::{NoopRedactionSink, RedactionSink};
 pub use span::{
-    AliasOutcome, AuthMethod, BackendProbeLevel, BackendProbeOutcome, BackendType,
-    DoctorCheckLevel, ManifestOutcome, MigrateOutcome, MigratePhase, MutationSpanName,
-    RegistrySelectionKind, SecretEnvCommand, SecretEnvSpan, SpanGuard,
+    AliasOutcome, AuthMethod, BackendType, DoctorCheckLevel, ManifestOutcome, MigrateOutcome,
+    MigratePhase, MutationSpanName, RegistrySelectionKind, SecretEnvCommand, SecretEnvSpan,
+    SpanGuard,
 };
 
 /// Sentinel registry name for direct-URI selections.
@@ -110,10 +110,12 @@ pub const PROCESS_COMMAND_NAME_EMPTY: &str = "<empty>";
 /// the v0.17 all-zero string. The all-zero fallback was operator-
 /// visible as `run_id=00000...0` without any explanation; the new
 /// fallback (a) makes the failure visible in the trace pipeline at
-/// init time, (b) returns a non-zero hex string so cross-correlation
-/// against e.g. CI job ID still works at the operator level. Run IDs
-/// derived this way are NOT unique across rapid invocations on the
-/// same PID, but the warning makes the degraded state obvious.
+/// init time, (b) returns a process+time-derived hex string
+/// (effectively never the all-zero sentinel, though not bit-floored
+/// to non-zero) so cross-correlation against e.g. CI job ID still
+/// works at the operator level. Run IDs derived this way are NOT
+/// unique across rapid invocations on the same PID, but the warning
+/// makes the degraded state obvious.
 #[must_use]
 pub fn fresh_run_id() -> String {
     let mut bytes = [0u8; 16];

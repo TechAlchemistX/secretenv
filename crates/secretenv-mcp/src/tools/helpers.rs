@@ -71,10 +71,11 @@ pub fn now_secs() -> u64 {
 }
 
 /// Map any per-tool [`Decision`] to its agent-facing
-/// [`OperatorDecisionEcho`] twin in `boundary.rs`. Two enums because
-/// the audit-log set is shared with future non-tool surfaces, and
-/// adding `PolicyRefusal` to it would force every audit-log writer
-/// to handle a never-emitted variant.
+/// [`OperatorDecisionEcho`] twin in `boundary.rs`. The agent-facing
+/// echo set is kept distinct from the on-disk audit set because the
+/// two sets serve different surfaces: adding `PolicyRefusal` to the
+/// echo (for future operator-visible refusals) must not force every
+/// audit-log writer to handle a variant it can never emit.
 ///
 /// v0.19 Arch-W-1: generic over [`Decision`] so it accepts the
 /// `MutationOperatorDecision` / `MigrateOperatorDecision` marker types

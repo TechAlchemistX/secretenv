@@ -800,8 +800,8 @@ async fn fetch_one(
     otel_include_error_detail: bool,
 ) -> Result<FetchOk, (anyhow::Error, AliasTiming)> {
     use secretenv_telemetry::{
-        BackendErrorStderr, BackendProbeLevel, BackendProbeOutcome, BackendType, FetchOutcome,
-        ResolutionOutcome, SecretEnvSpan,
+        BackendErrorStderr, BackendType, FetchOutcome, ProbeLevel, ProbeOutcome, ResolutionOutcome,
+        SecretEnvSpan,
     };
 
     let started = std::time::Instant::now();
@@ -897,7 +897,9 @@ async fn fetch_one(
         probe_span
             .record_backend_type(BackendType::from_runtime_str(backend.backend_type()))
             .record_backend_instance(&target.scheme)
-            .record_backend_probe_level(BackendProbeLevel::Connectivity)
+            // v0.19: this probe wraps a real `backend.get()` (a read), so it
+            // reports `l3-read` on the unified ladder (was `connectivity`).
+            .record_backend_probe_level(ProbeLevel::L3Read)
             .record_backend_fetch_attempt(1);
 
         let (mut fetch_span, _fetch_guard) = SecretEnvSpan::start("secretenv.backend.fetch");
@@ -911,7 +913,7 @@ async fn fetch_one(
         let probe_outcome = match &r {
             Ok(_) => {
                 fetch_span.record_backend_fetch_outcome(FetchOutcome::Ok);
-                BackendProbeOutcome::Success
+                ProbeOutcome::Ok
             }
             Err(e) => {
                 fetch_span.record_backend_fetch_outcome(FetchOutcome::Error);
@@ -928,7 +930,11 @@ async fn fetch_one(
                 let scrubbed = BackendErrorStderr::scrub(&format!("{e:#}"));
                 fetch_span
                     .record_backend_error_message_scrubbed(&scrubbed, otel_include_error_detail);
-                BackendProbeOutcome::Error
+                // The fetch error here is an unclassified anyhow chain
+                // (not-found / denied / network all fold together), so the
+                // probe reports the `unknown` catch-all rather than guessing
+                // a specific failure tier — v0.20 Arch-W-2 will classify.
+                ProbeOutcome::Unknown
             }
         };
         probe_span.record_backend_probe_outcome(probe_outcome);

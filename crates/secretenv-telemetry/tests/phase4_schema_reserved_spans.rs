@@ -33,7 +33,7 @@ use opentelemetry::Value;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
 
 use secretenv_telemetry::{
-    BackendProbeLevel, BackendProbeOutcome, BackendType, DoctorCheckLevel, ManifestOutcome,
+    BackendType, DoctorCheckLevel, ManifestOutcome, ProbeLevel, ProbeOutcome,
     RegistrySelectionKind, SecretEnvSpan,
 };
 
@@ -77,9 +77,9 @@ fn phase4_schema_reserved_spans_emit_with_typed_attributes() {
         let (mut span, _guard) = SecretEnvSpan::start("secretenv.backend.probe");
         span.record_backend_type(BackendType::AwsSsm)
             .record_backend_instance("payments")
-            .record_backend_probe_level(BackendProbeLevel::Connectivity)
+            .record_backend_probe_level(ProbeLevel::L3Read)
             .record_backend_fetch_attempt(1)
-            .record_backend_probe_outcome(BackendProbeOutcome::Success);
+            .record_backend_probe_outcome(ProbeOutcome::Ok);
     }
 
     // --- secretenv.exec.prepare ---
@@ -132,8 +132,8 @@ fn phase4_schema_reserved_spans_emit_with_typed_attributes() {
     assert_eq!(attr(registry, "secretenv.registry.source_index"), Some(&Value::I64(1)));
 
     let probe = by_name["secretenv.backend.probe"];
-    assert_eq!(attr(probe, "secretenv.backend.probe.level"), Some(&Value::from("connectivity")));
-    assert_eq!(attr(probe, "secretenv.backend.probe.outcome"), Some(&Value::from("success")));
+    assert_eq!(attr(probe, "secretenv.backend.probe.level"), Some(&Value::from("l3-read")));
+    assert_eq!(attr(probe, "secretenv.backend.probe.outcome"), Some(&Value::from("ok")));
     assert_eq!(attr(probe, "secretenv.backend.fetch.attempt"), Some(&Value::I64(1)));
     assert_eq!(attr(probe, "secretenv.backend.type"), Some(&Value::from("aws-ssm".to_owned())));
 

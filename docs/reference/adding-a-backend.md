@@ -77,7 +77,9 @@ workspace = true
 use std::collections::HashMap;
 use async_trait::async_trait;
 use anyhow::{Context, Result};
-use secretenv_core::{Backend, BackendFactory, BackendStatus, BackendUri};
+use secretenv_core::{
+    optional_string, required_string, Backend, BackendFactory, BackendStatus, BackendUri, Secret,
+};
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
@@ -91,25 +93,20 @@ impl BackendFactory for MyServiceFactory {
     fn create(
         &self,
         instance_name: &str,
-        config: HashMap<String, String>,
+        config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        // Validate and extract config fields here.
-        // Return Err if required fields are missing.
-        // Core surfaces the error with the instance name as context.
-        let api_url = config
-            .get("api_url")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!(
-                "backend '{}': missing required field 'api_url'", instance_name
-            ))?;
-
-        let token_env = config
-            .get("token_env")
-            .cloned()
-            .unwrap_or_else(|| "MYSERVICE_TOKEN".to_string());
+        // Use the secretenv_core helpers to extract config fields.
+        // required_string returns Err with a structured message when the
+        // field is absent or not a string.  optional_string returns None
+        // when the field is absent and Err when it is present but not a
+        // string.
+        let api_url = required_string(config, "api_url", "myservice", instance_name)?;
+        let token_env =
+            optional_string(config, "token_env", "myservice", instance_name)?
+                .unwrap_or_else(|| "MYSERVICE_TOKEN".to_owned());
 
         Ok(Box::new(MyServiceBackend {
-            instance_name: instance_name.to_string(),
+            instance_name: instance_name.to_owned(),
             api_url,
             token_env,
         }))
@@ -176,7 +173,7 @@ impl Backend for MyServiceBackend {
         Ok(results.len())
     }
 
-    async fn get(&self, uri: &BackendUri) -> Result<String> {
+    async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
         // CRITICAL: Always use .args() with separate strings.
         // Never use shell interpolation with uri.path.
         // This is a hard security requirement — see security docs.
@@ -196,10 +193,12 @@ impl Backend for MyServiceBackend {
             );
         }
 
-        Ok(String::from_utf8(output.stdout)
-            .context("myservice returned non-UTF8 output")?
-            .trim()
-            .to_string())
+        Ok(Secret::new(
+            String::from_utf8(output.stdout)
+                .context("myservice returned non-UTF8 output")?
+                .trim()
+                .to_string(),
+        ))
     }
 
     async fn set(&self, uri: &BackendUri, value: &str) -> Result<()> {
@@ -275,24 +274,24 @@ impl Backend for MyServiceBackend {
 
 ## 3. Register at Startup
 
-In `crates/secretenv-cli/src/backends_init.rs`, add your factory to the registration list — unconditionally, alongside the other backends:
+In `crates/secretenv-backends-init/src/lib.rs`, add your factory to the registration list — unconditionally, alongside the other backends:
 
 ```rust
 pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
     let mut registry = BackendRegistry::new();
-    registry.register_factory(Box::new(backend_local::LocalFactory::new()));
-    registry.register_factory(Box::new(backend_aws_ssm::AwsSsmFactory::new()));
-    registry.register_factory(Box::new(backend_1password::OnePasswordFactory::new()));
-    registry.register_factory(Box::new(backend_myservice::MyServiceFactory::new())); // ← your line
+    registry.register_factory(Box::new(secretenv_backend_local::LocalFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_aws_ssm::AwsSsmFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_1password::OnePasswordFactory::new()));
+    registry.register_factory(Box::new(secretenv_backend_myservice::MyServiceFactory::new())); // ← your line
     registry.load_from_config(config)?;
     Ok(registry)
 }
 ```
 
-Also add the path dep to `crates/secretenv-cli/Cargo.toml`:
+Also add the path dep to `crates/secretenv-backends-init/Cargo.toml`:
 
 ```toml
-backend-myservice.workspace = true
+secretenv-backend-myservice.workspace = true
 ```
 
 ---
@@ -338,7 +337,7 @@ exit 1
 
         let uri = BackendUri::parse("myservice-test:///my/secret").unwrap();
         let result = backend.get(&uri).await.unwrap();
-        assert_eq!(result, "test-value");
+        assert_eq!(result.expose_secret(), "test-value");
     }
 }
 ```
@@ -393,15 +392,17 @@ Users will encounter missing CLIs. The install hint should be a real, copy-paste
 
 ## Checklist Before Opening a PR
 
-- [ ] Factory registered in `secretenv-cli/src/backends_init.rs` alongside the other factories
-- [ ] All seven `Backend` trait methods implemented (`backend_type`, `instance_name`, `check`, `check_extensive`, `get`, `set`, `delete`, `list`)
+- [ ] Factory registered in `crates/secretenv-backends-init/src/lib.rs` alongside the other factories
+- [ ] All eight required `Backend` trait methods implemented (`backend_type`, `instance_name`, `check`, `check_extensive`, `get`, `set`, `delete`, `list`)
 - [ ] `check()` implements both Level 1 (CLI present) and Level 2 (authenticated)
 - [ ] `check_extensive()` implemented
 - [ ] All CLI calls use `.args()` with separate strings — no `sh -c` with interpolation
 - [ ] Error messages include instance name and `uri.raw` plus trimmed CLI stderr
 - [ ] Tests cover `get()`, `check()` success + failure variants via the shared `secretenv-testing::install_mock` harness (see `§4 Write Tests` above)
 - [ ] `docs/backends/<your-backend>.md` written following the existing format
-- [ ] Path-dep added to `workspace.dependencies` and to `secretenv-cli/Cargo.toml`
+- [ ] Path-dep added to `workspace.dependencies` and to `crates/secretenv-backends-init/Cargo.toml`
+- [ ] Crate name added to `deny.toml`'s AGPL exception list in the same commit that creates `Cargo.toml`
+- [ ] Crate added to `.github/workflows/release.yml` publish-crates step in topological dependency order
 
 ---
 

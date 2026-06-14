@@ -2,7 +2,7 @@
 
 `secretenv mcp serve` is a stdio-only [Model Context Protocol][mcp] server that gives AI coding agents (Claude Code, Cursor, Cline, Gemini CLI / Code Assist, Codex, OpenCode, VS Code Copilot, Continue) structured access to your SecretEnv registry — **without ever returning a resolved secret value**.
 
-This reference covers everything an operator needs: setup per IDE, the 14 tools the server exposes, the confirmation surface, the audit log, and the known limitations as of v0.16.0.
+This reference covers everything an operator needs: setup per IDE, the 14 tools the server exposes, the confirmation surface, the audit log, and the known limitations as of v0.19.0.
 
 For the design rationale + implementation walkthrough, see [`kb/wiki/build-plan-v0.16-mcp.md`](https://github.com/TechAlchemistX/secretenv/blob/main/kb/wiki/build-plan-v0.16-mcp.md) (build plan) + [`docs/reference/redact.md`](redact.md) + [`docs/reference/migrate.md`](migrate.md) for the v0.14/v0.15 features the MCP server wraps.
 
@@ -37,7 +37,7 @@ secretenv mcp setup --ide claude-code --write # writes to the IDE's config file
 
 Each tool's name is exactly what the agent calls. All tools return **structured JSON responses** — never plain text — and **none of them return a resolved secret value**.
 
-### Read-only (9)
+### Read-only (8)
 
 | Tool | Purpose |
 |---|---|
@@ -181,7 +181,7 @@ Every mutation tool call writes one JSON-Lines entry to `$XDG_STATE_HOME/secrete
 
 The file is created mode `0o600` (operator-only). Tampering protection is operator's responsibility: store on a non-shared filesystem, ship to a write-once log shipper if needed.
 
-**`mcp_client_id` is currently always `"unknown"`** — threading the rmcp `initialize` handshake's `clientInfo` is queued for v0.17. Until then, the launching command-line argv is captured via `tracing::info!` for post-incident reconstruction.
+**`mcp_client_id`** resolves from the rmcp `initialize` handshake's `clientInfo.name` (landed v0.16.1 F-7). Falls back to `"unknown"` only when peer info is unavailable during the handshake itself — never inside a tool handler.
 
 ---
 
@@ -221,16 +221,14 @@ The full SEC-INV catalog is at `kb/wiki/security-invariants.md`. The v0.16-speci
 
 ---
 
-## Known limitations (v0.16.0)
+## Known limitations
 
-See the `Known limitations` section of [`CHANGELOG.md`](../../CHANGELOG.md#0160---2026-05-24) for the full v0.16 catalog. Summary:
+See the `Known limitations` section of [`CHANGELOG.md`](../../CHANGELOG.md) for the full catalog. Summary:
 
 - **Only Claude Code has working MCP elicitation.** All 5 other tested non-Claude IDEs (Gemini, VS Code Copilot, Cline, Codex, OpenCode) need the per-IDE `--allow-mutations=always` override. Upstream PRs queued.
-- **Per-IDE override has no user-scope opt-out.** A hostile workspace `.mcp.json` can silently weaken your global mutation policy. Mitigated by IDE-side workspace-trust prompts + audit log; v0.17 will add a `[mcp].allow_cli_overrides` config knob.
-- **`mcp_client_id` hardcoded `"unknown"`.** Audit log can't attribute mutations to specific IDEs. v0.17.
-- **`tools/mod.rs` 1700 LOC + duplicated 4-arm policy boilerplate.** v0.16.1 hygiene cycle will land the `run_mutation` combinator refactor.
+- **Per-IDE override has no user-scope opt-out by default.** A hostile workspace `.mcp.json` can silently weaken your global mutation policy. Mitigated by IDE-side workspace-trust prompts + audit log. Set `[mcp].allow_cli_overrides = false` in your global config to block all per-IDE `--allow-mutations` overrides (shipped v0.18 F-3).
 - **TTY TOCTOU + migrate dual-control collapse + dry-run reconnaissance gate** — Phase 7 audit M-7/M-9/M-12 carry-forwards.
-- **No `--merge` mode in setup helper** for IDEs with existing settings.json. Use `jq`. v0.16.1.
+- **No `--merge` mode in setup helper** for IDEs with existing settings.json. Use `jq`.
 
 ---
 

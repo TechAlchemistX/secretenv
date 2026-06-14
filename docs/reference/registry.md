@@ -142,21 +142,24 @@ If the alias only exists in a downstream source, secretenv warns rather than sil
 
 ### `registry history`
 
-Shows version history of the registry document where the backend supports it.
+Shows version history of the secret an alias resolves to, where the backend supports it. Output is most-recent-first.
 
 ```bash
-secretenv registry history
-secretenv registry history --registry prod
+secretenv registry history <alias>
+secretenv registry history <alias> --registry prod
+secretenv registry history <alias> --json
 ```
 
 ```
-aws-ssm-platform:///secretenv/org-registry
+alias:    stripe-key
+resolved: vault-eng:///secret/payments/stripe
 
-  v4  2026-04-10  stripe-key updated  →  vault-eng://secret/payments/stripe
-  v3  2026-03-20  db-url added
-  v2  2026-03-15  datadog-api-key added
-  v1  2026-03-01  registry created
+  v3  2026-04-10  ...
+  v2  2026-03-20  ...
+  v1  2026-03-01  ...
 ```
+
+`--json` emits machine-readable output. Backends with no native history API return an error naming the backend type so the CLI can distinguish unsupported from a real failure.
 
 Backend support:
 
@@ -164,9 +167,10 @@ Backend support:
 |---|---|
 | AWS SSM SecureString | ✓ Parameter versions via SSM API |
 | HashiCorp Vault KV v2 | ✓ Native versioning |
-| 1Password | ✓ Item revision history |
-| AWS Secrets Manager | ✓ Secret versions |
-| Local file | ✗ No history |
+| Local file | ✓ git log (requires the file to be under a git repo) |
+| 1Password | ✗ Not implemented |
+| AWS Secrets Manager | ✗ Not implemented |
+| All other backends | ✗ Not implemented |
 
 ### `registry invite`
 

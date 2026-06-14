@@ -2,7 +2,7 @@
 
 **Type:** `vault`
 **CLI required:** [`vault`](https://developer.hashicorp.com/vault/docs/install)
-**URI scheme:** `<instance>://mount/path/to/secret[#version=<n>]`
+**URI scheme:** `<instance>://mount/path/to/secret`
 **Platform:** all (macOS, Linux, Windows)
 **Tested:** `vault v2.0.0` (build 2026-04-13) on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
 
@@ -59,13 +59,6 @@ instance    mount   path within mount
 
 For KV v2 mounts, the `vault` CLI automatically injects the `data/` segment — you do **not** include it in the URI. Example: `vault-eng://secret/myapp/db` correctly maps to the KV v2 path `secret/data/myapp/db`.
 
-For version pinning:
-
-```
-vault-eng://secret/myapp/db#version=5         # Pin to version 5
-vault-eng://secret/myapp/db                   # Default: latest version
-```
-
 **Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
@@ -101,14 +94,7 @@ vault-eng                                                       (vault)
 
 ## Fragment directives
 
-`#version=<n>` pins a specific KV v2 secret version:
-
-| Directive | Effect | Example |
-|---|---|---|
-| `#version=5` | Fetch version 5 explicitly | `vault-eng://secret/myapp/db#version=5` |
-| (no fragment) | Fetch the latest version | `vault-eng://secret/myapp/db` |
-
-Shorthand fragments and unsupported directives are rejected with a migration hint.
+No fragment directives are supported. Any `#...` fragment is rejected at URI-parse time. Use `secretenv registry history <alias>` to inspect version history; to pin a specific version, use the native `vault kv get -version=<n>` command directly.
 
 ## History API support
 
@@ -158,16 +144,16 @@ sources = ["vault-eng://secret/registry"]
 sources = ["vault-finance://secret/registry"]
 ```
 
-### Version pinning for rotation testing
+### Rotation testing via history
 
 ```bash
 secretenv run --registry vault-eng://secret/registry -- ./smoke-tests.sh
 ```
 
-To pin a specific alias to an older version, set the alias to a versioned URI:
+To inspect all versions of a secret before rotating, use:
 
 ```bash
-secretenv registry set db-pass "vault-eng://secret/db#version=3"
+secretenv registry history db-pass
 ```
 
 ## Troubleshooting
@@ -185,7 +171,6 @@ History API only works on KV v2 mounts. Check your mount type with `vault secret
 
 - [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
 - [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#version` directive reference
 - [Self-hosted domain trust](../security.md#self-hosted-domains) — `vault_address` disclosure discipline
 - [OpenBao](openbao.md) — LF MPL fork; near-identical wire protocol and KV semantics
 - [All backends](README.md) — pick a different backend

@@ -191,8 +191,8 @@ gcp_project = "my-project-prod"   # required
 **`azure` — Azure Key Vault**
 ```toml
 [backends.azure-prod]
-type           = "azure"
-azure_vault    = "my-keyvault"    # required
+type              = "azure"
+azure_vault_url   = "https://my-keyvault.vault.azure.net"   # required
 ```
 
 **`keeper` — Keeper**

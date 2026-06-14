@@ -60,6 +60,10 @@ Production code (everything outside `#[cfg(test)]`) must not `panic!`/`unreachab
 
 Prefer the type-system lift. A `tracing::warn!` + soft-fail on a "can't happen" branch is a smell, not a safety net.
 
+## Marker types and the `Decision` trait
+
+When an enum variant is unreachable in a specific context, prefer a context-specific marker type that structurally omits the variant over a runtime guard or `unreachable!()` arm. The impossible state then cannot be witnessed in that context; the compiler enforces the invariant rather than a human reader. Convert to and from the shared on-disk or serde type at the context boundary via a small trait. This pattern has three instances in the codebase: `ResolvedConfirmVia` (produced by `resolve_confirm_via` in the policy gate; omits `Auto` once resolution has run, eliminating the v0.17 `unreachable!()`), `MutationSpanName` (the closed enum drives both the span-name constructor and the sampler whitelist so adding a variant covers both), and the v0.19 `OperatorDecision` family (`MutationOperatorDecision` omits `DryRun` — mutation tools structurally cannot receive a dry-run decision; `MigrateOperatorDecision` retains it; the `Decision` trait's `to_audit() -> OperatorDecision` is the single projection point so echo and audit-write cannot diverge). The on-disk/serde union (`OperatorDecision`) remains one type shared across all contexts; only the in-memory marker types are split. See also `## Panics in production code` above — the marker-type lift is the preferred alternative to the `// by construction:` documented panic.
+
 ## Security
 
 Security-relevant changes get extra care. See [`SECURITY.md`](SECURITY.md) for the disclosure policy and [`docs/security.md`](docs/security.md) for the threat model. Report vulnerabilities privately — do not open a public issue.

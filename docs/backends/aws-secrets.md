@@ -135,7 +135,7 @@ Shorthand fragments (`#password` with no `=`) and unsupported directives (`#vers
 
 ## History API support
 
-Partial. `secretenv registry history <alias>` surfaces version number and creation timestamp via `aws secretsmanager list-secret-version-ids`. Actor name and change descriptions are not available via the CLI API.
+Not implemented. The backend returns the trait-default "not implemented" error. AWS Secrets Manager exposes version IDs via `aws secretsmanager list-secret-version-ids`, but this backend does not yet call that surface. Version history is available via the AWS Console or `aws secretsmanager list-secret-version-ids` directly.
 
 ## Limitations
 

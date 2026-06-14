@@ -1,6 +1,6 @@
 # SecretEnv CLI Reference (Full)
 
-Complete per-flag reference for SecretEnv v0.13.0. The README has the compact summary; this page is the deep reference for every command, every flag, every exit code.
+Complete per-flag reference for SecretEnv v0.18.0. The README has the compact summary; this page is the deep reference for every command, every flag, every exit code.
 
 ---
 
@@ -29,7 +29,10 @@ secretenv [--config <path>] <command> [command-options]
 Execute a command with secrets injected as environment variables.
 
 ```bash
-secretenv run [--registry <name-or-uri>] [--dry-run] [--verbose] -- <command> [args...]
+secretenv run [--registry <name-or-uri>] [--dry-run] [--verbose]
+              [--redact] [--no-redact --i-know] [--redact-token <token>]
+              [--otel-include-error-detail]
+              -- <command> [args...]
 ```
 
 | Flag | Description |
@@ -37,6 +40,11 @@ secretenv run [--registry <name-or-uri>] [--dry-run] [--verbose] -- <command> [a
 | `--registry <name-or-uri>` | Override active registry. Name looks up `[registries.<name>]` in config; URI is used directly with no cascade. |
 | `--dry-run` | Print resolution map (`KEY ← <uri>` for fetched, `KEY = <value>` for static defaults) and exit. No backend invoked, no credentials needed. Exit 0 on successful resolution. |
 | `--verbose` | Emit per-secret fetch progress to stderr. |
+| `--redact` | Force pipe-based stdout/stderr redaction even when stdin is a TTY. PTY-bound programs may misbehave; use only when confirmed safe. Mutually exclusive with `--no-redact`. |
+| `--no-redact` | Disable runtime stdout/stderr redaction. Falls back to the pre-v0.14 `exec()` path. Requires `--i-know` on non-TTY parents. Mutually exclusive with `--redact`. |
+| `--i-know` | Acknowledge the audit consequences of `--no-redact` on a non-TTY parent. Required by `--no-redact`. On a TTY parent an additional interactive prompt fires regardless. |
+| `--redact-token <token>` | Override the substitution token. Default is `[redacted:<alias-name>]`. |
+| `--otel-include-error-detail` | Include scrubbed backend stderr text on the `secretenv.backend.error.message` OTel span attribute on failed fetches. Default off. |
 
 **Behavior:**
 - Walks upward from CWD to find `secretenv.toml`; stops at VCS sentinel (`.git`/`.hg`/`.svn`/`.secretenv-root`) or filesystem root.
@@ -123,9 +131,33 @@ Removes an alias from the registry.
 secretenv registry history <alias> [--registry <name-or-uri>] [--json]
 ```
 
-Shows version history (most-recent-first) for a secret. Outputs human table (VERSION / TIMESTAMP / ACTOR / DESCRIPTION columns) or JSON. Reports "not implemented" for backends without a history API (`1password`, `keychain`, `gcp`, `azure`, `doppler`, `infisical`, `keeper`, `cf-kv`, `openbao`, `conjur`, `bitwarden-sm`).
+Shows version history (most-recent-first) for a secret. Outputs human table (VERSION / TIMESTAMP / ACTOR / DESCRIPTION columns) or JSON. Backends without a native history API return an error when history is requested. The error message varies by backend: the trait default says "not implemented"; per-backend overrides that wrap a CLI with no history subcommand say "not supported".
 
-History is supported by: `local` (where backed by git), `aws-ssm`, `vault` (KV v2), `aws-secrets` (partial — version only).
+History is supported by: `local` (where backed by git), `aws-ssm`, `vault` (KV v2).
+
+History is not supported by: `1password`, `keychain`, `gcp`, `azure`, `aws-secrets`, `doppler`, `infisical`, `keeper`, `cf-kv`, `openbao`, `conjur`, `bitwarden-sm`.
+
+### `registry migrate`
+
+```bash
+secretenv registry migrate <alias> <dest-uri>
+  [--registry <name-or-uri>]
+  [--dry-run]
+  [--yes|-y]
+  [--from <source-uri>]
+  [--delete-source]
+  [--json]
+```
+
+Migrate an alias's value from its current backend to a new one. Reads the current value via the registry pointer, writes it to the destination, then atomically flips the registry pointer to the destination URI. The source value is NOT deleted by default.
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Plan-only mode. Runs source/destination probes, prints the migration plan, exits without mutation. |
+| `--yes`, `-y` | Skip the top-level confirmation prompt. The `--delete-source` extra confirmation still fires even under this flag. |
+| `--from <source-uri>` | Override the inferred source URI. Used for recovery flows where the registry already points at the destination but the value is still in the old backend. |
+| `--delete-source` | After a successful migrate, delete the source value via the source backend's delete operation. Subject to a separate confirmation gate even under `--yes`. |
+| `--json` | Emit machine-readable JSON to stdout instead of the human-formatted progress and summary. |
 
 ### `registry invite`
 
@@ -201,6 +233,7 @@ secretenv doctor [--json] [--fix] [--extensive]
 | `--json` | Machine-readable output. Status variants: `ok`, `not_authenticated`, `cli_missing`, `error`. Suitable for CI gates and monitoring probes. |
 | `--fix` | For each `not_authenticated` backend, run canonical remediation CLI interactively (`aws sso login`, `op signin`, `gcloud auth login`, `az login`, `vault login`). Re-checks after. |
 | `--extensive` | Level-3 deep probe: attempts `list()` against each registry source, counts aliases, reports permission scope. |
+| `--trace` | Capture OTel spans emitted during the doctor pass into a local in-memory exporter and render them as a chronologically-sorted table. No OTLP collector required — useful for operator observability without standing up infrastructure. |
 
 **Three levels:**
 - **L1** — CLI installed (e.g., `aws --version` exits 0)
@@ -222,6 +255,105 @@ secretenv completions <bash|zsh|fish> [--output <path>]
 | Flag | Description |
 |---|---|
 | `--output <path>` | Write to file with mode 0o644. If omitted, prints to stdout. TTY detection shows install hints. |
+
+---
+
+## `secretenv redact`
+
+Post-hoc redaction: scrub secret values out of an existing file or stream.
+
+```bash
+secretenv redact <path>
+  [--registry <name-or-uri>]
+  [--alias <name>[,<name>...]]
+  [--in-place]
+  [--backup <suffix>]
+  [--dry-run]
+  [--allow-foreign-owner]
+  [--redact-token <token>]
+```
+
+| Flag | Description |
+|---|---|
+| `--registry <name-or-uri>` | Registry selection — same semantics as `secretenv run --registry`. |
+| `--alias <name>` | Restrict the tainted set to these alias names. Repeatable; comma-separated values also accepted. Default: every alias resolvable from the active manifest and registry cascade. |
+| `--in-place` | Rewrite the file in place (atomic rename). Without this flag, the scrubbed output is written to stdout and the original file is untouched. |
+| `--backup <suffix>` | With `--in-place`, keep a backup of the original at `<path><suffix>` (e.g. `--backup=.bak`). Requires `--in-place`. |
+| `--dry-run` | Count matches without writing any output. Mutually exclusive with `--in-place`. |
+| `--allow-foreign-owner` | Bypass the foreign-owner refusal that fires when the target file's UID differs from the caller's effective UID. |
+| `--redact-token <token>` | Override the substitution token. Default is `[redacted:<alias-name>]`. |
+
+**Behavior:** Resolves every alias's current value from the active registry, builds a tainted set, and rewrites the file replacing any occurrence with the substitution token. All-or-nothing — a single unresolvable alias aborts before writing. Symlinks are refused (`O_NOFOLLOW`); special files (devices, sockets) are refused. Files owned by a different UID are refused unless `--allow-foreign-owner` is passed.
+
+---
+
+## `secretenv mcp`
+
+Model Context Protocol (MCP) server operations.
+
+### `mcp serve`
+
+```bash
+secretenv mcp serve [--allow-mutations <never|confirm|always>] [--confirm-via <auto|elicitation|tty|notification|none>]
+```
+
+Run the MCP server over stdio until the transport closes. Honors the disable sentinel — if present and unexpired, exits with a clear stderr message before binding.
+
+| Flag | Description |
+|---|---|
+| `--allow-mutations <mode>` | Per-launch override for `[mcp].allow_mutations`. Values: `never`, `confirm`, `always`. Takes precedence over the value in `config.toml`. |
+| `--confirm-via <surface>` | Per-launch override for `[mcp].confirm_via`. Values: `auto`, `elicitation`, `tty`, `notification`, `none`. |
+
+### `mcp disable`
+
+```bash
+secretenv mcp disable [--duration <duration>]
+```
+
+Disable the MCP server by writing the sentinel file. Subsequent `mcp serve` invocations exit immediately until the sentinel is removed (`mcp enable`) or, when `--duration` was given, the embedded expiry has passed.
+
+| Flag | Description |
+|---|---|
+| `--duration <duration>` | Optional auto-expiry — e.g. `30m`, `2h`, `1d`. Without this flag the disable is indefinite. |
+
+### `mcp enable`
+
+```bash
+secretenv mcp enable
+```
+
+Re-enable the MCP server by removing the disable sentinel. No-op if the sentinel is already absent.
+
+### `mcp setup`
+
+```bash
+secretenv mcp setup [--ide <key>] [--list-ides] [--binary <path>] [--write] [--force] [--merge] [--check-overrides]
+```
+
+Emit a paste-ready MCP-client config block for a supported IDE, or write the config file directly.
+
+| Flag | Description |
+|---|---|
+| `--ide <key>` | Which IDE to render for. Required unless `--list-ides` or `--check-overrides` is given. |
+| `--list-ides` | Print supported IDE keys and their config-file paths, then exit. |
+| `--binary <path>` | Absolute path to the `secretenv` binary the IDE will spawn. Default: `secretenv` (relies on the IDE's `$PATH`). |
+| `--write` | Write the rendered config to the target file. Default is stdout. |
+| `--force` | With `--write`, overwrite the target file even if it already exists. Mutually exclusive with `--merge`. |
+| `--merge` | With `--write`, splice the SecretEnv MCP entry into the existing file in place. Supported for JSON-shaped IDE configs. Mutually exclusive with `--force`. |
+| `--check-overrides` | Read-only scan: check every supported IDE's config file for SecretEnv MCP argv overrides and flag any that would be vetoed by `[mcp].allow_cli_overrides`. Mutually exclusive with all other flags. |
+
+### `mcp audit tail`
+
+```bash
+secretenv mcp audit tail [--lines <n>] [--path <path>]
+```
+
+Print the last N audit-log entries (default 50) in chronological order. Output is one JSON object per line.
+
+| Flag | Description |
+|---|---|
+| `--lines <n>` | How many entries to print. Default: 50. |
+| `--path <path>` | Path to the audit-log file. Default is the XDG state-dir location `mcp serve` writes to. |
 
 ---
 

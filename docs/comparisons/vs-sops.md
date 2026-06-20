@@ -1,34 +1,34 @@
 # SecretEnv vs sops
 
-**TL;DR.** [sops](https://github.com/getsops/sops) (Mozilla / CNCF) is the canonical tool for **encrypted-file-at-rest in git**. It encrypts YAML/JSON/dotenv/binary files using KMS, age, GPG, or HashiCorp Vault transit; the encrypted blob lives in your repo. SecretEnv is a runtime-injection tool that stores nothing. **They solve different problems and can be used together.**
+**TL;DR.** [sops](https://github.com/getsops/sops) encrypts files in git (KMS, age, GPG, Vault transit). SecretEnv injects secrets at runtime. **Different problems, complementary tools.**
 
 ---
 
 ## sops at a glance
 
-- File-level encryption (whole file or per-key for structured formats)
-- Key sources: AWS KMS, GCP KMS, Azure Key Vault, age, GPG, HashiCorp Vault transit
-- Encrypted file is committed to git; reviewers see the structure but not the values
-- `sops decrypt` returns plaintext; `sops exec-env` runs a command with decrypted env
-- Standard for gitops-style secret management (Flux, ArgoCD via sops integration)
+- File-level encryption (whole file or per-key in structured formats)
+- Key sources: AWS KMS, GCP KMS, Azure Key Vault, age, GPG, Vault transit
+- Encrypted file lives in git; structure visible, values encrypted
+- `sops decrypt` returns plaintext; `sops exec-env` runs commands with decrypted env
+- Standard for gitops workflows (Flux, ArgoCD)
 
-If your workflow needs **encrypted secrets in git** (the gitops pattern), sops is the right answer.
+Use sops if you need encrypted secrets in git.
 
 ---
 
 ## Comparison
 
-| Property | sops | SecretEnv |
+| Property | SecretEnv | sops |
 |---|---|---|
-| Where secrets live | Encrypted file in your repo | In your existing backends |
-| Repo contains secret material | Yes (ciphertext) | No (alias only) |
-| Backend topology in repo | Yes (KMS key ARN, sops metadata) | No |
-| Multi-backend orchestration in one invocation | No (one sops file = one set of recipients) | Yes (15 backends) |
-| Cross-backend migration | Re-encrypt the file with the new recipients | One `registry set` |
-| Offboarding (specific user) | Re-encrypt every sops file without the ex-member's recipient key | Revoke registry-backend access |
-| Centrally-shared mutable alias registry | None | Yes |
-| Network required to read | Only for KMS modes | Yes (every read) |
-| Gitops-friendly (encrypted file in git) | ✓ (its primary use case) | ✗ (not the model) |
+| Where secrets live | In your existing backends | Encrypted file in your repo |
+| Repo contains secret material | No (alias only) | Yes (ciphertext) |
+| Backend topology in repo | No | Yes (KMS key ARN, sops metadata) |
+| Multi-backend orchestration in one invocation | Yes (15 backends) | No (one sops file = one set of recipients) |
+| Cross-backend migration | One `registry set` | Re-encrypt the file with the new recipients |
+| Offboarding (specific user) | Revoke registry-backend access | Re-encrypt every sops file without the ex-member's recipient key |
+| Centrally-shared mutable alias registry | Yes | None |
+| Network required to read | Yes (every read) | Only for KMS modes |
+| Gitops-friendly (encrypted file in git) | ✗ (not the model) | ✓ (its primary use case) |
 
 ---
 
@@ -36,10 +36,10 @@ If your workflow needs **encrypted secrets in git** (the gitops pattern), sops i
 
 A common pattern:
 
-- **sops** handles encrypted-config-in-git for things that genuinely should be versioned with the code (e.g., per-environment K8s manifest secrets, deployment configs that reference external secrets)
-- **SecretEnv** handles runtime secret injection for dev + CI + general-purpose workloads
+- **sops** for encrypted config in git (per-environment K8s manifests, deployment configs)
+- **SecretEnv** for runtime injection in dev + CI + general workloads
 
-These don't conflict. sops controls "what config did this deployment use, encrypted in git." SecretEnv controls "fetch fresh secrets from authoritative backends and inject at runtime."
+sops controls versioned, encrypted config. SecretEnv fetches fresh secrets from backends at runtime.
 
 ---
 

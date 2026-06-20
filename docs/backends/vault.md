@@ -1,10 +1,10 @@
 # HashiCorp Vault
 
-**Type:** `vault`
-**CLI required:** [`vault`](https://developer.hashicorp.com/vault/docs/install)
-**URI scheme:** `<instance>://mount/path/to/secret`
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `vault v2.0.0` (build 2026-04-13) on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `vault`
+- **CLI required:** [`vault`](https://developer.hashicorp.com/vault/docs/install)
+- **URI scheme:** `<instance>://mount/path/to/secret`
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `vault v2.0.0` (build 2026-04-13) on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
 > SecretEnv injects secrets from any backend as environment variables. This page covers the `vault` backend. New here? See the [overview](/).
 
@@ -23,7 +23,7 @@ HashiCorp Vault is a centralized, multi-tenant secrets store designed for enterp
 [backends.vault-eng]
 type            = "vault"
 vault_address   = "https://vault.company.com"   # required
-vault_namespace = "engineering"                  # optional — Vault Enterprise only
+vault_namespace = "engineering"                  # optional, Vault Enterprise only
 ```
 
 ### Fields
@@ -57,9 +57,9 @@ vault-eng://secret/myapp/db_password
 instance    mount   path within mount
 ```
 
-For KV v2 mounts, the `vault` CLI automatically injects the `data/` segment — you do **not** include it in the URI. Example: `vault-eng://secret/myapp/db` correctly maps to the KV v2 path `secret/data/myapp/db`.
+For KV v2 mounts, the `vault` CLI automatically injects the `data/` segment; you do **not** include it in the URI. Example: `vault-eng://secret/myapp/db` correctly maps to the KV v2 path `secret/data/myapp/db`.
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify your setup with:** `secretenv doctor`. Green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
@@ -104,7 +104,7 @@ Full support via `vault kv metadata get -format=json`. `secretenv registry histo
 
 - **KV v2 only for history.** `vault kv metadata get` only works on KV v2 mounts. KV v1 mounts have no version history available.
 - **Soft-delete vs destroy.** `vault kv delete` soft-deletes (metadata + prior versions survive). Full destruction requires `vault kv destroy` explicitly. This is an operational safeguard.
-- **Self-hosted domain trust.** `vault_address` is the trust boundary — see [security.md#self-hosted-domains](../security.md#self-hosted-domains) for the full disclosure discipline.
+- **Self-hosted domain trust.** `vault_address` is the trust boundary; see [security.md#self-hosted-domains](../security.md#self-hosted-domains) for the full disclosure discipline.
 - **Namespace paths must exist.** Vault Enterprise namespace paths are hierarchical. Parent namespaces must exist before child namespaces can be referenced.
 
 ## Examples
@@ -169,9 +169,9 @@ History API only works on KV v2 mounts. Check your mount type with `vault secret
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Self-hosted domain trust](../security.md#self-hosted-domains) — `vault_address` disclosure discipline
-- [OpenBao](openbao.md) — LF MPL fork; near-identical wire protocol and KV semantics
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [Self-hosted domain trust](../security.md#self-hosted-domains), `vault_address` disclosure discipline
+- [OpenBao](openbao.md), LF MPL fork; near-identical wire protocol and KV semantics
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

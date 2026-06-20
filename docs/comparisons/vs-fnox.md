@@ -1,23 +1,20 @@
 # SecretEnv vs fnox
 
-**TL;DR.** [fnox](https://github.com/jdx/fnox) is a thoughtful multi-mode secrets tool that handles client-side encryption (age + KMS providers), cloud secret references, and password managers. **In KMS modes, fnox closes the persistent-key and offboarding concerns at the KMS-key level.** SecretEnv's distinction is **orthogonal to encryption**: an alias-registry layer above the backend that decouples every repo from backend URIs entirely. Migrating a secret in fnox (any mode) means editing every `fnox.toml`. In SecretEnv, it's one `registry set`. Both are valid approaches; they solve different problems and can be used together.
+**TL;DR.** [fnox](https://github.com/jdx/fnox) handles client-side encryption (age + KMS providers) and cloud secret references. **In KMS modes, fnox closes persistent-key and offboarding concerns.** SecretEnv's distinction is **orthogonal**: an alias-registry layer that decouples repos from backend URIs. fnox requires editing every `fnox.toml` to migrate. SecretEnv: one `registry set`. Both valid; they layer cleanly together.
+
 
 ---
 
 ## fnox at a glance
 
-fnox is itself multi-backend. It supports several distinct modes:
+fnox supports several modes:
 
-- **Encryption providers** (ciphertext stored in committed `fnox.toml`):
-  - `age` — local symmetric encryption; private key on disk
-  - `aws-kms` — ciphertext in fnox.toml; **decryption gated by IAM on the KMS key**; no persistent key on disk
-  - `azure-kms` — same model via Azure Key Vault Crypto User role
-  - `gcp-kms` — same model via GCP KMS
-- **Cloud secret-storage providers** (references stored, fetched at runtime): `aws-ps`, `aws-sm`, `azure-sm`, `gcp-sm`, `bitwarden-sm`, `vault`
-- **Password managers** (references stored): `1password`, `bitwarden`, `infisical`
+- **Encryption providers** (ciphertext in `fnox.toml`): `age`, `aws-kms`, `azure-kms`, `gcp-kms`
+- **Cloud secret-storage** (references only): `aws-sm`, `azure-sm`, `gcp-sm`, `bitwarden-sm`, `vault`
+- **Password managers**: `1password`, `bitwarden`, `infisical`
 - **Local storage**: `keychain`, `keepass`, `password-store`, `plain`
 
-Sources: [fnox README](https://github.com/jdx/fnox/blob/main/README.md), [fnox AWS KMS provider docs](https://fnox.jdx.dev/providers/aws-kms), [fnox Azure KMS provider docs](https://fnox.jdx.dev/providers/azure-kms).
+[fnox README](https://github.com/jdx/fnox/blob/main/README.md) · [AWS KMS docs](https://fnox.jdx.dev/providers/aws-kms) · [Azure KMS docs](https://fnox.jdx.dev/providers/azure-kms).
 
 ---
 
@@ -25,107 +22,99 @@ Sources: [fnox README](https://github.com/jdx/fnox/blob/main/README.md), [fnox A
 
 ### fnox (age) vs SecretEnv
 
-| Property | fnox (age) | SecretEnv |
+| Property | SecretEnv | fnox (age) |
 |---|---|---|
-| Persistent decryption key on disk | ✓ age private key | None — no decryption surface |
-| Offboarding | Re-encrypt every secret without ex-member's recipient key | Revoke registry-backend access; covers every repo |
-| Re-encryption needed on team change | Yes | n/a (no encryption) |
-| Network required to read | No (offline OK) | Yes (backend fetch on every run) |
-| Secret material in repo | Ciphertext (committed) | Nothing (alias only) |
-| Backend topology in repo | Yes (provider + path) | No (alias only) |
+| Persistent decryption key on disk | None, no decryption surface | ✓ age private key |
+| Offboarding | Revoke registry-backend access; covers every repo | Re-encrypt every secret without ex-member's recipient key |
+| Re-encryption needed on team change | n/a (no encryption) | Yes |
+| Network required to read | Yes (backend fetch on every run) | No (offline OK) |
+| Secret material in repo | Nothing (alias only) | Ciphertext (committed) |
+| Backend topology in repo | No (alias only) | Yes (provider + path) |
 
-**Where fnox-age wins:** offline-first workflows, gitops where the encrypted blob travels with the code, environments with no cloud dependency.
+**fnox-age wins on:** offline-first workflows, gitops with encrypted blobs in git, no cloud dependency.
 
-**Where SecretEnv wins:** team changes don't trigger re-encryption sweeps; offboarding is one IAM operation; nothing in the repo reveals topology.
+**SecretEnv wins on:** no re-encryption sweeps on team changes; offboarding is one IAM operation; repo doesn't reveal topology.
 
-### fnox (KMS — aws-kms / azure-kms / gcp-kms) vs SecretEnv
+### fnox (KMS, aws-kms / azure-kms / gcp-kms) vs SecretEnv
 
-| Property | fnox (KMS mode) | SecretEnv |
+| Property | SecretEnv | fnox (KMS mode) |
 |---|---|---|
-| Persistent decryption key on disk | None — IAM-gated KMS calls | None — no decryption surface |
-| Offboarding | IAM revoke on the KMS key (one operation) | Revoke registry-backend access (one operation) |
-| Re-encryption needed on KMS key rotation | Yes (manual re-encrypt all secrets) | n/a |
-| Network required to read | Yes (every read = live KMS API call) | Yes (backend fetch on every run) |
-| Secret material in repo | Ciphertext (committed) | Nothing (alias only) |
-| Backend topology in repo | Yes (provider name, KMS key id, region) | No (alias only) |
-| Cross-backend migration (e.g., move from `aws-sm` to `vault`) | Edit every `fnox.toml`; if from KMS mode, re-encrypt | One `registry set`; every repo inherits on next run |
-| Centrally-shared mutable alias registry | None — config IS source of truth, per-repo | Yes — registry lives in your backend |
-| Same alias name routes per environment | Profiles override per env in config | Registry cascade routes per env (registry change, not config change) |
+| Persistent decryption key on disk | None, no decryption surface | None, IAM-gated KMS calls |
+| Offboarding | Revoke registry-backend access (one operation) | IAM revoke on the KMS key (one operation) |
+| Re-encryption needed on KMS key rotation | n/a | Yes (manual re-encrypt all secrets) |
+| Network required to read | Yes (backend fetch on every run) | Yes (every read = live KMS API call) |
+| Secret material in repo | Nothing (alias only) | Ciphertext (committed) |
+| Backend topology in repo | No (alias only) | Yes (provider name, KMS key id, region) |
+| Cross-backend migration (e.g., move from `aws-sm` to `vault`) | One `registry set`; every repo inherits on next run | Edit every `fnox.toml`; if from KMS mode, re-encrypt |
+| Centrally-shared mutable alias registry | Yes, registry lives in your backend | None, config IS source of truth, per-repo |
+| Same alias name routes per environment | Registry cascade routes per env (registry change, not config change) | Profiles override per env in config |
 
-**Where fnox-KMS wins:** ciphertext-in-repo property (gitops-friendly auditability of which secrets exist); offline read once ciphertext is fetched (after key cache; not the default); committed history of encrypted secret values.
+**fnox-KMS wins on:** ciphertext-in-repo (gitops auditability); offline read after key cache; committed history of encrypted values.
 
-**Where SecretEnv wins:** cross-backend migration is one line, not a repo-wide edit; nothing in the repo reveals the backend choice; the alias registry is a single source of truth that mutates without any config change in any repo.
+**SecretEnv wins on:** cross-backend migration is one line, not repo-wide edits; repo doesn't reveal backend choice; registry is a single source of truth.
 
-### fnox (cloud-reference modes — aws-sm / vault / 1password etc.) vs SecretEnv
+### fnox (cloud-reference modes, aws-sm / vault / 1password etc.) vs SecretEnv
 
 In these modes fnox stores references like `aws-sm://...` directly in `fnox.toml`. There's no encryption involved.
 
-| Property | fnox (reference mode) | SecretEnv |
+| Property | SecretEnv | fnox (reference mode) |
 |---|---|---|
 | Persistent decryption key on disk | None | None |
-| Offboarding | Revoke backend access (covers every repo using that backend) | Revoke registry-backend access (covers every repo) |
-| Backend topology in repo | Yes (the reference URI) | No (alias only) |
-| Cross-backend migration | Edit every `fnox.toml` to change the reference | One `registry set` |
-| Centrally-shared mutable alias registry | None | Yes |
+| Offboarding | Revoke registry-backend access (covers every repo) | Revoke backend access (covers every repo using that backend) |
+| Backend topology in repo | No (alias only) | Yes (the reference URI) |
+| Cross-backend migration | One `registry set` | Edit every `fnox.toml` to change the reference |
+| Centrally-shared mutable alias registry | Yes | None |
 
-**Where fnox-reference-mode wins:** simpler mental model when topology is intentionally public (small teams, internal-only repos); no extra registry to manage.
+**fnox-reference-mode wins on:** simpler mental model for public topology (small teams); no registry to manage.
 
-**Where SecretEnv wins:** the same indirection point that makes migration cheap (registry set); aliases are environment-agnostic, routed per-env via `--registry`.
-
----
-
-## What's actually different (the orthogonal claim)
-
-The distinction between SecretEnv and fnox is **not encryption posture**. It's **alias indirection**.
-
-In fnox, the `fnox.toml` in each repo is the source of truth. It says "this secret comes from `aws-sm://prod-account/myapp/stripe`" (or, in KMS mode, "this is the ciphertext, decrypt it via this KMS key"). When you want to change where Stripe lives, you edit every `fnox.toml` in every repo that mentions it.
-
-In SecretEnv, the `secretenv.toml` says "this secret is `secretenv://stripe-key`." That's all. The actual location lives in a separate registry document, in a backend you control. When you want to change where Stripe lives, you run `secretenv registry set stripe-key <new-uri>` once. Every repo picks it up on the next run.
-
-This is a difference in **architecture**, not in security. It's why you might choose to use both:
-- SecretEnv to manage the alias-to-URI mapping at the org level
-- fnox locally for offline-first dev workflows where the developer wants ciphertext-in-repo
-
-They are layered, not competing.
+**SecretEnv wins on:** indirection makes migration cheap; aliases route per-env via `--registry`.
 
 ---
 
-## Operator's correspondence with the fnox maintainer
+## What's actually different
 
-For accurate context: the @TechAlchemistX's exchange with @jdx (fnox maintainer) on a prior version of this comparison surfaced that the v1 SecretEnv README modelled only fnox-age mode and missed fnox-KMS. The maintainer's clarification:
+The distinction is **not encryption posture**. It's **alias indirection**.
 
-> "I am the maintainer of fnox. This is only true if you use the encryption providers. If you don't, nothing is encrypted obviously. Your doc also doesn't seem to take into account my preferred way of using it with KMS that solves a lot of the problems mentioned."
+In fnox, `fnox.toml` is source of truth. It says "this secret is `aws-sm://prod-account/myapp/stripe`" (or KMS ciphertext). To move Stripe, edit every repo's `fnox.toml`.
 
-TechAlchemistX's reply:
+In SecretEnv, `secretenv.toml` says "this secret is `secretenv://stripe-key`." The location lives in a separate registry. To move Stripe, run `secretenv registry set stripe-key <new-uri>` once. Every repo picks it up.
 
-> "Fair point, the table only models age-mode and that's a real miss. KMS-mode closes a lot of what I flagged (offboarding via IAM revocation on the KMS key, no persistent decryption key on disk, transparent rotation through aws-sm). Separately, I still do think secretenv's registry indirection adds something orthogonal to encryption (cross-backend migration is one line vs editing every fnox.toml), but that's a different conversation."
+**Architecture difference, not security difference.** You can layer them:
+- SecretEnv for org-level alias-to-URI mapping
+- fnox locally for offline-first dev with ciphertext-in-repo
 
-This page is the corrected version. If anything here misrepresents fnox in any mode, please open an issue against [TechAlchemistX/secretenv](https://github.com/TechAlchemistX/secretenv/issues) — accuracy matters more than rhetoric.
+---
+
+## Maintainer correspondence
+
+An earlier version of this comparison modelled only fnox-age and missed fnox-KMS. The @jdx (fnox maintainer) clarified:
+
+> "This is only true if you use the encryption providers. Your doc doesn't account for KMS-mode, which solves many problems mentioned."
+
+@TechAlchemistX's reply:
+
+> "Fair point. KMS-mode closes offboarding via IAM revocation, no persistent key on disk, transparent rotation. SecretEnv's registry indirection is orthogonal. Cross-backend migration is one line vs editing every fnox.toml."
+
+If anything here misrepresents fnox, please open an issue: [TechAlchemistX/secretenv issues](https://github.com/TechAlchemistX/secretenv/issues). Accuracy matters more.
 
 ---
 
 ## When to pick which
 
 **Pick fnox if:**
-- You want client-side encryption with secrets-in-config (committed ciphertext)
-- You want gitops auditability of which encrypted secret existed when
-- You're already in the `mise` ecosystem and value tight integration
-- KMS-mode offboarding via IAM revocation matches your security model
+- You want client-side encryption (committed ciphertext)
+- You want gitops auditability of encrypted secrets
+- You're in the `mise` ecosystem
+- KMS-mode IAM revocation matches your security model
 
 **Pick SecretEnv if:**
-- You want to remove backend topology from every repo
-- You expect to migrate secrets across backends and want a one-line operation
-- You manage a centrally-shared alias registry across many teams / repos
-- Your `secretenv.toml` should never know which backend a secret lives in
+- You want to remove backend topology from repos
+- You expect cross-backend secret migration
+- You manage a centrally-shared alias registry
+- Repos should never know which backend holds a secret
 
 **Pick both if:**
-- You want fnox's encryption-in-config locally + SecretEnv's registry indirection for org-wide routing — they layer cleanly.
+- You want fnox's local encryption + SecretEnv's org-wide registry; they layer cleanly.
 
 ---
 
-## Sources
-
-- fnox README: https://github.com/jdx/fnox/blob/main/README.md
-- fnox AWS KMS provider: https://fnox.jdx.dev/providers/aws-kms
-- fnox Azure KMS provider: https://fnox.jdx.dev/providers/azure-kms
-- fnox GCP KMS provider: https://fnox.jdx.dev/providers/gcp-kms

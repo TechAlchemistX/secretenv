@@ -1,6 +1,6 @@
 # SecretEnv CLI Reference (Full)
 
-Complete per-flag reference for SecretEnv v0.18.0. The README has the compact summary; this page is the deep reference for every command, every flag, every exit code.
+Complete per-flag reference for SecretEnv v0.19.0. The README has the compact summary; this page is the deep reference for every command, every flag, every exit code.
 
 ---
 
@@ -233,12 +233,12 @@ secretenv doctor [--json] [--fix] [--extensive]
 | `--json` | Machine-readable output. Status variants: `ok`, `not_authenticated`, `cli_missing`, `error`. Suitable for CI gates and monitoring probes. |
 | `--fix` | For each `not_authenticated` backend, run canonical remediation CLI interactively (`aws sso login`, `op signin`, `gcloud auth login`, `az login`, `vault login`). Re-checks after. |
 | `--extensive` | Level-3 deep probe: attempts `list()` against each registry source, counts aliases, reports permission scope. |
-| `--trace` | Capture OTel spans emitted during the doctor pass into a local in-memory exporter and render them as a chronologically-sorted table. No OTLP collector required — useful for operator observability without standing up infrastructure. |
+| `--trace` | Capture OTel spans emitted during the doctor pass into a local in-memory exporter and render them as a chronologically-sorted table. No OTLP collector required, useful for operator observability without standing up infrastructure. |
 
 **Three levels:**
-- **L1** — CLI installed (e.g., `aws --version` exits 0)
-- **L2** — Backend authenticated (e.g., `aws sts get-caller-identity` succeeds)
-- **L3** — Can read registry source (counts aliases). `--extensive` only.
+- **L1**: CLI installed (e.g., `aws --version` exits 0)
+- **L2**: Backend authenticated (e.g., `aws sts get-caller-identity` succeeds)
+- **L3**: Can read registry source (counts aliases). `--extensive` only.
 
 Default is L1 + L2. All checks run concurrently with a 5-second per-check timeout. Exit code is non-zero if any backend reports anything other than `ok` (after remediation if `--fix` was passed). L3 failures report but don't change exit code.
 
@@ -275,7 +275,7 @@ secretenv redact <path>
 
 | Flag | Description |
 |---|---|
-| `--registry <name-or-uri>` | Registry selection — same semantics as `secretenv run --registry`. |
+| `--registry <name-or-uri>` | Registry selection, same semantics as `secretenv run --registry`. |
 | `--alias <name>` | Restrict the tainted set to these alias names. Repeatable; comma-separated values also accepted. Default: every alias resolvable from the active manifest and registry cascade. |
 | `--in-place` | Rewrite the file in place (atomic rename). Without this flag, the scrubbed output is written to stdout and the original file is untouched. |
 | `--backup <suffix>` | With `--in-place`, keep a backup of the original at `<path><suffix>` (e.g. `--backup=.bak`). Requires `--in-place`. |
@@ -283,7 +283,7 @@ secretenv redact <path>
 | `--allow-foreign-owner` | Bypass the foreign-owner refusal that fires when the target file's UID differs from the caller's effective UID. |
 | `--redact-token <token>` | Override the substitution token. Default is `[redacted:<alias-name>]`. |
 
-**Behavior:** Resolves every alias's current value from the active registry, builds a tainted set, and rewrites the file replacing any occurrence with the substitution token. All-or-nothing — a single unresolvable alias aborts before writing. Symlinks are refused (`O_NOFOLLOW`); special files (devices, sockets) are refused. Files owned by a different UID are refused unless `--allow-foreign-owner` is passed.
+**Behavior:** Resolves every alias's current value from the active registry, builds a tainted set, and rewrites the file replacing any occurrence with the substitution token. All-or-nothing: a single unresolvable alias aborts before writing. Symlinks are refused (`O_NOFOLLOW`); special files (devices, sockets) are refused. Files owned by a different UID are refused unless `--allow-foreign-owner` is passed.
 
 ---
 
@@ -297,7 +297,7 @@ Model Context Protocol (MCP) server operations.
 secretenv mcp serve [--allow-mutations <never|confirm|always>] [--confirm-via <auto|elicitation|tty|notification|none>]
 ```
 
-Run the MCP server over stdio until the transport closes. Honors the disable sentinel — if present and unexpired, exits with a clear stderr message before binding.
+Run the MCP server over stdio until the transport closes. Honors the disable sentinel: if present and unexpired, exits with a clear stderr message before binding.
 
 | Flag | Description |
 |---|---|
@@ -314,7 +314,7 @@ Disable the MCP server by writing the sentinel file. Subsequent `mcp serve` invo
 
 | Flag | Description |
 |---|---|
-| `--duration <duration>` | Optional auto-expiry — e.g. `30m`, `2h`, `1d`. Without this flag the disable is indefinite. |
+| `--duration <duration>` | Optional auto-expiry, e.g. `30m`, `2h`, `1d`. Without this flag the disable is indefinite. |
 
 ### `mcp enable`
 
@@ -357,6 +357,15 @@ Print the last N audit-log entries (default 50) in chronological order. Output i
 
 ---
 
+## Failure modes
+
+- **Resolution is all-or-nothing per invocation.** If any required alias fails to resolve, the child process never starts. Partial environments are never injected.
+- **No on-disk cache.** Every run hits live backends, so there's no stale-cache class of bug and no key material left between runs.
+- **Failures report cleanly.** `BackendUnauthenticated`, `AliasNotFound`, `RegistryUnreachable`, and `BackendCliMissing` are the four operationally interesting failure shapes; each carries enough context to triage without re-running.
+- **Logging.** `RUST_LOG=secretenv=debug` emits structured logs to stderr; `run --verbose` adds per-secret fetch progress.
+
+---
+
 ## URI grammar
 
 ```
@@ -364,7 +373,7 @@ Print the last N audit-log entries (default 50) in chronological order. Output i
 ```
 
 - **Scheme:** alphanumeric + `_`/`-`, must start with alphanumeric. The scheme is your **named instance** (e.g., `aws-ssm-prod`, `1password-work`, `vault-eng`).
-- **Authority:** SecretEnv URIs have no authority — the "host" position is empty. This produces the triple-slash form `<scheme>:///<path>` for paths beginning with `/`.
+- **Authority:** SecretEnv URIs have no authority: the "host" position is empty. This produces the triple-slash form `<scheme>:///<path>` for paths beginning with `/`.
 - **Path:** Non-empty. Control characters (NUL + ASCII <0x20 except tab) are rejected at parse time.
 - **Fragment:** Optional `key=value[,key=value]*` directive map. Common directives: `json-key=<field>` (extract JSON field from response), `version=<n>` (pin version, where supported). See [fragment-vocabulary.md](fragment-vocabulary.md).
 
@@ -397,7 +406,7 @@ type = "<backend-type>"
 
 ### Profile (`<config-dir>/profiles/<name>.toml`)
 
-Same shape as machine config — `[registries.*]` + `[backends.*]` blocks. Auto-merged on every load. User config wins on key collision.
+Same shape as machine config: `[registries.*]` + `[backends.*]` blocks. Auto-merged on every load. User config wins on key collision.
 
 ### Registry document (stored in any backend)
 

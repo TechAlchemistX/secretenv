@@ -1,10 +1,8 @@
-# `secretenv mcp` — Model Context Protocol server
+# `secretenv mcp`: Model Context Protocol server
 
-`secretenv mcp serve` is a stdio-only [Model Context Protocol][mcp] server that gives AI coding agents (Claude Code, Cursor, Cline, Gemini CLI / Code Assist, Codex, OpenCode, VS Code Copilot, Continue) structured access to your SecretEnv registry — **without ever returning a resolved secret value**.
+`secretenv mcp serve` is a stdio-only [MCP][mcp] server providing AI coding agents structured access to SecretEnv registries, **without returning resolved secret values**.
 
-This reference covers everything an operator needs: setup per IDE, the 14 tools the server exposes, the confirmation surface, the audit log, and the known limitations as of v0.19.0.
-
-For the design rationale + implementation walkthrough, see [`kb/wiki/build-plan-v0.16-mcp.md`](https://github.com/TechAlchemistX/secretenv/blob/main/kb/wiki/build-plan-v0.16-mcp.md) (build plan) + [`docs/reference/redact.md`](redact.md) + [`docs/reference/migrate.md`](migrate.md) for the v0.14/v0.15 features the MCP server wraps.
+Setup per IDE, 14 tools, confirmation surface, audit log, and v0.19.0 limitations covered here. See [`redact.md`](redact.md) and [`migrate.md`](migrate.md) for the wrapped features.
 
 [mcp]: https://modelcontextprotocol.io
 
@@ -35,7 +33,7 @@ secretenv mcp setup --ide claude-code --write # writes to the IDE's config file
 
 ## The 14 tools
 
-Each tool's name is exactly what the agent calls. All tools return **structured JSON responses** — never plain text — and **none of them return a resolved secret value**.
+All tools return **structured JSON** and **never return resolved secret values**.
 
 ### Read-only (8)
 
@@ -45,51 +43,51 @@ Each tool's name is exactly what the agent calls. All tools return **structured 
 | `version_info` | secretenv version + rmcp SDK version + the 14-tool inventory. |
 | `redact_status` | Whether `secretenv run --redact` is enabled (always true since v0.14). |
 | `list_backends` | All configured `[backends.*]` instances + their type. |
-| `detect_password_managers` | Which password-manager CLIs are installed on this machine (op, vault, doppler, etc.) — for suggesting backends the operator could add. |
-| `doctor` | Backend health probe — auth status per configured instance. Mirrors `secretenv doctor --json`. |
+| `detect_password_managers` | Which password-manager CLIs are installed on this machine (op, vault, doppler, etc.), for suggesting backends the operator could add. |
+| `doctor` | Backend health probe: auth status per configured instance. Mirrors `secretenv doctor --json`. |
 | `resolve_status` | Per-registry probe: is the registry's primary source URI's backend reachable + authenticated? Per-alias info comes from `list_aliases`. |
-| `list_aliases` | Every alias across every registry + the backend instance/type it points at. **No URI paths, no values** — just alias names + their target backend instance name. |
+| `list_aliases` | Every alias across every registry + the backend instance/type it points at. **No URI paths, no values**, just alias names + their target backend instance name. |
 
 ### Mutations (4)
 
-Mutations go through the `[mcp].allow_mutations` policy gate and are recorded in the mutation audit log. See [Confirmation surface](#confirmation-surface) below.
+Mutations gate on `[mcp].allow_mutations` policy and record to audit log (see [Confirmation surface](#confirmation-surface)).
 
 | Tool | Purpose |
 |---|---|
-| `set_alias` | Create / update an alias → backend-URI mapping in a registry. **Does NOT create the backend secret itself** — only the registry pointer. |
-| `delete_alias` | Remove an alias from a registry. **Does NOT delete the backend secret** — call the backend's native delete CLI for that. ALWAYS CONFIRM PER ALIAS; never batched. |
-| `init_project` | Scaffold a `secretenv.toml` from a `.env` file. KEY NAMES only — values structurally cannot be read (the parser stops at `=`). `apply=false` (default) returns the proposed manifest without writing. |
-| `redact_file` | Post-hoc file scrubbing — replaces every alias's resolved value with `[redacted:<alias>]`. Returns COUNTS only, never matched bytes. `apply=false` (default) is a dry-run dual to `secretenv redact --dry-run`. |
+| `set_alias` | Create / update an alias → backend-URI mapping in a registry. **Does NOT create the backend secret itself**, only the registry pointer. |
+| `delete_alias` | Remove an alias from a registry. **Does NOT delete the backend secret**. Call the backend's native delete CLI for that. ALWAYS CONFIRM PER ALIAS; never batched. |
+| `init_project` | Scaffold a `secretenv.toml` from a `.env` file. KEY NAMES only, values structurally cannot be read (the parser stops at `=`). `apply=false` (default) returns the proposed manifest without writing. |
+| `redact_file` | Post-hoc file scrubbing: replaces every alias's resolved value with `[redacted:<alias>]`. Returns COUNTS only, never matched bytes. `apply=false` (default) is a dry-run dual to `secretenv redact --dry-run`. |
 
 ### Generation + migration (2)
 
 | Tool | Purpose |
 |---|---|
-| `gen_password` | Generate a cryptographically random value, write it to a backend URI, and register an alias for it. The value **never crosses the MCP boundary** — written directly to the backend. Charsets: `alphanumeric`, `alphanumeric_symbols`, `hex`, `base64_url_safe`. Length floor 16, ceiling 1024. |
+| `gen_password` | Generate a cryptographically random value, write it to a backend URI, and register an alias for it. The value **never crosses the MCP boundary**, written directly to the backend. Charsets: `alphanumeric`, `alphanumeric_symbols`, `hex`, `base64_url_safe`. Length floor 16, ceiling 1024. |
 | `migrate_alias` | Migrate an alias's value from one backend to another. Wraps `secretenv registry migrate`. `dry_run=true` for probe + plan without mutation; `delete_source=true` opts into post-commit source cleanup. |
 
 ---
 
 ## Per-IDE setup
 
-Run `secretenv mcp setup --list-ides` to see all 8. Each profile auto-emits a `--allow-mutations=always` flag if Phase 8b empirical testing showed the IDE lacks working MCP elicitation — see [Confirmation surface](#confirmation-surface).
+Run `secretenv mcp setup --list-ides` to see all 8. Testing determined which IDEs lack MCP elicitation; those profiles auto-emit `--allow-mutations=always` (see [Confirmation surface](#confirmation-surface)).
 
-| IDE | Helper key | Config path | Elicitation status (v0.16) |
+| IDE | Helper key | Config path | Elicitation (v0.16) |
 |---|---|---|---|
-| Claude Code | `claude-code` | `~/.claude.json` (use `claude mcp add`) | ✅ Works end-to-end (modal renders, single-click) |
-| Cursor | `cursor` | `~/.cursor/mcp.json` | ⏸ Untested — helper ships speculative `--allow-mutations=always` |
-| Codex (OpenAI) | `codex` | `~/.codex/config.toml` | ❌ No elicitation — helper ships `--allow-mutations=always`. Codex maintains its own per-tool approval DB (`[mcp_servers.X.tools.Y] approval_mode`) |
-| VS Code Copilot | `vscode-copilot` | `.vscode/mcp.json` (workspace-scoped) | ❌ Advertises capability but does not render empty-schema requests — helper ships `--allow-mutations=always`. v0.16.1 will investigate a single-field schema variant. |
-| Continue | `continue` | `~/.continue/config.json` | ⏸ Untested — helper ships speculative `--allow-mutations=always` |
-| Cline | `cline` | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | ❌ No elicitation — operator adds `--allow-mutations=always` manually (Cline's own "Run Tool" UI gate fires too) |
-| Gemini CLI + Gemini Code Assist | `gemini` | `~/.gemini/settings.json` | ❌ No elicitation — helper ships `--allow-mutations=always`. Single config covers both the standalone Gemini CLI and the Gemini Code Assist IDE extension. |
-| OpenCode | `opencode` | `~/.config/opencode/opencode.jsonc` | ❌ No elicitation — helper ships `--allow-mutations=always`. OpenCode + Codex agents BOTH demonstrate model-level conversational confirmation (the agent asks the operator in chat before firing mutations) — meaningful defense-in-depth at the model layer even when MCP-protocol elicitation is silenced. |
+| Claude Code | `claude-code` | `~/.claude.json` (use `claude mcp add`) | ✅ End-to-end (modal + single-click) |
+| Cursor | `cursor` | `~/.cursor/mcp.json` | ⏸ Speculative `--allow-mutations=always` |
+| Codex (OpenAI) | `codex` | `~/.codex/config.toml` | ❌ No elicitation; ships `--allow-mutations=always`. Maintains own per-tool approval DB. |
+| VS Code Copilot | `vscode-copilot` | `.vscode/mcp.json` | ❌ No empty-schema render; ships `--allow-mutations=always` (single-field variant pending v0.16.1). |
+| Continue | `continue` | `~/.continue/config.json` | ⏸ Speculative `--allow-mutations=always` |
+| Cline | `cline` | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | ❌ No elicitation; operator adds flag manually (Cline UI gate also fires). |
+| Gemini CLI + Gemini Code Assist | `gemini` | `~/.gemini/settings.json` | ❌ No elicitation; ships `--allow-mutations=always` (single config for both tools). |
+| OpenCode | `opencode` | `~/.config/opencode/opencode.jsonc` | ❌ No MCP elicitation; model-level conversational confirmation (agent asks in chat). Ships `--allow-mutations=always`. |
 
 ### `--write` mode
 
-`secretenv mcp setup --ide <key> --write` writes the config file directly. Refuses if the target file already exists unless you pass `--force`. The `claude-code` profile is special: it emits a `claude mcp add` shell command rather than writing JSON, because `~/.claude.json` is a 1000+ line shared config file with lots of unrelated Claude Code state.
+`secretenv mcp setup --ide <key> --write` writes the config file (refuses if exists unless `--force`). `claude-code` is special: emits `claude mcp add` command (not JSON) because `~/.claude.json` is 1000+ lines of shared state.
 
-For IDEs with pre-existing settings.json content (Gemini, Cline, Continue): the helper has no merge logic yet (v0.16.1). Use `jq` to merge:
+For IDEs with existing settings.json (Gemini, Cline, Continue): no merge logic yet (v0.16.1). Use `jq`:
 
 ```bash
 jq '. * {"mcpServers": {"secretenv": {"command": "secretenv", "args": ["mcp", "serve", "--allow-mutations", "always"]}}}' \
@@ -99,42 +97,38 @@ mv ~/.gemini/settings.json.new ~/.gemini/settings.json
 
 ### `--binary <path>` for portability
 
-By default the rendered config uses `"command": "secretenv"` — relying on the IDE's `$PATH`. Some IDEs spawn MCP servers with a sparser environment than your shell. For maximum portability:
+By default, config uses `"command": "secretenv"` (relying on IDE's `$PATH`). Some IDEs spawn with sparser env. For portability:
 
 ```bash
 secretenv mcp setup --ide claude-code --binary $(which secretenv)
 ```
 
-This bakes the absolute path into the config block.
-
 ### `--ide generic`
 
-Print-only profile for any IDE adopting the de-facto Claude `mcpServers` shape. Useful for IDEs not yet in the per-IDE list (or that adopt the shape post-v0.16). Compatible with Claude Code, Cursor, Cline, Gemini. NOT compatible with VS Code Copilot (needs `"type": "stdio"`), Continue (`experimental.modelContextProtocolServers`), OpenCode (`command`-as-list), or Codex (TOML).
+Print-only profile for any IDE adopting the Claude `mcpServers` shape. Compatible with Claude Code, Cursor, Cline, Gemini. Incompatible with VS Code Copilot (`"type": "stdio"`), Continue (`experimental.modelContextProtocolServers`), OpenCode (`command`-as-list), Codex (TOML).
 
 ---
 
 ## Confirmation surface
 
-The `[mcp].allow_mutations` policy controls how the server gates mutation tool calls:
+**`[mcp].allow_mutations` policy:**
+- `never`: mutations return refusal (still listed in `tools/list`)
+- `confirm` (default): gates on confirmation per `[mcp].confirm_via`
+- `always`: auto-approve (audit log records all)
 
-- `never` — every mutation tool returns a structured refusal. Mutation tools are still listed in `tools/list`.
-- `confirm` (default) — every mutation gates on operator confirmation surfaced per `[mcp].confirm_via`.
-- `always` — every mutation auto-approves. The audit log still records every call.
-
-The `[mcp].confirm_via` value controls how the confirmation prompt reaches you:
-
-- `auto` (default since v0.16 Phase 7c) — **resolves at runtime per request**:
-  1. If the MCP client declared the elicitation capability at the initialize handshake → uses `Elicitation`.
-  2. Else if `stdin` is a TTY (server launched standalone from an interactive shell) → uses `Tty`.
-  3. Else refuses the mutation with a clear error pointing at remediation.
-- `elicitation` — MCP server→client elicit RPC. Modal renders in the IDE's native UI. **Only works on clients that advertised the elicitation capability** (Claude Code in v0.16).
-- `tty` — Prompt on `/dev/tty`. **Deadlocks inside TUI host IDEs** that own the controlling terminal (Claude Code, Cline, OpenCode TUI, Codex REPL). Safe for standalone `secretenv mcp serve` from an interactive shell.
-- `notification` — Desktop notification (planned, currently returns an error).
-- `none` — no confirmation surface; equivalent to `allow_mutations = "always"` but emitted as a distinct flag in the audit log.
+**`[mcp].confirm_via` method:**
+- `auto` (default v0.16+), resolves per request:
+  1. Client advertised elicitation at initialize → use `Elicitation` (modal)
+  2. Else if `stdin` is TTY → use `Tty` prompt
+  3. Else refuse with remediation hint
+- `elicitation`: MCP server→client modal (only works if client advertised; Claude Code v0.16)
+- `tty`: `/dev/tty` prompt (deadlocks in TUI host IDEs: Claude Code, Cline, OpenCode TUI, Codex REPL; safe standalone)
+- `notification`: desktop notification (planned; errors currently)
+- `none`: no surface (equivalent to `always`; audit log records as distinct flag)
 
 ### Per-IDE policy override
 
-Operators scope the override to a specific IDE's `mcpServers` args block rather than weakening their global config. The setup helper auto-emits this for IDEs that need it:
+Scope overrides to a specific IDE's `mcpServers` args block (not global config):
 
 ```json
 "mcpServers": {
@@ -145,9 +139,7 @@ Operators scope the override to a specific IDE's `mcpServers` args block rather 
 }
 ```
 
-When this server spawns, it reads `[mcp].allow_mutations = "confirm"` from your global config (the safer default), then applies the CLI override to bump it to `always` **for this subprocess only**. Other IDEs (Claude Code, etc.) spawn the binary without the flag and stay on the safer policy.
-
-The override is logged via `tracing::info!`:
+Server reads global `[mcp].allow_mutations = "confirm"`, then CLI flag bumps to `always` **for this subprocess only**. Other IDEs spawn without the flag and stay safer. Logged:
 
 ```
 INFO policy override from CLI flag: allow_mutations = Always (was Confirm in config)
@@ -157,7 +149,7 @@ INFO policy override from CLI flag: allow_mutations = Always (was Confirm in con
 
 ## Mutation audit log
 
-Every mutation tool call writes one JSON-Lines entry to `$XDG_STATE_HOME/secretenv/mcp-mutations.log` (or platform equivalent — `~/.local/state/` on Linux, `~/Library/Application Support/` on macOS, `%LOCALAPPDATA%` on Windows).
+Every mutation writes JSON-Lines to `$XDG_STATE_HOME/secretenv/mcp-mutations.log` (`~/.local/state/` Linux, `~/Library/Application Support/` macOS, `%LOCALAPPDATA%` Windows):
 
 ```json
 {
@@ -171,64 +163,56 @@ Every mutation tool call writes one JSON-Lines entry to `$XDG_STATE_HOME/secrete
 }
 ```
 
-`operator_decision` is one of:
+**`operator_decision`:** `approved` (clicked Accept / typed `y`) | `denied` (clicked Decline / typed `n`) | `timeout` (30s no response) | `autoapproved` (policy=`always`/per-IDE override) | `policy_refusal` (Auto resolver found no surface).
 
-- `approved` — operator clicked Accept in the elicitation modal or typed `y` at the TTY prompt
-- `denied` — operator clicked Decline / Cancel or typed `n`
-- `timeout` — operator did not respond within 30s
-- `autoapproved` — policy was `always` (or per-IDE override; see above) — no operator gate fired
-- `policy_refusal` — policy refused outright (e.g. `Auto` resolver found no usable surface)
+File created mode `0o600` (operator-only). Tampering protection is operator's responsibility.
 
-The file is created mode `0o600` (operator-only). Tampering protection is operator's responsibility: store on a non-shared filesystem, ship to a write-once log shipper if needed.
-
-**`mcp_client_id`** resolves from the rmcp `initialize` handshake's `clientInfo.name` (landed v0.16.1 F-7). Falls back to `"unknown"` only when peer info is unavailable during the handshake itself — never inside a tool handler.
+**`mcp_client_id`** from rmcp `initialize` handshake `clientInfo.name` (v0.16.1+). Falls back to `"unknown"` only if handshake unavailable.
 
 ---
 
 ## Tool disabling
-
-To remove specific tools from the inventory (e.g. ban `gen_password` in a production environment):
 
 ```toml
 [mcp]
 disabled_tools = ["gen_password", "redact_file"]
 ```
 
-Disabled tools are absent from BOTH `tools/list` AND dispatch — the agent literally cannot see or invoke them.
+Disabled tools are absent from `tools/list` and dispatch. Agents cannot see or invoke them.
 
 ---
 
 ## Disable / enable the server
 
 ```bash
-secretenv mcp disable           # indefinite — sentinel at $XDG_CONFIG_HOME/secretenv/mcp-disabled
+secretenv mcp disable              # indefinite (sentinel at $XDG_CONFIG_HOME/secretenv/mcp-disabled)
 secretenv mcp disable --duration 2h
-secretenv mcp enable            # remove the sentinel
+secretenv mcp enable               # remove sentinel
 ```
 
-When the sentinel is present, every `mcp serve` invocation exits immediately with a clear stderr message (no transport bind, no tool registration). Useful for incident response or maintenance windows where you want to block all IDEs from invoking secretenv without removing the per-IDE config files.
+Sentinel present: `mcp serve` exits immediately with clear message (no transport, no tools). Useful for incidents or maintenance without removing per-IDE configs.
 
 ---
 
 ## Security model
 
-The full SEC-INV catalog is at `kb/wiki/security-invariants.md`. The v0.16-specific guarantees:
+The MCP server enforces these structural security guarantees:
 
-- **SEC-INV-02:** The `secretenv-mcp` crate **structurally cannot construct, deserialize, or serialize** a `Secret<T>`. Three CI gates enforce this: clippy `disallowed-types`, `tests/boundary_test.rs` compile-time assertions, and the Phase 8 live-smoke value-grep. The Cargo feature `value-access` is documentation, not the structural guarantee.
-- **SEC-INV-12:** `agent_reason` is recorded verbatim in the audit log but NEVER included in the JSON-RPC tool-result payload returned to the agent NOR set as an OTel span attribute. Operator-facing surfaces (TTY prompt body, elicitation modal body) MAY render it so the operator can evaluate intent.
-- **SEC-INV-15:** `gen_password` response carries **no value bytes** — only metadata (alias name, charset, length, success/failure outcome).
-- **SEC-INV-20:** Backend URIs do NOT appear in `Err::Display` paths flowing into MCP response `error_message` fields. Two-layer defense: source-side cleanup of `with_context` strings + `safe_error_message()` runtime scrubber that rewrites `scheme://body` → `scheme://[redacted]`. Compile-time regression guard in `tests/uri_not_in_error_message.rs::no_raw_anyhow_format_in_tool_module` catches future re-introduction.
+- **No `Secret<T>` in the MCP crate:** `secretenv-mcp` structurally cannot construct/deserialize/serialize `Secret<T>`. Enforced by clippy `disallowed-types`, `tests/boundary_test.rs` compile-time assertions, and a live-smoke value-grep. The Cargo feature `value-access` is documentation only.
+- **`agent_reason` is audit-only:** recorded in the audit log but NEVER in the tool-result JSON-RPC payload or OTel attributes. Operator surfaces (TTY/elicitation modal) MAY render it for intent evaluation.
+- **No password bytes in `gen_password` output:** the response carries only metadata (alias, charset, length, outcome), never value bytes.
+- **No backend URIs in error messages:** backend URIs are absent from `Err::Display` in MCP response `error_message` fields. Two-layer defense: source-side `with_context` cleanup plus a `safe_error_message()` scrubber (`scheme://body` → `scheme://[redacted]`). A compile-time guard in `tests/uri_not_in_error_message.rs` prevents regression.
 
 ---
 
 ## Known limitations
 
-See the `Known limitations` section of [`CHANGELOG.md`](../../CHANGELOG.md) for the full catalog. Summary:
+Full catalog in [`CHANGELOG.md`](../../CHANGELOG.md). Key items:
 
-- **Only Claude Code has working MCP elicitation.** All 5 other tested non-Claude IDEs (Gemini, VS Code Copilot, Cline, Codex, OpenCode) need the per-IDE `--allow-mutations=always` override. Upstream PRs queued.
-- **Per-IDE override has no user-scope opt-out by default.** A hostile workspace `.mcp.json` can silently weaken your global mutation policy. Mitigated by IDE-side workspace-trust prompts + audit log. Set `[mcp].allow_cli_overrides = false` in your global config to block all per-IDE `--allow-mutations` overrides (shipped v0.18 F-3).
-- **TTY TOCTOU + migrate dual-control collapse + dry-run reconnaissance gate** — Phase 7 audit M-7/M-9/M-12 carry-forwards.
-- **No `--merge` mode in setup helper** for IDEs with existing settings.json. Use `jq`.
+- **Only Claude Code has working elicitation.** All other IDEs (Gemini, VS Code Copilot, Cline, Codex, OpenCode) need per-IDE `--allow-mutations=always` override (upstream PRs queued).
+- **Per-IDE override has no user opt-out by default.** Hostile workspace `.mcp.json` can weaken global policy. Mitigated by IDE-side workspace-trust + audit log. Set `[mcp].allow_cli_overrides = false` to block per-IDE overrides.
+- **TTY TOCTOU, migrate dual-control collapse, and dry-run reconnaissance gate**: carry-forward hardening for a future cycle.
+- **No `--merge` mode in setup helper** for existing settings.json. Use `jq`.
 
 ---
 
@@ -236,21 +220,19 @@ See the `Known limitations` section of [`CHANGELOG.md`](../../CHANGELOG.md) for 
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `policy_refusal: no usable confirmation surface` | Client doesn't advertise MCP elicitation + stdin isn't a TTY | Add `--allow-mutations always` to that IDE's args, OR run from a shell terminal directly |
-| Mutation times out after 30s | Elicitation request sent but client didn't render the modal | Same fix as above. Likely F-11 (Copilot empty-schema) if VS Code Copilot. |
-| UI freezes when triggering a mutation | `confirm_via = "tty"` deadlocked the TUI host | Set `confirm_via = "auto"` (the default since v0.16) — the resolver picks the safe path |
-| `secretenv: command not found` in IDE logs | IDE spawned with a sparser `$PATH` than your shell | Re-run `secretenv mcp setup --ide <key> --binary $(which secretenv)` and re-apply the config |
-| macOS: binary SIGKILL on first run | Unsigned binary copied via `cp` (not via Homebrew which signs on install) | `codesign --remove-signature ~/.cargo/bin/secretenv && codesign --sign - ~/.cargo/bin/secretenv` |
-| Tool descriptions truncated in IDE | IDE's MCP UI has a per-tool character budget | Cosmetic; full descriptions are in the `tools/list` response — IDE UI is the limitation |
-| `--allow-mutations=always` reads as a security loss | It is, scoped to that IDE. Audit log still captures every mutation; backend access controls are unaffected | Document the trust trade-off in your team's onboarding; remove the flag when the IDE adds elicitation upstream |
+| `policy_refusal: no usable confirmation surface` | No MCP elicitation + stdin not TTY | Add `--allow-mutations always` to IDE args OR run from shell |
+| Mutation timeout after 30s | Elicitation sent, client didn't render modal | Same. Likely the Copilot empty-schema issue if VS Code. |
+| UI freezes on mutation | `confirm_via = "tty"` deadlocked TUI host | Set `confirm_via = "auto"` (default v0.16) |
+| `secretenv: command not found` in IDE logs | IDE spawned with sparse `$PATH` | Re-run `secretenv mcp setup --ide <key> --binary $(which secretenv)` |
+| macOS binary SIGKILL on first run | Unsigned binary (copied via `cp`, not Homebrew) | `codesign --remove-signature ~/.cargo/bin/secretenv && codesign --sign - ~/.cargo/bin/secretenv` |
+| Tool descriptions truncated | IDE UI character budget per tool | Cosmetic; full descriptions in `tools/list` response |
+| `--allow-mutations=always` as security loss | True, scoped to that IDE; audit log + backend controls unaffected | Document trust trade-off in onboarding; remove when IDE adds elicitation |
 
 ---
 
 ## See also
 
-- [`docs/reference/redact.md`](redact.md) — the `redact_file` tool wraps `secretenv redact`
-- [`docs/reference/migrate.md`](migrate.md) — the `migrate_alias` tool wraps `secretenv registry migrate`
-- [`docs/reference/configuration.md`](configuration.md) — full `[mcp]` config section reference
-- [`kb/wiki/build-plan-v0.16-mcp.md`](https://github.com/TechAlchemistX/secretenv/blob/main/kb/wiki/build-plan-v0.16-mcp.md) — v0.16 design + implementation walkthrough
-- [`kb/wiki/v0.16-phase-8b-checklist.md`](https://github.com/TechAlchemistX/secretenv/blob/main/kb/wiki/v0.16-phase-8b-checklist.md) — per-IDE manual gate sign-off
-- [`kb/wiki/audits/2026-05-24-v0.16-phase9-*.md`](https://github.com/TechAlchemistX/secretenv/tree/main/kb/wiki/audits) — Phase 9 release-prep audit trio
+- [Redaction](redact.md): the `redact_file` tool wraps `secretenv redact`
+- [Registry migrate](migrate.md): the `migrate_alias` tool wraps `secretenv registry migrate`
+- [CLI Reference: `secretenv mcp`](cli-reference-full.md#secretenv-mcp): the `mcp` subcommands and flags
+- [Security & threat model](../security.md): the MCP no-leak invariants in context

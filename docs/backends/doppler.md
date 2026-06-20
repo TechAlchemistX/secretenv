@@ -1,30 +1,31 @@
 # Doppler
 
-**Type:** `doppler`
-**CLI required:** [`doppler`](https://docs.doppler.com/docs/install-cli) v3+
-**URI scheme:** `<instance-name>:///<project>/<config>/<secret>` (full) or `<instance-name>:///<secret>` (short, when config supplies defaults). No fragment directives supported.
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `doppler v3.76.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `doppler`
+- **CLI required:** [`doppler`](https://docs.doppler.com/docs/install-cli)
+- **CLI version:** v3+
+- **URI scheme:** `<instance-name>:///<project>/<config>/<secret>` (full) or `<instance-name>:///<secret>` (short, when config supplies defaults). No fragment directives supported.
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `doppler v3.76.0` on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
 > SecretEnv injects secrets from any backend as environment variables. This page covers the `doppler` backend. New here? See the [overview](/).
 
-Doppler is a SaaS secrets manager with a clean CLI surface. Pick Doppler when you want multi-project secret scoping, team-friendly dashboards, and integrated audit logs. The `doppler` CLI resolves auth from three sources: an explicit `DOPPLER_TOKEN` env var, the local keychain entry from `doppler login`, or an instance-scoped token via config.
+Doppler is a SaaS secrets manager with a clean CLI. The `doppler` CLI resolves auth from `DOPPLER_TOKEN` env var, `doppler login` keychain, or config-scoped token.
 
 ## When to pick this
 
-- **Multi-project workflows:** named projects + environments (configs) let one machine scope to different teams/products
-- **Developer-friendly dashboard:** interactive exploration via the browser UI
-- **Audit + rotation ready:** Doppler tracks changes and supports scheduled secret rotation
-- **CI/CD with service tokens:** mint a scoped token per pipeline, no keychain needed
+- **Multi-project workflows:** named projects + environments scope one machine to different teams
+- **Developer-friendly dashboard:** interactive UI exploration
+- **Audit + rotation:** tracks changes, supports scheduled rotation
+- **CI/CD:** mint scoped service tokens per pipeline, no keychain needed
 
 ## Configuration
 
 ```toml
 [backends.doppler-prod]
 type             = "doppler"
-doppler_project  = "acme"           # optional — short-form default
-doppler_config   = "prd"            # optional — short-form default (both-or-neither)
-doppler_token    = "dp.st.prd.…"    # optional — override $DOPPLER_TOKEN
+doppler_project  = "acme"           # optional, short-form default
+doppler_config   = "prd"            # optional, short-form default (both-or-neither)
+doppler_token    = "dp.st.prd.…"    # optional, override $DOPPLER_TOKEN
 ```
 
 ### Fields
@@ -58,19 +59,19 @@ doppler-prod:///acme/prd/STRIPE_API_KEY
 instance name   proj cfg secret name
 ```
 
-Full form requires three non-empty segments: `<project>/<config>/<secret>`. Short form (one segment) requires both `doppler_project` and `doppler_config` in config. Doppler secret names follow `[A-Z_][A-Z0-9_]*` (all-caps, underscores).
+Full form requires three segments: `<project>/<config>/<secret>`. Short form (one segment) requires both `doppler_project` and `doppler_config` in config. Secret names follow `[A-Z_][A-Z0-9_]*` (all-caps, underscores).
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify your setup with:** `secretenv doctor`. Green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
 Precedence (highest wins):
 
-1. **`doppler_token` config field** — instance-scoped, via `DOPPLER_TOKEN` env
-2. **`$DOPPLER_TOKEN` env var** — from parent shell
-3. **`doppler login` keychain** — cached login token
+1. **`doppler_token` config field**, via `DOPPLER_TOKEN` env
+2. **`$DOPPLER_TOKEN` env var**, from parent shell
+3. **`doppler login` keychain**, cached login token
 
-Service tokens (`dp.st.<config>.*`) are scoped to a project + config at mint time. Ensure your token's scope matches the URI you're reading.
+Service tokens (`dp.st.<config>.*`) are scoped to a project + config at mint. Verify token scope matches the URI.
 
 ## doctor Output
 
@@ -97,13 +98,13 @@ No fragment directives. Any `#...` fragment is rejected at URI-parse time.
 
 ## History API support
 
-Not implemented. The `doppler` CLI (v3.76.0) has no per-secret version-history subcommand; version history is available in the Doppler Dashboard and REST API. Open the secret in the dashboard to view its version history.
+Not implemented. The `doppler` CLI has no per-secret version-history subcommand. Open the secret in the dashboard to view history.
 
 ## Limitations
 
-- **No native stdin form for set.** `doppler secrets set` reads the value through argv. The backend gates writes behind `doppler_unsafe_set = true` to signal this risk.
-- **`list()` synthetic keys filtered.** `doppler secrets download` injects `DOPPLER_PROJECT`, `DOPPLER_CONFIG`, `DOPPLER_ENVIRONMENT` keys. These are filtered out of registry-source enumerations automatically.
-- **No folder scoping.** Doppler organizes by project + config only. Secrets don't nest in folders; use naming conventions (underscores) if needed.
+- **No stdin set.** `doppler secrets set` reads the value through argv. Gated behind `doppler_unsafe_set = true`.
+- **`list()` synthetic keys filtered.** `doppler secrets download` injects `DOPPLER_PROJECT`, `DOPPLER_CONFIG`, `DOPPLER_ENVIRONMENT` keys. Automatically filtered from registry-source enumerations.
+- **No folder scoping.** Doppler organizes by project + config only. Use naming conventions (underscores) for nested structure.
 
 ## Examples
 
@@ -162,19 +163,19 @@ Then: `secretenv run --registry doppler-prod:///acme/prd/REGISTRY -- npm start`
 ## Troubleshooting
 
 **"Doppler Error: Unauthorized: token not found"**
-The token is malformed, revoked, or the workspace changed. Run `doppler me --json` to verify the token. Check `doppler_token` and `$DOPPLER_TOKEN` match a valid token.
+Token is malformed, revoked, or workspace changed. Run `doppler me --json` to verify.
 
 **"Could not find requested secret: <name>"**
-The secret doesn't exist in the scoped project + config. Verify the project and config are correct via `secretenv doctor`.
+Secret doesn't exist in the scoped project + config. Verify via `secretenv doctor`.
 
 **"Unexpected HTTP response 401 Unauthorized"**
-Token scope mismatch. Service tokens are locked to a project + config at mint. Verify your token's scope with `doppler me --json`.
+Token scope mismatch. Service tokens lock to a project + config at mint. Verify scope with `doppler me --json`.
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
-- [Doppler CLI reference](https://docs.doppler.com/docs/cli) — authoritative Doppler docs
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md), `#json-key`, `#version`, etc. on other backends
+- [Doppler CLI reference](https://docs.doppler.com/docs/cli), authoritative Doppler docs
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

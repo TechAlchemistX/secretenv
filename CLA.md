@@ -1,14 +1,14 @@
 # SecretEnv Contributor License Agreement (CLA)
 
-**Version 1.0 — effective 2026-04-19.**
+**Version 1.0, effective 2026-04-19.**
 
 This Contributor License Agreement ("**Agreement**") is entered into between **TechAlchemistX** (the "**Project**", operated by Mandeep Patel) and **You** (the contributor).
 
-By submitting a Contribution (defined below) to the Project — whether as a Pull Request, patch, comment, or any other form accepted by the Project — You agree to the terms below. This Agreement applies to all Contributions You have ever submitted and all Contributions You will submit in the future, unless superseded in writing.
+By submitting a Contribution (defined below) to the Project, whether as a Pull Request, patch, comment, or any other form accepted by the Project, You agree to the terms below. This Agreement applies to all Contributions You have ever submitted and all Contributions You will submit in the future, unless superseded in writing.
 
 ## 1. Definitions
 
-- **"Contribution"** means any original work of authorship — source code, documentation, configuration, test, asset, or other creative material — that You intentionally submit to the Project for inclusion in, or documentation of, any of the Project's products or artifacts.
+- **"Contribution"** means any original work of authorship (source code, documentation, configuration, test, asset, or other creative material) that You intentionally submit to the Project for inclusion in, or documentation of, any of the Project's products or artifacts.
 - **"Submit"** means any form of electronic, verbal, or written communication sent to the Project, including code pushed to the Project's repositories, Pull Requests opened against those repositories, issue comments containing code, email, and communication on Project-operated communication channels, but excluding communication conspicuously marked as "Not a Contribution."
 - **"You"** (or "Your") means the individual or legal entity entering into this Agreement. If You are entering into this Agreement on behalf of a legal entity, You represent that You are authorized to bind that entity.
 
@@ -26,7 +26,7 @@ If any entity institutes patent litigation against You or any other entity (incl
 
 You acknowledge that the Project is currently licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0-only)** to downstream users.
 
-You further grant the Project the right to **relicense Your Contribution** under any other license of the Project's choosing — including but not limited to permissive licenses (MIT, Apache-2.0), other copyleft licenses (GPLv3, LGPLv3), or proprietary/commercial licenses — and to sublicense under any such license. This enables the Project to offer dual-licensed commercial terms to organizations that require them, while continuing to distribute under AGPL-3.0-only to the community at large.
+You further grant the Project the right to **relicense Your Contribution** under any other license of the Project's choosing, including but not limited to permissive licenses (MIT, Apache-2.0), other copyleft licenses (GPLv3, LGPLv3), or proprietary/commercial licenses, and to sublicense under any such license. This enables the Project to offer dual-licensed commercial terms to organizations that require them, while continuing to distribute under AGPL-3.0-only to the community at large.
 
 **You retain full ownership of Your Contribution.** This Agreement is a license grant, not a copyright assignment. You may continue to use, modify, and relicense Your own Contribution outside the Project under any terms You choose.
 
@@ -50,7 +50,7 @@ You signify agreement to this CLA by doing all of the following when submitting 
 1. **Sign off every commit in Your contribution** with the `Signed-off-by: Your Name <your-email@example.com>` trailer. This trailer attests that You have the right to submit the Contribution and that You agree to this CLA. Use `git commit --signoff` (or `-s`) to add it automatically.
 2. **On Your first Contribution to the Project**, add Your name + email to the bottom of [`AUTHORS.md`](AUTHORS.md) in the same Pull Request, formatted as:
    ```
-   - Your Name <your-email@example.com> — first contributed YYYY-MM-DD
+   - Your Name <your-email@example.com>, first contributed YYYY-MM-DD
    ```
    This serves as an explicit, timestamped record of assent.
 3. **Continue signing off every subsequent Contribution.** A missing `Signed-off-by` trailer is treated as an absent CLA and blocks merge.

@@ -1,6 +1,6 @@
 # Fragment Vocabulary
 
-SecretEnv URIs are shaped `<instance-name>://<path>[#<fragment>]`. The optional `#<fragment>` suffix carries per-request directives — which JSON field to extract, which version to pin, and so on. Each backend declares the directive keys it understands; the URI layer enforces a single canonical grammar everyone agrees on.
+SecretEnv URIs are shaped `<instance-name>://<path>[#<fragment>]`. The optional `#<fragment>` suffix carries per-request directives (JSON field extraction, version pinning, etc.). Each backend declares which directive keys it recognizes; the URI layer enforces a single canonical grammar.
 
 ## Canonical grammar
 
@@ -21,46 +21,45 @@ azure-prod://my-secret#version=12345678-abcd-1234-ef56-9876
 
 ## Rules
 
-- **Every directive is `key=value`.** No plain-string shorthand; no flags-without-values.
-- **Keys are lowercase kebab-case** — letter-led, then letters/digits/hyphens. `json-key`, `version2`, and `max-age` all parse; `JsonKey`, `json_key`, `1version`, and `json.key` do not.
-- **Values are non-empty** and must not contain `,` or `=`. Spaces, dots, hyphens, and most punctuation are fine.
-- **Separate multiple directives with a single comma.** No whitespace around the comma; no trailing or leading commas.
-- **Each key appears at most once.** A duplicate key is a hard error (no implicit merging).
-- **Directive semantics are backend-local.** The URI layer enforces the grammar; each backend decides which keys it accepts and what their values mean. A key recognized by one backend is not automatically recognized by another.
+- **Every directive is `key=value`.** No shorthand; no flags-without-values.
+- **Keys are lowercase kebab-case:** letter-led, then letters/digits/hyphens only. `json-key`, `version2`, `max-age` OK; `JsonKey`, `json_key`, `1version`, `json.key` fail.
+- **Values are non-empty,** must not contain `,` or `=`. Spaces, dots, hyphens, most punctuation OK.
+- **Separate directives with single comma.** No whitespace around comma; no trailing/leading commas.
+- **Each key appears at most once.** Duplicates are hard errors.
+- **Directive semantics are backend-local.** URI layer enforces grammar; each backend decides which keys it accepts.
 
-## Directive registry
+## Directive Registry
 
-The registry lists every directive key SecretEnv backends recognize today. An unrecognized directive on a backend is a hard error that lists what is recognized.
+Lists every directive key SecretEnv backends recognize. Unrecognized directives are hard errors.
 
 | Backend | Directive | Meaning | Since |
 |---|---|---|---|
 | `aws-secrets` | `json-key` | Extract a top-level JSON field from the secret body. Value is the field name. | v0.2.1 |
 | `gcp` | `version` | Pin a specific GCP Secret Manager version. Positive integer or `latest`. `latest` is equivalent to no fragment. | v0.3 |
 | `azure` | `version` | Pin a specific Azure Key Vault secret version. 32-character lowercase hex string (server-generated) or `latest`. | v0.3 |
-| `keeper` | `field` | Select a named Keeper record field. Case-insensitive — matches custom-field label first, then typed-field label, then typed-field type name. Without this directive the `password` field is returned. Note: the `keeper` backend parses this directive directly from the raw fragment rather than through the canonical grammar parser; the directive key still follows the `key=value` shape. | v0.8 |
+| `keeper` | `field` | Select a named Keeper record field. Case-insensitive, matches custom-field label first, then typed-field label, then typed-field type name. Without this directive the `password` field is returned. Note: the `keeper` backend parses this directive directly from the raw fragment rather than through the canonical grammar parser; the directive key still follows the `key=value` shape. | v0.8 |
 
-## Error reporting
+## Error Reporting
 
-Every fragment-grammar error quotes the full URI verbatim so you can grep your logs or config for the offender:
+All fragment-grammar errors quote the full URI verbatim for log grepping:
 
 ```
 fragment '#password' on URI 'aws-secrets-prod:///db-creds#password' uses legacy
-plain-string shorthand; rewrite as '#<directive>=<value>' (for example, the
-aws-secrets backend now requires '#json-key=password'). See
-docs/fragment-vocabulary.md
+plain-string shorthand; rewrite as '#<directive>=<value>' (for example,
+aws-secrets requires '#json-key=password'). See docs/fragment-vocabulary.md
 ```
 
-## Migrating from v0.2.0
+## Migration from v0.2.0
 
-v0.2.0 shipped the aws-secrets backend with a plain-string shorthand: `#password` meant "extract the `password` JSON field." That form is rejected in v0.2.1 with a migration hint pointing at the canonical replacement.
+v0.2.0 shipped plain-string shorthand (`#password` = extract `password` field). Rejected in v0.2.1+:
 
 | v0.2.0 (removed) | v0.2.1+ (canonical) |
 |---|---|
 | `aws-secrets-prod:///db#password` | `aws-secrets-prod:///db#json-key=password` |
 | `aws-secrets-prod:///db#host` | `aws-secrets-prod:///db#json-key=host` |
 
-If you see `ShorthandRejected` in your logs, your URI uses the old form — rewrite it using the table above.
+If you see `ShorthandRejected` in logs, rewrite using the table above.
 
-## Why this shape
+## Why This Shape
 
-Earlier internal drafts let each backend define its own fragment shape. That was cheap on day one but it forces every user, every backend contributor, and every IDE autocomplete story to re-learn the grammar per backend. A single URI-layer grammar with a backend-local directive registry scales better: new backends pick well-defined keys without re-litigating punctuation, old backends don't drift, and tooling can validate fragments before a single command reaches the wire.
+Earlier drafts let each backend define its own grammar. One canonical URI-layer grammar with backend-local directive registry scales better: new backends reuse well-defined keys, old backends don't drift, and tooling validates fragments early.

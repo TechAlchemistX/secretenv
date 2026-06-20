@@ -1,55 +1,36 @@
 # CI/CD: GitHub Actions
 
-Reference workflow showing SecretEnv in a GitHub Actions job. Uses
-OIDC-assumed AWS credentials (no long-lived secrets stored in GitHub)
-and `SECRETENV_REGISTRY` to point the binary at a registry without
-needing a `config.toml` on the runner.
+Reference workflow. Uses OIDC-assumed AWS credentials (no long-lived secrets in GitHub) and `SECRETENV_REGISTRY` for the registry (no `config.toml` on runner).
 
-## When to use this
+## When to use
 
-- Deploy jobs that run on ephemeral GitHub runners.
-- Any pipeline that calls a command needing cloud secrets — tests,
-  migrations, smoke tests.
-- Want to stop copy-pasting `with: env:` blocks everywhere.
+- Deploy jobs on ephemeral GitHub runners
+- Any pipeline calling commands with cloud secrets (tests, migrations, smoke tests)
+- Stop copy-pasting `with: env:` blocks
 
-## What's in this directory
+## Files
 
-- `deploy.yml` — canonical workflow. Copy to
-  `.github/workflows/deploy.yml` in your repo.
-- `secretenv.toml` — matching project manifest.
+- `deploy.yml`: workflow template; copy to `.github/workflows/deploy.yml`
+- `secretenv.toml`: matching project manifest
 
-## Key lines in the workflow
+## Key workflow lines
 
-1. `aws-actions/configure-aws-credentials@v4` assumes the deploy role
-   via OIDC. No static AWS keys stored in GitHub.
-2. `curl -sfS https://secretenv.io/install.sh | sh` installs the binary
-   (or use `cargo install secretenv` or the prebuilt tarball from the
-   GH Release).
-3. `SECRETENV_REGISTRY: aws-ssm:///secretenv/registry` tells SecretEnv
-   where the alias registry lives — no `config.toml` needed.
-4. `secretenv run -- ./deploy.sh` executes your command with secrets
-   injected as env vars from resolved aliases.
+1. `aws-actions/configure-aws-credentials@v4`: assumes deploy role via OIDC
+2. `curl -sfS https://secretenv.io/install.sh | sh`: installs binary
+3. `SECRETENV_REGISTRY: aws-ssm:///secretenv/registry`: registry location (no `config.toml` needed)
+4. `secretenv run -- ./deploy.sh`: injects secrets as env vars from resolved aliases
 
-## Why not just `secrets.STRIPE_KEY`?
+## Why not GitHub `secrets.STRIPE_KEY`?
 
-You can — GitHub Actions secrets work. The SecretEnv advantage shows
-up when:
+GitHub secrets work. SecretEnv shines when:
+- Same values used locally and in CI (one source of truth)
+- Multiple deploy jobs sharing 8 secrets (no `env:` copy-paste)
+- Rotation in AWS/1Password (GitHub secrets don't update)
 
-- The same secret values are used locally AND in CI (one source of
-  truth, not duplicated across GitHub + your laptop).
-- You have three deploy jobs that all need the same 8 secrets (no more
-  `env:` block copy-paste).
-- Rotation happens in AWS/1Password — no GitHub secret updates needed.
+## IAM role permissions
 
-## What the deploy role needs
+`github-actions-deploy` needs:
+- `ssm:GetParameter` / `ssm:GetParameters` on `arn:aws:ssm:*:*:parameter/secretenv/*` + prod alias paths
+- Whatever your deploy script needs (ECS, S3, etc.)
 
-The IAM role `github-actions-deploy` needs:
-
-- `ssm:GetParameter` / `ssm:GetParameters` on
-  `arn:aws:ssm:*:*:parameter/secretenv/*` + the prod paths your aliases
-  point to.
-- Whatever your actual deploy script needs (ECS task registration,
-  S3 upload, etc.).
-
-No SecretEnv-specific IAM — the permissions are just "can this role
-read the parameters the registry aliases to?".
+No SecretEnv-specific IAM: just "can this role read the parameters the aliases point to?"

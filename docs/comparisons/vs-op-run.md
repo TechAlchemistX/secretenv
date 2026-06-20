@@ -1,47 +1,45 @@
 # SecretEnv vs single-backend wrappers (`op run`, `doppler run`, `infisical run`)
 
-**TL;DR.** `op run` (1Password), `doppler run` (Doppler), `infisical run` (Infisical), and similar single-backend wrappers are **excellent if their backend is your only secrets backend.** They're tightly integrated with the backend's UI, ergonomics, and identity model. SecretEnv is for the case where your team uses two or more — at which point the single-backend wrappers stop helping and start hurting (one wrapper per repo, hardcoded backend URIs, no migration story).
+**TL;DR.** `op run`, `doppler run`, `infisical run`, and similar single-backend wrappers are excellent if that backend is your only source. SecretEnv is for teams with 2+ backends, at which point single-backend wrappers create friction (one wrapper per repo, hardcoded URIs, no migration path).
 
 ---
 
 ## What single-backend wrappers do well
 
-- Native UX — `op://` URIs, `doppler.yaml` config, `infisical secrets get` all feel like part of their parent product
-- Tight identity integration — 1Password's biometric unlock, Doppler's fine-grained access tokens, Infisical's machine identities
-- First-class web UIs for managing secrets and access
-- Vendor support, audit logs, rotation orchestration as a service (where applicable)
+- Native UX (`op://` URIs, `doppler.yaml` config) integrated with the parent product
+- Tight identity integration (biometric unlock, fine-grained tokens, machine identities)
+- Web UIs for secret management
+- Vendor support, audit logs, rotation orchestration
 
-If you're 100% on one backend and don't expect that to change, the matching wrapper is probably the right answer.
+If you're 100% on one backend with no migration expected, the matching wrapper is the right answer.
 
 ---
 
 ## Where they fall short for multi-backend teams
 
-The fundamental constraint: **single-backend wrappers assume they are the only wrapper.** When you have AWS SSM for infra credentials AND 1Password for team secrets AND Vault for service tokens, you need either:
+The fundamental constraint: **single-backend wrappers assume they are the only wrapper.** When you have AWS SSM for infra, 1Password for team secrets, and Vault for service tokens, you need either:
 
-- Three different wrappers, manually composed in shell scripts per repo
+- Three wrappers, manually composed per repo
 - A homegrown orchestration layer
 - A multi-backend tool (SecretEnv, fnox, Pulumi ESC)
 
-| Property | `op run` (and similar) | SecretEnv |
+| Property | SecretEnv | `op run` (and similar) |
 |---|---|---|
-| Multi-backend in one invocation | No (single backend) | Yes (15 backends, parallel fetch) |
-| URIs in repo | `op://vault/item/field` (or `dp.` env vars) | `secretenv://alias-name` (no backend info) |
-| Migrating from this backend to another | Touch every repo that uses the wrapper | One `registry set` |
-| Multi-account in one workflow | Limited (depends on wrapper) | Native — name backend instances per account |
-| CI/CD pattern | Wrapper-specific | One pattern (`SECRETENV_REGISTRY` env var) for all backends |
+| Multi-backend in one invocation | Yes (15 backends, parallel fetch) | No (single backend) |
+| URIs in repo | `secretenv://alias-name` (no backend info) | `op://vault/item/field` (or `dp.` env vars) |
+| Migrating from this backend to another | One `registry set` | Touch every repo that uses the wrapper |
+| Multi-account in one workflow | Native: name backend instances per account | Limited (depends on wrapper) |
+| CI/CD pattern | One pattern (`SECRETENV_REGISTRY` env var) for all backends | Wrapper-specific |
 
 ---
 
 ## What SecretEnv loses by being multi-backend
 
-Honest:
+- **No backend-specific UX polish.** SecretEnv wraps CLIs; it doesn't add anything 1Password's browser extension or Doppler's web UI provide.
+- **No vendor support.** Breaks go to community channels, not 1Password Support.
+- **Generic error messages.** SecretEnv surfaces what the wrapped CLI says.
 
-- **No backend-specific UX polish.** SecretEnv talks to `op` / `doppler` / `infisical` via their CLIs; it doesn't add anything 1Password's browser extension or Doppler's web UI provide.
-- **No vendor support.** If something breaks at the wrapper level, you're on community channels, not 1Password Support.
-- **Generic error messages.** `op` knows what an "invalid item reference" is; SecretEnv mostly surfaces what the wrapped CLI says.
-
-If your only backend is 1Password and you love `op` — keep using `op run`. SecretEnv doesn't make you switch.
+If your only backend is 1Password and you love `op run`, keep using it. SecretEnv is not a replacement.
 
 ---
 

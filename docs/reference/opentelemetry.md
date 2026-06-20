@@ -1,8 +1,8 @@
 # OpenTelemetry
 
-SecretEnv emits OpenTelemetry traces and metrics for every secret resolution, backend probe, MCP tool call, redaction event, and migration. Telemetry is **opt-in** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, the OTel collector itself). With no endpoint configured, SecretEnv installs no exporter and has zero startup overhead.
+SecretEnv emits traces and metrics for secret resolution, backend probes, MCP tool calls, redactions, and migrations. Telemetry is **opt-in**: set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, Datadog, etc.). With no endpoint, SecretEnv installs no exporter and has zero startup overhead.
 
-This document is the **audit-facing contract**. Every attribute SecretEnv emits is enumerated below with an explicit ALLOW/DENY classification. The classifications are enforced at compile time: the typed `SecretEnvSpan` builder in `secretenv-telemetry` exposes one method per ALLOW attribute and no method for any DENY attribute. There is no `set_attribute(key, value)` escape hatch.
+This document is the **audit-facing contract**. Every emitted attribute has an explicit ALLOW/DENY classification enforced at compile time: the typed `SecretEnvSpan` builder exposes one method per ALLOW attribute and no generic `set_attribute` escape hatch.
 
 ---
 
@@ -24,7 +24,7 @@ SecretEnv does **not** require a collector to be useful. The `secretenv doctor -
 
 ## 2. Attribute schema
 
-The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEnvSpan` and may appear on emitted spans. **DENY** attributes have no setter and cannot be emitted; the typed builder enforces this at compile time.
+**ALLOW** attributes have typed setters on `SecretEnvSpan` and appear on spans. **DENY** attributes have no setter; compile-time enforcement prevents emission.
 
 ### 2.1 SecretEnv core
 
@@ -68,10 +68,10 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.backend.cli.version` | ALLOW | Useful for triage |
 | `secretenv.backend.cli.identity` | **DENY** | Account email / ARN |
 | `secretenv.backend.auth_method` | ALLOW | Closed enum: `env-token` / `cli-session` / `instance-role` / `service-account-key` / `oauth-refresh` / `none` / `unknown`; never the credential |
-| `secretenv.backend.probe.level` | ALLOW | Closed enum `l1-cli` / `l2-auth` / `l3-read` (per-backend probe depth, shared with the `backend.probe.count` metric). Distinct from `secretenv.doctor.check_level` (the doctor invocation mode). The run-path `secretenv.backend.probe` span emits `l3-read` (it wraps a real read; v0.20 Arch-W-2 will stage true L1/L2/L3 probing). |
+| `secretenv.backend.probe.level` | ALLOW | Closed enum `l1-cli` / `l2-auth` / `l3-read` (per-backend probe depth, shared with the `backend.probe.count` metric). Distinct from `secretenv.doctor.check_level` (the doctor invocation mode). The run-path `secretenv.backend.probe` span emits `l3-read` (it wraps a real read; v0.20 will stage true L1/L2/L3 probing). |
 | `secretenv.backend.probe.outcome` | ALLOW | Closed enum `ok` / `cli-missing` / `not-authenticated` / `registry-unreachable` / `timeout` / `unknown` (shared with the `backend.probe.count` metric) |
 | `secretenv.backend.error.kind` | ALLOW | Closed enum `SecretEnvErrorKind` |
-| `secretenv.backend.error.message` | **DENY by default** | Per-run opt-in via `--otel-include-error-detail`; even then, scrubbed via SEC-INV-20 before any emission |
+| `secretenv.backend.error.message` | **DENY by default** | Per-run opt-in via `--otel-include-error-detail`; even then, scrubbed before any emission |
 | `secretenv.backend.error.cli_stderr` | **DENY** | Raw stderr; topology + credential leak risk |
 | `secretenv.backend.fetch.outcome` | ALLOW | Operational |
 | `secretenv.backend.fetch.timeout_ms` | ALLOW | |
@@ -102,7 +102,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.resolution.latency_ms` | ALLOW | |
 | `secretenv.run.dry_run` | ALLOW | bool |
 | `secretenv.run.verbose` | ALLOW | bool |
-| `secretenv.run.command_name` | ALLOW | Basename of `argv[0]` only — any absolute or relative path prefix is stripped before emission to avoid leaking host filesystem layout (Phase 9b Sec F-1) |
+| `secretenv.run.command_name` | ALLOW | Basename of `argv[0]` only, any absolute or relative path prefix is stripped before emission to avoid leaking host filesystem layout |
 | `secretenv.run.command_argv` | **DENY** | Full argv may contain secrets |
 | `secretenv.run.env_var_count` | ALLOW | Aggregate |
 | `secretenv.run.env_var_value` | **DENY** | |
@@ -121,7 +121,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.redact.replacement_token` | ALLOW | The literal token written in place of the match |
 | `secretenv.redact.match_context` | ALLOW | `exact` / `substring` / `base64-form` |
 | `secretenv.redact.source` | ALLOW | Closed enum: `mode-a` (runtime pipe) / `mode-b` (post-hoc file rewrite). Distinguishes which redaction path scrubbed the match for percentile-by-mode triage. |
-| `secretenv.redact.alias_name` | **DENY in OTel** | SEC-INV-19. The alias name appears in the operator-local redaction token; it does **not** appear as an OTel attribute. (Resolves the conflict between the OTel spec's permissive position and the security invariant; security wins for OTel emission.) |
+| `secretenv.redact.alias_name` | **DENY in OTel** | The alias name appears in the operator-local redaction token; it does **not** appear as an OTel attribute. (Resolves the conflict between the OTel spec's permissive position and the security invariant; security wins for OTel emission.) |
 | `secretenv.redact.matched_value` / `.value_length` | **DENY** | |
 
 ### 2.7 Migrate
@@ -137,7 +137,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.migrate.value` | **DENY** | The migrated secret value never appears on any attribute; explicit fail-closed guard row |
 | `secretenv.migrate.phase` | ALLOW | Closed enum: `probe` / `read` / `write` / `pointer-flip` / `delete-source` |
 | `secretenv.migrate.outcome` | ALLOW | Closed enum |
-| `secretenv.migrate.partial_failure_stage` | ALLOW | Closed enum (same as `phase`); reserved — schema slot is locked but no typed setter is wired yet (a caller lands when the partial-failure path emits it) |
+| `secretenv.migrate.partial_failure_stage` | ALLOW | Closed enum (same as `phase`); reserved. Schema slot is locked but no typed setter is wired yet (a caller lands when the partial-failure path emits it) |
 | `secretenv.migrate.delete_source` | ALLOW | bool |
 | `secretenv.migrate.transaction_id` | ALLOW | UUIDv4 |
 | `secretenv.migrate.collapsed` | ALLOW | bool; `true` when the transaction collapses into a single backend-side atomic operation (no backend exposes this yet; emitted as `false` in v0.18) |
@@ -155,7 +155,7 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 | `secretenv.mcp.mutation_confirmed` | ALLOW | bool |
 | `secretenv.mcp.argument_alias_name` | ALLOW | Mutation audit needs this |
 | `secretenv.mcp.argument_uri` | **DENY** | URI topology |
-| `secretenv.mcp.argument_reason` | **DENY** | SEC-INV-12. Prompt-injection vehicle; appears in audit log only, never as an OTel attribute |
+| `secretenv.mcp.argument_reason` | **DENY** | Prompt-injection vehicle; appears in audit log only, never as an OTel attribute |
 | `secretenv.mcp.resolved_value` / `.tool.output_raw` | **DENY** | |
 
 ### 2.9 Doctor & gen
@@ -176,63 +176,31 @@ The full attribute matrix. **ALLOW** attributes have a typed setter on `SecretEn
 |---|---|---|
 | `service.name` | ALLOW | OTel standard resource |
 | `service.version` | ALLOW | OTel standard resource |
-| `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions. **v0.18 Sec-L-3 note:** `host.name` is set from `hostname::get()`, which on corporate CI runners and bare-metal hosts may surface an FQDN like `ip-10-0-1-23.us-west-2.compute.internal` or `runner-prod-build-42.corp.example.com` — those carry network topology hints. Operators who want to scrub or pin this attribute can override via `OTEL_RESOURCE_ATTRIBUTES=host.name=<override>` at the process env layer; it's last-write-wins against our default emission. |
+| `host.name` / `host.arch` / `os.type` / `process.pid` | ALLOW | OTel standard resource conventions. **Note:** `host.name` is set from `hostname::get()`, which on corporate CI runners and bare-metal hosts may surface an FQDN like `ip-10-0-1-23.us-west-2.compute.internal` or `runner-prod-build-42.corp.example.com`, those carry network topology hints. Operators who want to scrub or pin this attribute can override via `OTEL_RESOURCE_ATTRIBUTES=host.name=<override>` at the process env layer; it's last-write-wins against our default emission. |
 | `deployment.environment.name` | ALLOW (opt-in only) | NOT auto-inferred from `CI=true`; operator-supplied via `[otel]` config or `OTEL_RESOURCE_ATTRIBUTES` |
 
-**Matrix totals:** 74 ALLOW · 31 DENY (30 hard-DENY + 1 DENY-by-default) · **105 attributes** — mirrors the authoritative `secretenv-telemetry::policy::CANONICAL` table one-for-one. (A few rows group sibling attributes — e.g. the three `.alias.uri*` variants and the three `.value*` variants share a row — so the visible row count is lower than 105.)
+**Matrix totals:** 74 ALLOW · 31 DENY (30 hard-DENY + 1 DENY-by-default) · **105 attributes**, mirrors the authoritative `secretenv-telemetry::policy::CANONICAL` table one-for-one. (A few rows group sibling attributes, e.g. the three `.alias.uri*` variants and the three `.value*` variants share a row, so the visible row count is lower than 105.)
 
 ---
 
 ## 3. Redaction taxonomy (Tier 1 / Tier 2)
 
-SecretEnv classifies every data element into one of two tiers:
+- **Tier 1, never emitted.** Secret values, raw backend stderr, raw MCP output, full argv, env var values, account IDs, internal addresses, URI paths. The `SecretEnvSpan` builder makes such emission a compile error.
+- **Tier 2, trusted surfaces only.** Operator-stated identifiers, closed-enum outcomes, aggregate counts, timing. Appear on spans, metrics, and `--verbose` output.
 
-- **Tier 1 — Never emitted to any surface.** Secret values themselves, raw backend stderr, raw MCP tool output, full argv, environment variable values, backend account IDs, internal addresses, URI paths. No code path inside SecretEnv emits a Tier 1 element to telemetry — and the `SecretEnvSpan` builder makes such emission a compile error rather than a runtime check.
-- **Tier 2 — Emitted to trusted surfaces only.** Operator-stated identifiers (alias names, registry names, instance labels), closed-enum operational outcomes, aggregate counts, timing data. These appear on spans, on metrics, and in the operator's terminal under `--verbose`.
+**Set-site enforcement.** Every ALLOW attribute has one typed method on `SecretEnvSpan` (e.g. `record_alias_name`, `record_backend_type`). v0.17 ships 26 active setters; the remaining ALLOW attributes are schema-locked and gain setters as callers wire them (metrics, operator UX, or downstream cycles). Adding a setter is a PR-reviewed code change tied to doc entry. No generic `set_attribute(key, value)` escape hatch exists. A CI gate (`scripts/check_tracing_leaks.sh`) fails the build on any `Secret::expose_secret`, `{value}`, `{uri.raw}`, or `{secret}` inside `tracing::*!` macro arguments.
 
-**Set-site enforcement (SEC-INV-04).** Every ALLOW attribute that any code path emits has exactly one typed method on `SecretEnvSpan` (e.g. `record_alias_name`, `record_backend_type`). v0.17 ships the 26 setters active callers in `secretenv-core` / `secretenv-migrate` / `secretenv-mcp` / `secretenv-cli` need; the remaining ALLOW attributes listed in §2 are part of the locked schema and gain typed setters as Phase 4/6 work (metrics, operator UX) or downstream cycles wire callers for them — adding a new setter is itself a PR-reviewed code change, so a setter cannot land without the corresponding doc entry. The builder does **not** expose a generic `set_attribute(key: &str, value: &str)`, so no call site can smuggle an attribute that lacks a setter. A CI grep gate (`scripts/check_tracing_leaks.sh`) fails the build if any call site references `Secret::expose_secret`, `{value}`, `{uri.raw}`, or `{secret}` inside a `tracing::*!` macro argument list.
-
-**Scrubbing of `backend.error.message`.** The single exception to the "no free-string attribute" rule is `backend.error.message`, which is **DENY by default**. Operators may opt in per-run via `--otel-include-error-detail`. Even when opted in, the message is passed through the SEC-INV-20 scrubber before emission: URI-shaped substrings are replaced with `<uri-stripped>`, AWS 12-digit account numbers with `<aws-account-stripped>`, and high-entropy tokens (32+ chars from the base64-safe alphabet `A-Za-z0-9+/=_-`) with `<token-stripped>`. Raw backend stderr (`backend.error.cli_stderr`) remains DENY in all cases.
-
-> **Status (v0.19).** The `--otel-include-error-detail` flag, the SEC-INV-20 scrubber, and the actual emission of `secretenv.backend.error.message` all ship as of v0.19 (Sec-F-5 wire-up). Prior to v0.19 the flag and scrubber existed but emission was a reserved no-op; v0.19 closes that gap. The DENY-by-default posture remains: `secretenv.backend.error.message` is structurally absent from any span unless the operator passes `--otel-include-error-detail` at run time. Even when opted in, the message is passed through the SEC-INV-20 scrubber before emission. Raw backend stderr (`backend.error.cli_stderr`) remains DENY in all cases.
+**Scrubbing of `backend.error.message`.** This is **DENY by default**, enabled per-run via `--otel-include-error-detail`. When opted in, the scrubber replaces URIs with `<uri-stripped>`, AWS account numbers with `<aws-account-stripped>`, and high-entropy tokens (32+ chars, base64-safe alphabet) with `<token-stripped>`. Raw backend stderr (`backend.error.cli_stderr`) is always DENY. (v0.19: shipped both scrubber and emission; prior versions had the flag but emission was a no-op.)
 
 ---
 
 ## 4. Span topology
 
-Root spans correspond to top-level invocations. Child spans correspond to logical phases. Span names are stable and form part of the audit contract.
+Root spans correspond to top-level invocations; child spans to logical phases. Span names are stable and part of the audit contract.
 
-> **v0.17 shipped subset.** v0.17 ships the load-bearing spans:
-> `secretenv.run`, `secretenv.resolution`, `secretenv.backend.fetch`,
-> `secretenv.redact.filter_event`, `secretenv.registry.migrate` (+ its
-> 5 phase children: `probe` / `read` / `write` / `pointer_flip` /
-> `delete`), `secretenv.doctor.backend`, and `secretenv.mcp.tool.<name>`
-> for all 14 MCP tools.
->
-> **v0.18 update (Phase 4, Arch-M6 subset):** 5 of the 11 previously
-> schema-reserved spans now emit:
-> - `secretenv.manifest.load` — `Manifest::load_from`
-> - `secretenv.registry.load` — `resolve_registry`
-> - `secretenv.backend.probe` — `fetch_one` (sibling of
->   `secretenv.backend.fetch` — parent-child linkage tracked separately
->   under Arch-M1, deferred to v0.20)
-> - `secretenv.exec.prepare` — `exec_with_env`
-> - `secretenv.doctor.registry` — `run_doctor`
->
-> The following **6 spans** remain schema-reserved and **not emitted**:
->
-> - §4.1 run subtree: `secretenv.exec.flush` (hand-off to `execve`
->   covered by an explicit `flush_before_exec` call; emitting as a
->   span would require an `execve`-aware lifecycle with a `pre_exec`
->   hook + manual flush sequencing — deferred to v0.20)
-> - §4.3 doctor subtree: `secretenv.doctor` root
-> - §4.4 MCP subtree: `secretenv.mcp.policy.evaluate`,
->   `secretenv.mcp.confirm`, `secretenv.registry.transaction`,
->   `secretenv.audit.append`
->
-> The MCP policy/confirm/audit events are captured in `audit_log.rs`
-> as structured records but not as OTel spans. None of the remaining
-> schema-reserved spans affect any SEC-INV invariant.
+**v0.17+ status:**
+- **Emitted:** `secretenv.run`, `secretenv.resolution`, `secretenv.backend.fetch`, `secretenv.redact.filter_event`, `secretenv.registry.migrate` (+ 5 phase children: `probe`/`read`/`write`/`pointer_flip`/`delete`), `secretenv.doctor.backend`, `secretenv.mcp.tool.<name>` (all 14 tools), `secretenv.manifest.load`, `secretenv.registry.load`, `secretenv.backend.probe`, `secretenv.exec.prepare`, `secretenv.doctor.registry` (v0.18+).
+- **Schema-reserved, not emitted:** `secretenv.exec.flush` (deferred to v0.20; `execve` hand-off covered by explicit `flush_before_exec`), `secretenv.doctor` root, `secretenv.mcp.policy.evaluate`, `secretenv.mcp.confirm`, `secretenv.registry.transaction`, `secretenv.audit.append` (MCP events captured in `audit_log.rs` but not as OTel spans). None affect the security invariants.
 
 ### 4.1 `secretenv.run`
 
@@ -268,11 +236,11 @@ secretenv.doctor                     (root; one per `secretenv doctor` invocatio
 └── …
 ```
 
-> **Topology note (v0.18 Phase 7b Arch-F-10):** `secretenv.doctor.registry`
+> **Topology note:** `secretenv.doctor.registry`
 > is emitted as a SIBLING of `secretenv.doctor.backend`, not a parent.
 > This matches the §4.1 flat-topology compromise: parent-child linkage
 > between higher-level orchestration spans and per-resource spans is
-> deferred to **v0.20** under the Arch-M1 hierarchical-topology pass.
+> deferred to **v0.20** under the hierarchical-topology pass.
 > Earlier revisions of this spec drew the relationship as parent-child;
 > that diagram was aspirational, not implemented.
 
@@ -286,7 +254,7 @@ secretenv.mcp.tool.set_alias        (or .delete_alias / .migrate_alias / .gen_pa
 └── secretenv.audit.append
 ```
 
-Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password`) are non-droppable — see §6.
+Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password`) are non-droppable. See §6.
 
 ---
 
@@ -298,7 +266,7 @@ Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password
 | `secretenv.resolution.count` | Counter | `{resolution}` | `registry.name`, `run.outcome` | Low |
 | `secretenv.backend.probe.count` | Counter | `{probe}` | `backend.type`, `backend.instance_name`, `probe.level`, `probe.outcome` | O(instances × 18) |
 | `secretenv.backend.fetch.duration` | Histogram | `ms` | `backend.type`, `backend.instance_name`, `fetch.outcome` | O(backends × 3); `alias.name` explicitly excluded |
-| `secretenv.redact.events` | Counter | `{event}` | `redact.mode`, `redact.match_context` | Low; `alias.name` excluded per SEC-INV-19 |
+| `secretenv.redact.events` | Counter | `{event}` | `redact.mode`, `redact.match_context` | Low; `alias.name` excluded |
 | `secretenv.mcp.tool.calls` | Counter | `{call}` | `mcp.tool_name`, `mcp.outcome` | Low (closed enum tool names) |
 | `secretenv.mcp.tool.duration` | Histogram | `ms` | `mcp.tool_name`, `mcp.outcome` | Low |
 | `secretenv.doctor.failure.count` | Counter | `{failure}` | `backend.type`, `backend.instance_name`, `probe.outcome` | Low (failure only; success silent) |
@@ -316,22 +284,14 @@ Mutation tool spans (`set_alias`, `delete_alias`, `migrate_alias`, `gen_password
 
 ## 6. Sampling
 
-**Default sampler:** `parentbased_always_on`. Secret resolution is a rare, high-value event (50/developer-day, 500/CI-day typical). Sampling drops audit value without meaningful cardinality benefit.
+**Default sampler:** `parentbased_always_on`. Secret resolution is rare and high-value (50/developer-day, 500/CI-day typical); sampling drops audit value with minimal cardinality gain.
 
-**Mutation spans are non-droppable.** A custom sampler wrapper returns `RecordAndSample` for spans whose name matches the mutation set, regardless of the parent sampler decision:
+**Mutation spans are non-droppable.** A custom sampler returns `RecordAndSample` for mutations regardless of parent sampler:
 
-- `secretenv.mcp.tool.set_alias`
-- `secretenv.mcp.tool.delete_alias`
-- `secretenv.mcp.tool.migrate_alias`
-- `secretenv.mcp.tool.gen_password`
-- `secretenv.migrate.read`
-- `secretenv.migrate.write`
-- `secretenv.migrate.pointer_flip`
-- `secretenv.migrate.delete`
+- `secretenv.mcp.tool.set_alias`, `delete_alias`, `migrate_alias`, `gen_password`
+- `secretenv.migrate.read`, `write`, `pointer_flip`, `delete`
 
-This is the canonical mutation set — the eight variants of `MutationSpanName` (`secretenv_telemetry::span`), which is the single source of truth for both the span name (via `start_mutation`) and the sampler whitelist. `secretenv.migrate.probe` is **not** in the set: the probe phase is read-only.
-
-This implements SEC-INV-22: mutation events are never absent from the trace stream, even when the operator has configured aggressive ratio sampling for high-volume CI.
+The canonical set is `MutationSpanName` (`secretenv_telemetry::span`), the single source of truth for span names and sampler whitelist. `secretenv.migrate.probe` is excluded (read-only). This ensures mutation events are never absent from the trace stream.
 
 **Override:**
 
@@ -359,25 +319,25 @@ OTEL_TRACES_SAMPLER_ARG=0.1    # 10% for high-volume CI; mutations still emit at
 | `OTEL_TRACES_SAMPLER_ARG` | Sampler arg | none |
 | `OTEL_PROPAGATORS` | Context propagators | `tracecontext,baggage` |
 
-**Service name.** Default is `secretenv`. Operators using per-project naming should set `OTEL_RESOURCE_ATTRIBUTES=service.name=payments-secretenv`. SecretEnv deliberately does **not** auto-derive the service name from the git repo name — that introduces cardinality explosions in trace backends and breaks comparison across forks.
+**Service name.** Default is `secretenv`. Per-project naming: `OTEL_RESOURCE_ATTRIBUTES=service.name=payments-secretenv`. SecretEnv does not auto-derive from git repo (cardinality explosion + breaks fork comparison).
 
-**Merge precedence (highest wins):** `OTEL_*` env vars > machine config `[otel]` > `secretenv.toml` `[otel]` > SecretEnv defaults.
+**Merge precedence:** `OTEL_*` env vars > machine `[otel]` > `secretenv.toml` `[otel]` > defaults.
 
-**No-op default.** When none of `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` is set, SecretEnv installs no exporter. Zero startup overhead. Zero noise. The OTel deps are still linked in but no `TracerProvider` is created.
+**No-op default.** When none of `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` is set, no exporter is installed. Zero startup overhead. OTel deps remain linked but inert.
 
-**Flush before exec().** Before `secretenv run` calls `execve()` to hand off to the child binary, SecretEnv invokes `force_flush()` on the configured exporter with a **bounded 1-second `tokio::time::timeout`**. If the collector is slow or unreachable, pending spans are dropped silently and a `tracing::debug!` event is emitted (`otel flush timed out; dropping pending spans`). A down or slow collector degrades to data loss, never to a latency cliff on every `secretenv run` invocation. The SEC-INV-22 test `exec_flush.rs` verifies this bound.
+**Flush before exec().** Before `execve()`, SecretEnv calls `force_flush()` with a **1-second `tokio::time::timeout`**. Slow/unreachable collectors drop spans silently and emit `tracing::debug!` (`otel flush timed out`). Data loss acceptable; latency cliff is not. The `exec_flush.rs` test verifies the bound.
 
-**W3C trace context propagation.** Inbound only in v0.17. SecretEnv honors `TRACEPARENT` and `TRACESTATE` env vars set by parent CI systems, attaching SecretEnv's root span as a child of the parent trace. SecretEnv does **not** propagate context out to the child process started by `secretenv run` — wiring arbitrary child binaries into the trace tree requires instrumenting those binaries, which is not SecretEnv's responsibility. Child-process propagation is deferred to v1.0+.
+**W3C trace context propagation.** Inbound only. SecretEnv honors `TRACEPARENT` and `TRACESTATE` env vars from parent CI, attaching its root span as a child. Outbound propagation to child processes is deferred (requires instrumenting child binaries; not SecretEnv's responsibility).
 
 ---
 
 ## 8. Operator UX without a collector
 
-You do not need a collector to get observability value from SecretEnv. Three modes ship in v0.17:
+No collector required for observability:
 
 ### 8.1 `secretenv run --verbose`
 
-Per-alias resolution timing on stderr. No collector required.
+Per-alias resolution timing on stderr:
 
 ```
 $ secretenv run --verbose -- ./deploy.sh
@@ -389,7 +349,7 @@ secretenv: 3 aliases resolved in 422ms
 
 ### 8.2 `secretenv doctor --trace`
 
-Local span table render. Runs a dry-run resolution pass against the configured registries, captures spans to an in-process `InMemorySpanExporter`, and renders the result. No OTLP endpoint required.
+Local span table. Dry-run resolution against configured registries, in-memory capture, table render:
 
 ```
 $ secretenv doctor --trace
@@ -404,7 +364,7 @@ Spans (dry-run resolution pass):
 
 ### 8.3 `OTEL_TRACES_EXPORTER=console`
 
-For ad-hoc debugging of a single invocation, the stdout exporter writes the full span tree to stderr in OTel's standard JSON form. Useful when comparing emitted spans to the schema in §2.
+Writes full span tree to stderr in OTel JSON form. Useful for schema comparison (§2):
 
 ```
 $ OTEL_TRACES_EXPORTER=console secretenv run -- echo hello
@@ -429,48 +389,42 @@ OTel collector:
 
 ## 9. Compliance & audit considerations
 
-**OTel traces are operational data, not compliance audit logs.** SecretEnv's OTel emission has no integrity guarantee, no append-only enforcement, no signing, and no replay protection. Traces are best-effort observational data for operators and SREs. For regulated environments (SOC2, ISO27001, HIPAA), use the **backend's own audit trail** as the compliance artifact:
+**OTel traces are operational data, not compliance audit logs.** No integrity guarantee, no append-only enforcement, no signing. For regulated environments (SOC2, ISO27001, HIPAA), use the **backend's audit trail** (Vault audit log, AWS CloudTrail, 1Password Business events, GCP Cloud Audit Logs).
 
-- **Vault** — Vault audit log (file or socket sink)
-- **OpenBao** — same as Vault
-- **AWS Secrets Manager / SSM** — AWS CloudTrail events
-- **1Password** — 1Password Business audit events
-- **GCP Secret Manager** — Cloud Audit Logs
+SecretEnv's MCP layer maintains an append-only audit log at `~/.config/secretenv/audit.log` (configurable via `[mcp].audit_log_path`), with `flock(LOCK_EX)` serialization and rotation. The MCP audit log is the compliance artifact for MCP mutations; OTel spans are operational data.
 
-SecretEnv's MCP layer additionally maintains its own append-only audit log at `~/.config/secretenv/audit.log` (configurable via `[mcp].audit_log_path`), with `flock(LOCK_EX)` serialization and size-based rotation. The MCP audit log is the compliance artifact for MCP-mediated mutations; OTel spans on those mutations are operational data only.
-
-**Verifiable claim: no secret value reaches any OTel attribute.** The `SecretEnvSpan` builder exposes one typed setter per ALLOW attribute and no generic `set_attribute` method. The `secretenv-telemetry/tests/no_escape_hatch.rs` compile-test asserts the absence of `set_attribute`. The `secretenv-telemetry/tests/no_redact_alias_in_otel.rs` test asserts `set_redact_alias_name` does not exist (SEC-INV-19). The CI grep gate `scripts/check_tracing_leaks.sh` fails the build on any reference to `Secret::expose_secret`, `{value}`, `{uri.raw}`, or `{secret}` inside a `tracing::*!` macro. These are structural enforcements, not runtime checks.
+**Verifiable: no secret value in any OTel attribute.** `SecretEnvSpan` has one typed setter per ALLOW attribute, no generic `set_attribute`. Enforced via: `tests/no_escape_hatch.rs` (absent `set_attribute`), `tests/no_redact_alias_in_otel.rs` (no `set_redact_alias_name`), CI gate `scripts/check_tracing_leaks.sh` (fails on `Secret::expose_secret`, `{value}`, `{uri.raw}`, `{secret}` in `tracing::*!`). Structural, not runtime.
 
 ---
 
 ## 10. FAQ
 
 **Does SecretEnv emit secret values to my collector?**
-No. SEC-INV-04 enforces this at compile time. The `SecretEnvSpan` builder has no method to set a value-shaped attribute, and there is no `set_attribute(key, value)` escape hatch. Adding a value-shaped attribute requires writing a typed setter, which a PR review would reject.
+No. This is enforced at compile time. `SecretEnvSpan` has no value-shaped setter and no generic `set_attribute` escape hatch. Any value-shaped attribute requires a typed setter, which PR review rejects.
 
 **What happens when no OTLP endpoint is configured?**
-No-op. SecretEnv installs no exporter, creates no `TracerProvider`, and emits no spans. Zero startup overhead. The OTel deps are linked in but inert.
+No-op. No exporter, no `TracerProvider`, no spans. Zero overhead. OTel deps remain linked but inert.
 
 **Can I use Prometheus?**
-Use the OpenTelemetry Collector with a Prometheus scrape endpoint on the collector side. SecretEnv does not ship a Prometheus pull exporter — a CLI binary cannot reliably expose an HTTP server given its short lifetime. The OTel collector is the supported scrape source.
+Use the OTel Collector with a Prometheus scrape endpoint on the collector side. SecretEnv does not ship a Prometheus pull exporter (CLI binaries cannot reliably expose HTTP servers). OTel collector is the supported source.
 
 **Why is `alias.name` ALLOWED but `alias.uri` DENIED?**
-Alias names are the operator's diagnostic handle — "which secret failed to resolve" is the first question on any incident, and `alias.name` is the answer. Alias URIs reveal backend topology (`aws-ssm:///payments/stripe/prod-rotation-2`), which is a credential-enumeration surface and a competitive-intelligence leak.
+`alias.name` is the operator's diagnostic handle (first incident question). URIs reveal backend topology (`aws-ssm:///payments/stripe/prod-rotation-2`), enabling credential enumeration and competitive intelligence.
 
 **What is the flush guarantee before `exec()`?**
-1-second bounded timeout. If `force_flush()` does not complete within 1s, pending spans drop and a `tracing::debug!` message is emitted. A slow collector cannot turn `secretenv run` into a latency cliff. Trade-off accepted: better data loss than `exec()` blocking.
+1-second timeout. If `force_flush()` does not complete, pending spans drop with a `tracing::debug!` message. Data loss acceptable; latency cliff is not.
 
 **Does SecretEnv propagate trace context to my child process?**
-No. SecretEnv honors `TRACEPARENT` / `TRACESTATE` env vars set by a parent CI system (inbound propagation), attaching its root span to the parent trace. SecretEnv does **not** set those env vars for the child started by `secretenv run` — instrumenting arbitrary child binaries to honor W3C context is the child's responsibility. Outbound propagation is a v1.0+ item.
+No. Inbound only: SecretEnv honors `TRACEPARENT`/`TRACESTATE` from parent CI, attaching its root span to the parent trace. Outbound propagation (setting env vars for the child) is v1.0+ (requires child-side instrumentation).
 
 **How do I disable OTel without unsetting `OTEL_EXPORTER_OTLP_ENDPOINT`?**
-Set `OTEL_TRACES_EXPORTER=none` (or the per-signal variant). SecretEnv deliberately does not ship a `[telemetry] enabled = false` config-file toggle — a committed `false` value would silently disable OTel team-wide, which is a footgun. The env var is the correct kill switch.
+Set `OTEL_TRACES_EXPORTER=none` (or per-signal variant). SecretEnv does not ship a `[telemetry] enabled = false` config toggle (committed `false` would silently disable team-wide, a footgun). Env var is the correct kill switch.
 
 ---
 
 ## Related
 
-- [`docs/reference/redact.md`](redact.md) — redaction modes; how matches relate to `secretenv.redact.*` attributes
-- [`docs/reference/migrate.md`](migrate.md) — `secretenv registry migrate`; emits the migrate span tree
-- [`docs/reference/mcp.md`](mcp.md) — MCP tool surface; emits `secretenv.mcp.tool.<name>` spans
-- [`docs/reference/configuration.md`](configuration.md) — `[otel]` table in `secretenv.toml`
+- [Redaction](redact.md): redaction modes and the `secretenv.redact.*` attributes
+- [Registry migrate](migrate.md): emits the migrate span tree
+- [MCP server](mcp.md): emits `secretenv.mcp.tool.<name>` spans
+- [CLI Reference: `secretenv doctor`](cli-reference-full.md#secretenv-doctor): `doctor --trace` renders a local span table without a collector

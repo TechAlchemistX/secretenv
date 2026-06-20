@@ -18,7 +18,7 @@ export default defineConfig({
       rel: 'stylesheet',
       href: 'https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap',
     }],
-    ['meta', { property: 'og:title', content: 'secretenv — multi-backend secrets orchestration' }],
+    ['meta', { property: 'og:title', content: 'secretenv: multi-backend secrets orchestration' }],
     ['meta', { property: 'og:description', content: 'One registry. Every repo. Every backend. Migrate without touching a single repo.' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:url', content: 'https://docs.secretenv.io' }],
@@ -40,7 +40,7 @@ export default defineConfig({
 
   ignoreDeadLinks: [
     // Cross-links to repo-root files (work in GitHub repo browsing, not in the docs site).
-    // VitePress normalises ./../../README, ../../README, and ../README — match all variants.
+    // VitePress normalises ./../../README, ../../README, and ../README: match all variants.
     /README(\.md)?(#|$)/,
     /(CONTRIBUTING|SECURITY|LICENSE|CLA)(\.md)?(#|$)/,
   ],
@@ -65,7 +65,7 @@ export default defineConfig({
       {
         text: 'Operations',
         items: [
-          { text: 'CI/CD Integration', link: '/ci-cd' },
+          { text: 'CI/CD Integration', link: '/guides/ci-cd' },
           { text: 'Security & Threat Model', link: '/security' },
           { text: 'Comparisons', link: '/comparisons/' },
         ],
@@ -138,8 +138,9 @@ export default defineConfig({
       {
         text: 'Operations',
         items: [
-          { text: 'CI/CD Integration', link: '/ci-cd' },
+          { text: 'CI/CD Integration', link: '/guides/ci-cd' },
           { text: 'Security & Threat Model', link: '/security' },
+          { text: 'Stability & Smoke History', link: '/stability' },
         ],
       },
     ],

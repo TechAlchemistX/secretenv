@@ -1,21 +1,22 @@
 # Cloudflare Workers KV
 
-**Type:** `cf-kv`
-**CLI required:** [`wrangler`](https://developers.cloudflare.com/workers/wrangler/install-and-update/) 4.x — `npm install -g wrangler` OR `brew install cloudflare/cloudflare/wrangler`
-**URI scheme:** `<instance-name>:///<namespace-id>/<key>` (or `<instance-name>:///<key>` when `cf_kv_default_namespace_id` is configured)
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `wrangler 4.85.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `cf-kv`
+- **CLI required:** [`wrangler`](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
+- **CLI version:** 4.x
+- **URI scheme:** `<instance-name>:///<namespace-id>/<key>` (or `<instance-name>:///<key>` when `cf_kv_default_namespace_id` is configured)
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `wrangler 4.85.0` on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
 > SecretEnv injects secrets from any backend as environment variables. This page covers the `cf-kv` backend. New here? See the [overview](/).
 
-Cloudflare Workers KV is a globally-distributed, eventually-consistent key-value store designed for low-latency reads from Cloudflare Workers. This backend wraps the `wrangler` CLI for read, write, list, and delete operations. Auth flows through `wrangler login` (OAuth) or `CLOUDFLARE_API_TOKEN`.
+Cloudflare Workers KV is a globally-distributed, eventually-consistent key-value store for low-latency edge reads. This backend wraps the `wrangler` CLI (read, write, list, delete) with OAuth or API-token auth.
 
 ## When to pick this
 
-- **Cloudflare Workers already deployed:** native integration, no new service
-- **Global edge caching:** KV is replicated to Cloudflare's edge; reads are fast from anywhere
-- **Flat key-value model:** simple key namespaces, no folder scoping (use naming conventions or multiple namespaces)
-- **Low-cost, pay-as-you-go:** no upfront secrets infrastructure to manage
+- **Cloudflare Workers in use:** native integration, low latency
+- **Edge caching:** globally replicated, reads fast from anywhere
+- **Simple flat model:** no folder hierarchy (use naming conventions or namespaces)
+- **Pay-as-you-go:** minimal infrastructure overhead
 
 ## Configuration
 
@@ -31,8 +32,8 @@ cf_kv_list_prefix             = "registry/"                          # optional
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"cf-kv"` |
-| `cf_kv_default_namespace_id` | No | Namespace UUID for single-segment URIs. When unset, two-segment form required. Find via `wrangler kv namespace list`. |
-| `cf_kv_list_prefix` | No | Prefix filter for `list()` (e.g., `registry/` to enumerate only keys starting with that prefix). Enables single-namespace scalar + registry mixing. |
+| `cf_kv_default_namespace_id` | No | Namespace UUID (from `wrangler kv namespace list`) for one-segment URIs. Unset = two-segment URIs required. |
+| `cf_kv_list_prefix` | No | Prefix filter for `list()` (e.g., `registry/` to enumerate subset). Enables scalar + registry coexistence. |
 | `timeout_secs` | No | Per-instance fetch timeout. Default: 30s. |
 
 ### Single-namespace mixing via `cf_kv_list_prefix`
@@ -56,9 +57,9 @@ cf-kv-prod:///c554de8d89644f3d85f21933e7aea910/STRIPE_KEY
 instance name  namespace ID (or default)       key name
 ```
 
-Two-segment form: `<namespace-id>/<key>`. Single-segment form (one segment) requires `cf_kv_default_namespace_id` in config. The namespace ID is the stable UUID-shaped identifier from `wrangler kv namespace list` — **not** the Worker-local binding name.
+Two-segment form: `<namespace-id>/<key>`. Single-segment requires `cf_kv_default_namespace_id` config. Use the UUID from `wrangler kv namespace list`, not the Worker binding name.
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify your setup with:** `secretenv doctor`. Green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
@@ -80,7 +81,7 @@ Mint a token at `dashboard.cloudflare.com → My Profile → API Tokens` with th
 export CLOUDFLARE_API_TOKEN=<your-token>
 ```
 
-Wrangler picks up the env var transparently — no further config required.
+Wrangler picks up the env var transparently; no further config required.
 
 ## doctor Output
 
@@ -107,14 +108,14 @@ No fragment directives. Any `#...` fragment is rejected at URI-parse time.
 
 ## History API support
 
-Not implemented. Workers KV has no per-key version history — overwrites simply replace the previous value. If you need versioning, encode it in the key name (e.g., `STRIPE_KEY/v3`).
+Not implemented. KV has no per-key versioning. Encode version in the key name if needed (e.g., `STRIPE_KEY/v3`).
 
 ## Limitations
 
-- **Flat namespace.** KV stores all keys at the same level; no folder scoping. Use `cf_kv_list_prefix` to separate scalar + registry keys via naming convention.
-- **Eventually consistent.** KV replicates globally with a slight delay. Immediate strong consistency is not available.
-- **Rate limits.** Cloudflare KV enforces per-account rate limits (~1200 req / 5 min default). `list()` with large namespaces can throttle; request a limit increase if needed.
-- **Safe set form (no `_unsafe_set` flag).** `set` writes a mode-0600 tempfile and passes `--path <tempfile>`; the value never appears on argv.
+- **Flat namespace:** no folder scoping. Use `cf_kv_list_prefix` to separate scalar + registry keys by name.
+- **Eventually consistent:** global replication has slight delay; no strong consistency.
+- **Rate limits:** per-account limits (~1200 req / 5 min). Large `list()` may throttle; request increase if needed.
+- **Safe `set`:** value written to temp file, never on argv.
 
 ## Examples
 
@@ -171,9 +172,9 @@ OAuth token expired or `CLOUDFLARE_API_TOKEN` not set. Quickest fix: `wrangler l
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
-- [Cloudflare Workers KV docs](https://developers.cloudflare.com/workers/wrangler/commands/#kv) — authoritative KV reference
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md), `#json-key`, `#version`, etc. on other backends
+- [Cloudflare Workers KV docs](https://developers.cloudflare.com/workers/wrangler/commands/#kv), authoritative KV reference
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

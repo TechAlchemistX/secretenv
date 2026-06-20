@@ -1,21 +1,22 @@
 # AWS SSM Parameter Store
 
-**Type:** `aws-ssm`
-**CLI required:** [`aws`](https://aws.amazon.com/cli/) (AWS CLI v2)
-**URI scheme:** `<instance-name>:///path/to/parameter`
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `aws-cli/2.34.35` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `aws-ssm`
+- **CLI required:** [`aws`](https://aws.amazon.com/cli/)
+- **CLI version:** AWS CLI v2
+- **URI scheme:** `<instance-name>:///path/to/parameter`
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `aws-cli/2.34.35` on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `aws-ssm` backend. New here? See the [overview](/).
+> SecretEnv injects secrets as environment variables. This page covers the `aws-ssm` backend. New here? See the [overview](/).
 
-AWS Systems Manager (SSM) Parameter Store is AWS's native secrets store — built-in, region-scoped, and integrated with KMS for SecureString encryption. Pick SSM when you're already on AWS and want the simplest path: no new service account, no new CLI, no API tokens. The `aws` CLI wraps the Parameter Store API and resolves credentials from your ambient AWS configuration (profiles, IAM roles, SSO, environment variables).
+AWS Systems Manager Parameter Store is AWS's native secrets store. Built-in, region-scoped, KMS-integrated for SecureString encryption. Pick when already on AWS and wanting the simplest path: no new service account, CLI, or tokens.
 
 ## When to pick this
 
-- **You're on AWS:** native integration, no new authentication layer
-- **Short-term secrets:** Parameter Store suits dev/test values well; consider AWS Secrets Manager if you need automatic rotation or cross-service replication
-- **Team workflows:** named profiles let multiple accounts/contexts live in one config
-- **Air-gapped automation:** IAM roles on EC2/ECS/Lambda require zero external secrets
+- **On AWS**, native integration, no new auth layer
+- **Short-term secrets**, good for dev/test; use Secrets Manager for auto-rotation
+- **Team workflows**, named profiles handle multiple accounts
+- **Air-gapped automation**, EC2/ECS/Lambda IAM roles work directly
 
 ## Configuration
 
@@ -23,7 +24,7 @@ AWS Systems Manager (SSM) Parameter Store is AWS's native secrets store — buil
 [backends.aws-ssm-dev]
 type        = "aws-ssm"
 aws_region  = "us-east-1"
-aws_profile = "dev"         # optional — omit to use ambient credentials
+aws_profile = "dev"         # optional, omit to use ambient credentials
 ```
 
 ### Fields
@@ -64,20 +65,20 @@ aws-ssm-dev:///myapp/prod/stripe_key
 instance name  SSM parameter path
 ```
 
-Parameter names must exist as `SecureString` type. `String` and `StringList` types are supported but **not recommended for secrets** — they lack envelope encryption. The leading `/` is automatic; both `aws-ssm-dev:///myapp/key` and `aws-ssm-dev://myapp/key` resolve to the parameter `/myapp/key`.
+Parameters must be `SecureString` type. `String` and `StringList` work but lack envelope encryption (not recommended). Leading `/` is automatic; both `aws-ssm-dev:///myapp/key` and `aws-ssm-dev://myapp/key` resolve to `/myapp/key`.
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify:** `secretenv doctor`. Green output means ready to run.
 
 ## Authentication
 
-SecretEnv delegates authentication entirely to the `aws` CLI. Any credential mechanism the CLI supports works automatically:
+Delegates entirely to the `aws` CLI. All standard credential mechanisms work:
 
 - Named profiles (via `aws_profile` field)
 - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
 - IAM instance/task roles (EC2, ECS, Lambda, AppRunner)
 - AWS SSO / IAM Identity Center
 - `credential_process` custom providers
-- Cross-account role assumption via `role_arn` in profile config
+- Cross-account role assumption via `role_arn` in profile
 
 ## IAM Permissions
 
@@ -136,9 +137,9 @@ Full support via `aws ssm get-parameter-history`. `secretenv registry history <a
 
 ## Limitations
 
-- **SecureString recommended:** `String` type parameters work but don't encrypt at rest. Always use `SecureString` for credentials.
-- **No per-secret JSON envelope:** SSM stores the value as-is. If you need to rotate one field of a JSON object, rotate the entire parameter.
-- **No automatic rotation:** SSM supports rotation policies in AWS Secrets Manager, but Parameter Store doesn't rotate automatically. If you need orchestrated rotation, use Secrets Manager or Vault.
+- **SecureString recommended.** `String` lacks encryption at rest
+- **No JSON field extraction.** SSM stores values as-is; rotate entire parameter for one-field changes
+- **No auto-rotation.** Parameter Store doesn't orchestrate rotation; use Secrets Manager or Vault
 
 ## Examples
 
@@ -155,7 +156,7 @@ sources = ["aws-ssm-dev:///myapp/dev/registry"]
 ```
 
 ```bash
-# Local development — SSM parameters injected as env vars
+# Local development, SSM parameters injected as env vars
 secretenv run -- npm start
 ```
 
@@ -208,13 +209,13 @@ Check IAM policy covers your parameter path. `arn:aws:ssm:us-east-1:123456789012
 Verify the parameter exists in the correct region. Use `aws ssm get-parameter --name /your/param --region us-east-1` (with the right `--profile` if needed).
 
 **"The parameter with name ... does not exist or you aren't allowed to access it"**
-Same cause as above; SSM conflates "not found" and "access denied" for security. `secretenv doctor` shows the active account and region — double-check both match your parameter location.
+Same cause as above; SSM conflates "not found" and "access denied" for security. `secretenv doctor` shows the active account and region. Double-check both match your parameter location.
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Fragment vocabulary](../reference/fragment-vocabulary.md) — other backends' `#version`, `#json-key` directives
-- [AWS Secrets Manager](aws-secrets.md) — alternative: automatic rotation, cross-region replication
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md), other backends' `#version`, `#json-key` directives
+- [AWS Secrets Manager](aws-secrets.md), alternative: automatic rotation, cross-region replication
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

@@ -1,17 +1,13 @@
 # Adding a New Backend
 
-Every backend in secretenv is an independent Rust crate implementing a common trait. Adding a new backend never touches core. This guide walks through building one from scratch.
+Every backend in secretenv is an independent Rust crate implementing the `Backend` trait. Adding a new backend never touches core.
 
----
+A backend crate provides:
 
-## Overview
+1. A **factory**: constructs named instances from raw config
+2. A **backend implementation**: implements the `Backend` trait
 
-A backend crate provides two things:
-
-1. A **factory** — constructs named instances from raw config
-2. A **backend implementation** — implements the `Backend` trait
-
-The core binary registers every compiled-in factory unconditionally at startup. There are no Cargo feature flags — all backends are present in the single binary, and `[backends.<name>]` blocks in `config.toml` determine which ones are actually instantiated at runtime. The factory creates instances from those blocks. The trait is all core ever calls.
+All backends are compiled in. The core binary registers every factory unconditionally at startup; `[backends.<name>]` blocks in `config.toml` determine which are instantiated at runtime. The factory creates instances; the trait is all core ever calls.
 
 ---
 
@@ -87,7 +83,7 @@ pub struct MyServiceFactory;
 
 impl BackendFactory for MyServiceFactory {
     fn backend_type(&self) -> &str {
-        "myservice"   // matches `type = "myservice"` in config.toml
+        "myservice"
     }
 
     fn create(
@@ -95,11 +91,6 @@ impl BackendFactory for MyServiceFactory {
         instance_name: &str,
         config: &HashMap<String, toml::Value>,
     ) -> Result<Box<dyn Backend>> {
-        // Use the secretenv_core helpers to extract config fields.
-        // required_string returns Err with a structured message when the
-        // field is absent or not a string.  optional_string returns None
-        // when the field is absent and Err when it is present but not a
-        // string.
         let api_url = required_string(config, "api_url", "myservice", instance_name)?;
         let token_env =
             optional_string(config, "token_env", "myservice", instance_name)?
@@ -174,9 +165,6 @@ impl Backend for MyServiceBackend {
     }
 
     async fn get(&self, uri: &BackendUri) -> Result<Secret<String>> {
-        // CRITICAL: Always use .args() with separate strings.
-        // Never use shell interpolation with uri.path.
-        // This is a hard security requirement — see security docs.
         let output = tokio::process::Command::new("myservice-cli")
             .args(["secret", "get", &uri.path, "--output", "raw"])
             .output()
@@ -274,7 +262,7 @@ impl Backend for MyServiceBackend {
 
 ## 3. Register at Startup
 
-In `crates/secretenv-backends-init/src/lib.rs`, add your factory to the registration list — unconditionally, alongside the other backends:
+In `crates/secretenv-backends-init/src/lib.rs`, add your factory to the registration list, unconditionally, alongside the other backends:
 
 ```rust
 pub fn build_registry(config: &Config) -> Result<BackendRegistry> {
@@ -298,7 +286,7 @@ secretenv-backend-myservice.workspace = true
 
 ## 4. Write Tests
 
-Each backend crate should have tests that mock the CLI binary. Add the shared `secretenv-testing` harness under `[dev-dependencies]`:
+Add the shared `secretenv-testing` harness to test CLI mocks:
 
 ```toml
 [dev-dependencies]
@@ -306,7 +294,7 @@ secretenv-testing.workspace = true
 tempfile.workspace          = true
 ```
 
-Then call `install_mock` to drop a POSIX shell script on disk with the ETXTBSY probe loop already handled:
+Call `install_mock` to drop a POSIX shell script on disk (ETXTBSY probe loop already handled):
 
 ```rust
 #[cfg(test)]
@@ -342,32 +330,30 @@ exit 1
 }
 ```
 
-For backends shelling out to a well-known CLI with a fixed binary name, `install_mock_aws` / `install_mock_op` already exist as convenience wrappers — add one in the shared crate if your backend's CLI sees frequent reuse.
+For well-known CLIs, `install_mock_aws` / `install_mock_op` exist as convenience wrappers. Add one in the shared crate if needed.
 
 ---
 
-## Security Requirements for Backend Authors
+## Security Requirements
 
-These are non-negotiable. PRs that violate them will not be merged.
+Non-negotiable. PRs that violate them will not be merged.
 
 **1. Never use shell interpolation with URI-derived values.**
 
 ```rust
-// ✅ Correct — always
+// ✅ Correct
 Command::new("myservice-cli")
     .args(["secret", "get", &uri.path])
 
-// ❌ Never — injectable
+// ❌ Never, injectable
 Command::new("sh")
     .arg("-c")
     .arg(format!("myservice-cli secret get {}", uri.path))
 ```
 
-The URI path comes from the alias registry. If the registry were compromised, a malicious path could inject shell commands. Argument passing prevents this structurally.
+URI paths come from the registry. Compromised registries could inject shell commands. Argument passing prevents this structurally.
 
-**2. Include the instance name and URI in all error messages.**
-
-Users need to know which backend and which URI caused a failure. Raw CLI error messages without context make debugging impossible.
+**2. Include instance name and URI in all error messages.**
 
 ```rust
 // ✅ Correct
@@ -376,36 +362,36 @@ anyhow::bail!(
     uri.raw, self.instance_name, stderr.trim()
 );
 
-// ❌ Not enough context
+// ❌ Insufficient
 anyhow::bail!("command failed: {}", stderr);
 ```
 
 **3. Never log or print secret values.**
 
-Debug output, verbose output, and error messages must never include the actual value returned by `get()`.
+Debug, verbose, and error output must never include values from `get()`.
 
 **4. Return `BackendStatus::CliMissing` with an install hint.**
 
-Users will encounter missing CLIs. The install hint should be a real, copy-pasteable command.
+Provide real, copy-pasteable install commands.
 
 ---
 
 ## Checklist Before Opening a PR
 
-- [ ] Factory registered in `crates/secretenv-backends-init/src/lib.rs` alongside the other factories
-- [ ] All eight required `Backend` trait methods implemented (`backend_type`, `instance_name`, `check`, `check_extensive`, `get`, `set`, `delete`, `list`)
-- [ ] `check()` implements both Level 1 (CLI present) and Level 2 (authenticated)
+- [ ] Factory registered in `crates/secretenv-backends-init/src/lib.rs`
+- [ ] All eight `Backend` trait methods implemented: `backend_type`, `instance_name`, `check`, `check_extensive`, `get`, `set`, `delete`, `list`
+- [ ] `check()` implements Level 1 (CLI present) and Level 2 (authenticated)
 - [ ] `check_extensive()` implemented
-- [ ] All CLI calls use `.args()` with separate strings — no `sh -c` with interpolation
-- [ ] Error messages include instance name and `uri.raw` plus trimmed CLI stderr
-- [ ] Tests cover `get()`, `check()` success + failure variants via the shared `secretenv-testing::install_mock` harness (see `§4 Write Tests` above)
-- [ ] `docs/backends/<your-backend>.md` written following the existing format
-- [ ] Path-dep added to `workspace.dependencies` and to `crates/secretenv-backends-init/Cargo.toml`
-- [ ] Crate name added to `deny.toml`'s AGPL exception list in the same commit that creates `Cargo.toml`
-- [ ] Crate added to `.github/workflows/release.yml` publish-crates step in topological dependency order
+- [ ] All CLI calls use `.args()` with separate strings; no `sh -c`
+- [ ] Error messages include instance name, `uri.raw`, and trimmed CLI stderr
+- [ ] Tests via `secretenv-testing::install_mock` harness cover `get()` and `check()` success/failure
+- [ ] `docs/backends/<your-backend>.md` written
+- [ ] Path-dep added to `workspace.dependencies` and `crates/secretenv-backends-init/Cargo.toml`
+- [ ] Crate name added to `deny.toml`'s AGPL exception list in same commit as `Cargo.toml`
+- [ ] Crate added to `.github/workflows/release.yml` publish-crates in topological order
 
 ---
 
 ## Getting Help
 
-Open a GitHub issue tagged `backend-development` before starting work on a new backend. This avoids duplicate effort and lets maintainers flag any design considerations specific to that backend's CLI behavior before you've written the code.
+Open a GitHub issue tagged `backend-development` before starting. This avoids duplicate effort and surfaces design considerations specific to the backend's CLI behavior.

@@ -22,9 +22,30 @@ Keys are alias names. Values are backend URIs using named instances as the schem
 
 ---
 
+## Selecting a Registry
+
+Every command resolves which registry to use in this order, the first hit wins, and there is no implicit fallback at the bottom:
+
+```
+1. --registry <name-or-uri>          explicit, per-invocation
+2. SECRETENV_REGISTRY=<name-or-uri>  CI / shell-session override
+3. [registries.default] in config    machine default
+4. hard error                        no assumption is made
+```
+
+The `--registry` value (and `SECRETENV_REGISTRY`) is disambiguated by content: if it contains `://` it's a **direct URI** (a single source, no cascade). Otherwise it's a **name** looked up in `[registries.<name>]`. `SECRETENV_REGISTRY` is the canonical mechanism for CI, where no config file lives on the runner.
+
+```bash
+secretenv run -- npm start                                    # [registries.default]
+secretenv run --registry dev -- npm start                     # named registry (may cascade)
+secretenv run --registry aws-ssm-dev:///secretenv/reg -- ...  # direct URI, single source
+```
+
+---
+
 ## Cascading Registries
 
-A registry configuration can cascade across multiple source documents. Sources are checked in order — first match wins. Entries in later sources that share a key with an earlier source are silently shadowed.
+A registry configuration can cascade across multiple source documents. Sources are checked in order, first match wins. Entries in later sources that share a key with an earlier source are silently shadowed.
 
 ```toml
 # config.toml
@@ -193,7 +214,7 @@ curl -sfS https://secretenv.io/install.sh | sh -s -- --profile acme-corp
 
 ## Writing the Registry Document Manually
 
-For teams managing infrastructure as code, the registry document can be managed via Terraform or any tool that can write to a backend. secretenv does not require using the CLI to manage registry content — it only needs to be able to read the document at runtime.
+For teams managing infrastructure as code, the registry document can be managed via Terraform or any tool that can write to a backend. secretenv does not require using the CLI to manage registry content; it only needs to be able to read the document at runtime.
 
 The registry document format is a flat TOML key-value structure:
 
@@ -215,7 +236,7 @@ resource "aws_ssm_parameter" "secretenv_registry" {
 }
 ```
 
-Note: when managing the registry via Terraform, the alias-to-path mappings are in version-controlled Terraform state. This is an operational choice — the alias values (backend paths) are organizational configuration, not secret values, so this tradeoff is similar to managing Kubernetes ExternalSecrets manifests in code.
+Note: when managing the registry via Terraform, the alias-to-path mappings are in version-controlled Terraform state. This is an operational choice: the alias values (backend paths) are organizational configuration, not secret values, so this tradeoff is similar to managing Kubernetes ExternalSecrets manifests in code.
 
 ---
 
@@ -225,7 +246,7 @@ The registry document maps alias names to backend paths. It does not contain sec
 
 **Treat the registry's access controls equivalently to your most sensitive secret.**
 
-If an attacker can read the registry, they learn your secrets topology — which backends you use, what paths your secrets live at, your naming conventions. They do not get secret values. But if they already have authenticated access to the registry backend, they likely have broader backend access anyway.
+If an attacker can read the registry, they learn your secrets topology: which backends you use, what paths your secrets live at, your naming conventions. They do not get secret values. But if they already have authenticated access to the registry backend, they likely have broader backend access anyway.
 
 Recommended storage:
 
@@ -243,6 +264,6 @@ Recommended storage:
 No convention is enforced by secretenv. Recommendations:
 
 - Use kebab-case: `stripe-key`, `prod-db-url`, `datadog-api-key`
-- Keep alias names environment-agnostic where possible — route environments via registry selection, not alias naming
-- Use consistent naming across services — if multiple services need a shared Datadog key, one alias shared via the org registry is better than `service-a-datadog-key` and `service-b-datadog-key`
+- Keep alias names environment-agnostic where possible. Route environments via registry selection, not alias naming
+- Use consistent naming across services. If multiple services need a shared Datadog key, one alias shared via the org registry is better than `service-a-datadog-key` and `service-b-datadog-key`
 - Prefix team-specific aliases if co-existing with an org registry: `payments-stripe-key` vs org-level `stripe-key`

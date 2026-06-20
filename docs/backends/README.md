@@ -25,9 +25,9 @@ SecretEnv supports 15 secret backends. Every backend page follows the same struc
 | OpenBao | `openbao` | all | bao v2.5.3 | Available | [openbao.md](openbao.md) |
 | CyberArk Conjur | `conjur` | all | conjur v8.1.3 (Go) | Available | [conjur.md](conjur.md) |
 | Bitwarden Secrets Manager | `bitwarden-sm` | all | bws 2.0.0 | Available | [bitwarden-sm.md](bitwarden-sm.md) |
-| Delinea Secret Server | `delinea` | all | `tss` | Coming Soon | — |
+| Delinea Secret Server | `delinea` | all | `tss` | Coming Soon | n/a |
 
-All "tested CLI version" entries reflect the operator's local matrix at v0.13.0 release time (2026-05-07). The minimum-supported versions are noted on each backend page.
+All "tested CLI version" entries reflect the v0.19.0 release smoke. Minimum-supported versions are noted on each backend page.
 
 ---
 
@@ -47,16 +47,16 @@ For deeper trade-off analysis: [Tool Comparisons](../comparisons/README.md).
 
 ## Documentation Structure
 
-Every backend page is shaped the same way so you can switch between them without re-orienting:
+Every backend page follows the same shape:
 
-1. **Header block** — type slug, CLI, URI scheme, platform, tested CLI version
-2. **Configuration** — the `[backends.<instance>]` block + field table
-3. **URI Format** — canonical example with labeled parts
-4. **Authentication** — credential mechanisms in precedence order
-5. **doctor Output** — what success and common-failure states look like
-6. **Limitations / Known Issues** — what the backend can't do (set, history, fragments)
-7. **Examples** — real config snippets for typical patterns
-8. **See Also** — cross-links to related backends, registry concepts, fragment grammar
+1. **Header**: type, CLI, URI scheme, platform, tested version
+2. **Configuration**: `[backends.<instance>]` + field table
+3. **URI Format**: canonical example with labeled parts
+4. **Authentication**: credential mechanisms in precedence order
+5. **doctor Output**: success and failure states
+6. **Limitations**: what the backend can't do (set, history, fragments)
+7. **Examples**: real config snippets
+8. **See Also**: cross-links and related concepts
 
 ---
 
@@ -68,7 +68,7 @@ Backends are independent Rust crates implementing two traits. See [reference/add
 
 ## See Also
 
-- [Overview](/) — overview + workflows
-- [Tool comparisons](../comparisons/README.md) — SecretEnv vs `.env` / fnox / direnv / op-run / etc.
-- [Threat model](../security.md) — 14-category honest security comparison
-- [CI/CD patterns](../ci-cd.md) — using SecretEnv in CI pipelines
+- [Overview](/), overview + workflows
+- [Tool comparisons](../comparisons/README.md), SecretEnv vs `.env` / fnox / direnv / op-run / etc.
+- [Threat model](../security.md), 14-category honest security comparison
+- [CI/CD patterns](../guides/ci-cd.md), using SecretEnv in CI pipelines

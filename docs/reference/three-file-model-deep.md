@@ -1,4 +1,4 @@
-# The Three-File Model — Deep Reference
+# The Three-File Model: Deep Reference
 
 The README has the summary. This page is the deep reference: full schemas, validation rules, lifecycle, ownership boundaries, and the exact resolution flow.
 
@@ -12,7 +12,7 @@ The three files:
 
 ---
 
-## File 1 — Project Manifest (`secretenv.toml`)
+## File 1: Project Manifest (`secretenv.toml`)
 
 ### Discovery
 - Walked **upward** from CWD
@@ -29,7 +29,7 @@ ENV_VAR_NAME = { default = "literal-value" }         # static default
 ```
 
 **Validation:**
-- Two value shapes only — `{ from = "..." }` or `{ default = "..." }`
+- Two value shapes only: `{ from = "..." }` or `{ default = "..." }`
 - `from` URIs MUST be `secretenv://` or `secretenv:///` (direct backend URIs are a hard error)
 - `default` values are arbitrary strings, injected as-is
 - Both `from` and `default` in the same entry: error
@@ -39,17 +39,17 @@ ENV_VAR_NAME = { default = "literal-value" }         # static default
 - Empty manifest: parses successfully (no secrets to inject)
 
 ### Order preservation
-Entries are stored in `IndexMap` — declaration order is preserved. `doctor` and `resolve` output reflects manifest order.
+Entries are stored in `IndexMap`. Declaration order is preserved. `doctor` and `resolve` output reflects manifest order.
 
 ### Lifecycle
 - **Created** when setting up secrets for a new project
 - **Committed** to git alongside other project config
 - **Modified** only when the project's secret requirements change (new env var needed, old one retired)
-- **Never modified** when the location of a secret changes — that's the registry's job
+- **Never modified** when the location of a secret changes. That's the registry's job
 
 ---
 
-## File 2 — Machine Config (`~/.config/secretenv/config.toml`)
+## File 2: Machine Config (`~/.config/secretenv/config.toml`)
 
 ### Discovery
 - `--config <path>` flag, OR
@@ -60,34 +60,34 @@ Entries are stored in `IndexMap` — declaration order is preserved. `doctor` an
 ### Schema
 
 ```toml
-# Named registries — cascade source lists
+# Named registries: cascade source lists
 [registries.<name>]
 sources = ["<backend-uri>", ...]   # first-match-wins lookup
 
-# Named backend instances — credentials and routing
+# Named backend instances: credentials and routing
 [backends.<instance-name>]
 type = "<backend-type>"            # identifies factory (aws-ssm, 1password, vault, ...)
 # ... backend-specific fields ...
 ```
 
 ### Validation
-- `[registries.<name>]` requires `sources` — non-empty list of backend URIs
-- `[backends.<instance>]` requires `type` — must match a registered backend factory
+- `[registries.<name>]` requires `sources`: non-empty list of backend URIs
+- `[backends.<instance>]` requires `type`: must match a registered backend factory
 - Backend-specific fields validated by each factory (the core stays blind to backend semantics)
 - Profile auto-merge: 1 MiB hard cap per profile file
 
 ### Profile merge
-On load, `<config-dir>/profiles/*.toml` files are merged in alphabetical order. **User's config always wins** where keys overlap. Profiles only fill gaps. This makes profiles safe for organizational distribution — a bad profile cannot silently override a developer's intentional override.
+On load, `<config-dir>/profiles/*.toml` files are merged in alphabetical order. **User's config always wins** where keys overlap. Profiles only fill gaps. This makes profiles safe for organizational distribution. A bad profile cannot silently override a developer's intentional override.
 
 ### Lifecycle
 - **Created** via `secretenv setup <uri>` (interactive wizard) OR `secretenv profile install <name>` (pre-configured distribution) OR hand-edited
-- **Updated** when backend topology changes — typically rare after initial setup
-- **Per-machine** — never committed; each developer / CI runner has their own
+- **Updated** when backend topology changes, typically rare after initial setup
+- **Per-machine**, never committed; each developer / CI runner has their own
 - **Credentials** for backends are owned by the machine (AWS profiles in `~/.aws`, 1Password account via `op signin`, etc.); this file just *names* them
 
 ---
 
-## File 3 — Alias Registry Document
+## File 3: Alias Registry Document
 
 ### Where it lives
 Inside any backend you already control. Examples:
@@ -99,7 +99,7 @@ Inside any backend you already control. Examples:
 
 ### Schema
 
-**TOML format** (for `local`, `1password` backends — flat key-value):
+**TOML format** (for `local`, `1password` backends, flat key-value):
 
 ```toml
 stripe-key      = "1password-work://payments/stripe/api_key"
@@ -107,7 +107,7 @@ db-url          = "aws-ssm-dev:///myapp/dev/db_url"
 datadog-api-key = "1password-work://engineering/datadog/api_key"
 ```
 
-**JSON format** (for cloud backends storing as a single secret value — aws-ssm, aws-secrets, gcp, azure, vault, openbao, conjur, bitwarden-sm):
+**JSON format** (for cloud backends storing as a single secret value: aws-ssm, aws-secrets, gcp, azure, vault, openbao, conjur, bitwarden-sm):
 
 ```json
 {
@@ -119,8 +119,8 @@ datadog-api-key = "1password-work://engineering/datadog/api_key"
 ### Validation
 - Every value must parse as a valid backend URI
 - Every URI's scheme must match a configured backend instance
-- Chained aliases are forbidden — registry values cannot be `secretenv://...`
-- Writes use `BTreeMap` ordering (alphabetical) — diffs are clean and reproducible
+- Chained aliases are forbidden: registry values cannot be `secretenv://...`
+- Writes use `BTreeMap` ordering (alphabetical), so diffs are clean and reproducible
 
 ### Cascade
 
@@ -129,8 +129,8 @@ A named registry can list multiple `sources`. They form a **first-match-wins cas
 ```toml
 [registries.dev]
 sources = [
-  "aws-ssm-dev:///secretenv/dev-registry",       # source 0 — checked first
-  "aws-ssm-platform:///secretenv/org-registry",  # source 1 — fallback
+  "aws-ssm-dev:///secretenv/dev-registry",       # source 0 (checked first)
+  "aws-ssm-platform:///secretenv/org-registry",  # source 1 (fallback)
 ]
 ```
 
@@ -142,7 +142,7 @@ sources = [
 ### Lifecycle
 - **Created** via the first `secretenv registry set <alias> <uri>` against an empty path
 - **Updated** when a secret migrates between backends, or when an alias is renamed
-- **Owner** is whoever owns the host backend — typically the platform / security team
+- **Owner** is whoever owns the host backend, typically the platform / security team
 - **Scoping:**
   - Org-wide registry: shared across all teams (e.g., `aws-ssm-platform:///secretenv/org-registry`)
   - Team-specific registry: scoped to a team, can shadow org defaults
@@ -154,7 +154,7 @@ sources = [
 
 When you run `secretenv run --registry dev -- npm start`:
 
-### Phase 1 — Registry selection
+### Phase 1: Registry selection
 
 ```
 1. Explicit --registry <name-or-uri> flag    (highest precedence)
@@ -165,18 +165,18 @@ When you run `secretenv run --registry dev -- npm start`:
 
 If the value contains `://`, it's treated as a direct URI (single source, no cascade). Otherwise it's a name lookup against `[registries.<name>]`.
 
-### Phase 2 — Registry document loading
+### Phase 2: Registry document loading
 
 For each source URI in the cascade:
 - Call the matching backend's `list()` method
 - Parse the result as a `Vec<(alias, target-uri)>` map
 - Build a layered `AliasMap` (one layer per source, in declaration order)
 
-**All sources must succeed.** If any `list()` fails (CLI missing, NotAuth, network), the entire resolve errors. This is deliberate — fails-fast prevents silent fallthrough that would mask environment problems.
+**All sources must succeed.** If any `list()` fails (CLI missing, NotAuth, network), the entire resolve errors. This is deliberate. Fails-fast prevents silent fallthrough that would mask environment problems.
 
 Each target URI is validated: parses, scheme matches a configured backend, no chained aliases.
 
-### Phase 3 — Manifest resolution
+### Phase 3: Manifest resolution
 
 For each entry in `secretenv.toml`'s `[secrets]` section:
 - If `from = "secretenv://alias"`: look up `alias` in the AliasMap (first-match-wins across cascade layers); get the target URI
@@ -184,19 +184,19 @@ For each entry in `secretenv.toml`'s `[secrets]` section:
 
 Result: a `Vec<ResolvedSecret>` in manifest declaration order.
 
-### Phase 4 — Secret fetching
+### Phase 4: Secret fetching
 
 For each `ResolvedSecret`:
 - If `Default`: inject inline (no backend call)
-- If `Uri`: call `backend.get(target-uri)` — **all fetches run in parallel**
+- If `Uri`: call `backend.get(target-uri)`. **All fetches run in parallel**
 
 **Failure modes:**
 - Single failure: error returned with full context (alias, URI, operation)
-- Multiple failures: aggregated into one report — operators see every broken alias in one pass
+- Multiple failures: aggregated into one report, so operators see every broken alias in one pass
 
 If `--dry-run`: skip fetching, print resolution map (`KEY ← <uri>` and `KEY = <value>`), exit 0.
 
-### Phase 5 — Inject and exec
+### Phase 5: Inject and exec
 
 - Merge fetched values + static defaults into the env map
 - On Unix: `exec()` replaces the current process (inherits TTY, stdio, signals; secrets exist briefly in the heap before exec discards it)
@@ -204,43 +204,25 @@ If `--dry-run`: skip fetching, print resolution map (`KEY ← <uri>` and `KEY = 
 
 ---
 
-## What this decoupling solves (in detail)
+## What this decoupling solves
 
-### Secrets-in-config problem
-Without decoupling, every dev's `.env` contains both values and paths:
-```
-STRIPE_KEY=sk_live_abc123...                         # secret value
-DB_URL=mydb.prod.us-east-1.rds.amazonaws.com         # infrastructure path
-```
-Both leak. Both go stale. Both are hard to rotate.
+Conflating "what a project needs" with "where the secret lives" is the root cause of most `.env` pain. Separating them produces five concrete wins:
 
-With decoupling: `secretenv.toml` declares names only (safe to commit); the registry stores pointers only (safe to keep in any backend); secrets are fetched at runtime (always fresh).
-
-### Topology hiding
-Without: new engineer reading the repo learns "Stripe is in 1Password account X, vault path Y, AWS account Z" — infrastructure topology leaks via code review.
-
-With: repo contains alias names; actual paths are in a registry that lives behind backend access controls. Reading the repo teaches you nothing about backend topology.
-
-### Team vs org scoping
-Without: teams either bake env-specific logic into code, or maintain separate repos / branches per environment.
-
-With: one `secretenv.toml` per repo. Registry cascade routes the same alias names to env-specific backends. Environments change *how they're configured* (different registry), not *what the code knows*.
-
-### Credential portability
-Without: migrating Stripe from 1Password to Vault means decrypting in 1Password, encrypting in Vault, updating every repo, re-inviting every team member.
-
-With: secrets already live in both backends (you put them there using your existing tools). One `secretenv registry set` updates the alias pointer. Every repo picks it up on the next run.
-
-### Offboarding
-Without: departing engineer still has local `.env` files; revocation is manual and error-prone per backend.
-
-With: revoke access to the registry backend. Engineer can no longer resolve any alias. Single operation covers every repo simultaneously.
+| Problem | Without decoupling | With the three-file model |
+|---|---|---|
+| **Secrets in config** | `.env` holds values *and* infra paths, both leak, go stale, resist rotation | Manifest declares names only; the registry holds pointers only; values are fetched fresh at runtime |
+| **Topology leaks via code review** | Reading the repo reveals "Stripe is in 1Password account X, Vault path Y" | The repo holds alias names; real paths sit behind backend access controls |
+| **Per-environment config** | Env-specific logic baked into code, or separate repos/branches per env | One manifest per repo; the registry cascade routes the same aliases to env-specific backends |
+| **Credential portability** | Migrating a secret means re-encrypt + update every repo + re-invite every member | One `secretenv registry migrate` (or `set`); every repo picks it up on its next run |
+| **Offboarding** | Departing engineer keeps local `.env` files; revocation is manual, per-backend | Revoke registry-backend access once, covers every repo simultaneously |
 
 ---
 
 ## See also
 
-- [Overview](/) — overview + workflows
-- [Full CLI reference](cli-reference-full.md)
-- [Threat model](../security.md) — full security comparison
-- [Fragment vocabulary](fragment-vocabulary.md) — URI fragment grammar
+- [Registry Management](registry.md): the alias registry (file 3) and its CLI
+- [Configuration Reference](configuration.md): the `config.toml` schema (file 2)
+- [Full CLI reference](cli-reference-full.md): every command and flag
+- [Fragment vocabulary](fragment-vocabulary.md): URI fragment grammar
+- [Threat model](../security.md): full security comparison
+- [Overview](/): overview and workflows

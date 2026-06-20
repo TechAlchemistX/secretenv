@@ -1,21 +1,21 @@
 # Local File
 
-**Type:** `local`
-**CLI required:** None (filesystem only)
-**URI scheme:** `<instance-name>:///path/to/file.toml`
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** SecretEnv v0.13.0 (2026-05-07)
+- **Type:** `local`
+- **CLI required:** None (filesystem only)
+- **URI scheme:** `<instance-name>:///path/to/file.toml`
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** SecretEnv v0.19.0
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `local` backend — the only backend that needs no CLI. New here? See the [overview](/).
+> SecretEnv injects secrets as environment variables. This page covers the `local` backend, the only one needing no CLI. New here? See the [overview](/).
 
-The local backend reads secret values directly from a flat TOML file on disk. Use it for solo developers who want zero-infrastructure local workflow, or as a **registry document** pointing at other backends (most commonly the macOS Keychain).
+Read secrets from a TOML file on disk. Best for solo development (zero infrastructure) or as a registry document pointing at other backends.
 
 ## When to pick this
 
-- **Solo development:** zero external service, no credentials, filesystem only
-- **Local registry document:** point aliases at Keychain / Vault / other backends
-- **Air-gapped environments:** all secrets on disk, no network required
-- **Testing SecretEnv:** quick setup without infrastructure
+- **Solo development**, no external service, no credentials
+- **Local registry**, alias to Keychain, Vault, or other backends
+- **Air-gapped setups**, all secrets on disk, no network
+- **Quick testing**, minimal setup
 
 ## Configuration
 
@@ -34,7 +34,7 @@ No credential fields, no remote service, no authentication. Just `std::fs`.
 
 ### Multiple instances
 
-You can configure multiple `local` instances if you want different files referenced as separate backends:
+Configure multiple `local` instances to reference different files:
 
 ```toml
 [backends.local-personal]
@@ -44,8 +44,6 @@ type = "local"
 type = "local"
 ```
 
-The instance name (`local-personal`, `local-team`) becomes the URI scheme.
-
 ## URI Format
 
 ```
@@ -54,9 +52,9 @@ local:///Users/yourname/.config/secretenv/local-registry.toml
 instance  absolute path to TOML file
 ```
 
-The path must be absolute. The file at the path must be a flat TOML key-value document — keys at top level only, values either scalar (raw secret values) or URI strings (when the file serves as a registry document).
+Path must be absolute. File must be a flat TOML key-value document (top-level keys only; values are scalars or URIs).
 
-**Verify your setup with:** `secretenv doctor` — green output means SecretEnv can read the file.
+**Verify:** `secretenv doctor`. Green output means SecretEnv can read the file.
 
 ### File Format
 
@@ -82,13 +80,11 @@ DATABASE_URL  = "postgres://localhost/mydb"
 API_TOKEN     = "abc123…"
 ```
 
-The registry-document pattern is **strongly recommended** — it aliases secrets from other backends. Storing actual secret values in a flat file is what `.env` already does poorly. Prefer routing through Keychain or any cloud backend instead.
+**Strongly prefer the registry-document pattern.** It aliases from other backends. Storing actual secrets in flat files defeats the point; use Keychain or a cloud backend instead.
 
 ## Authentication
 
-None. The backend reads from the filesystem with the current user's permissions.
-
-If a file is unreadable (permissions, missing), `secretenv doctor` reports it cleanly.
+None. Reads the file with the current user's permissions. Unreadable files are reported cleanly by `secretenv doctor`.
 
 ## doctor Output
 
@@ -97,7 +93,7 @@ Healthy (file readable):
 ```
 local                                                            (local)
   ✓ filesystem access
-  ✓ /Users/alice/.config/secretenv/local-registry.toml — readable
+  ✓ /Users/alice/.config/secretenv/local-registry.toml, readable
 ```
 
 File missing or unreadable:
@@ -105,7 +101,7 @@ File missing or unreadable:
 ```
 local                                                            (local)
   ✓ filesystem access
-  ✗ /Users/alice/.config/secretenv/local-registry.toml — not readable
+  ✗ /Users/alice/.config/secretenv/local-registry.toml, not readable
       → check the path exists and you have read permissions
 ```
 
@@ -115,13 +111,13 @@ No fragment directives. Any `#...` fragment is rejected at URI-parse time.
 
 ## History API support
 
-Supported via `git log --follow`. `secretenv registry history <alias>` shells out to `git log` against the registry file and returns one entry per commit, with the short SHA as `version`, the ISO-8601 author timestamp, and the author name/email as `actor`. The file must be inside a git repository; a clear error is returned if it is not tracked. The fragment is rejected before the git call fires.
+Supported via `git log --follow` on the registry file. Returns one entry per commit with short SHA (version), ISO-8601 timestamp, and author name/email. File must be git-tracked; clear error if not.
 
 ## Limitations
 
-- **Plaintext on disk if storing raw secrets.** `chmod 600` and exclude from cloud-syncing backups. Strongly prefer the registry-document pattern.
-- **No write protection.** Anyone with write access to the file can change values; no signing or verification.
-- **TOML parse errors are fatal.** A malformed file fails the whole resolve, not just the affected alias.
+- **Plaintext if storing raw secrets.** Use `chmod 600` and exclude from cloud backups
+- **No write protection.** Writable file = writable secrets (no signing)
+- **Parse errors are fatal.** Malformed TOML fails all aliases, not just one
 
 ## Examples
 
@@ -141,7 +137,7 @@ sources = ["local-main:///Users/you/.config/secretenv/aliases.toml"]
 ```
 
 ```toml
-# ~/.config/secretenv/aliases.toml — the registry
+# ~/.config/secretenv/aliases.toml, the registry
 
 stripe-key  = "keychain-default:///myapp/stripe-key"
 db-url      = "keychain-default:///myapp/db-url"
@@ -182,9 +178,9 @@ The file is readable but the TOML syntax is invalid. Check for missing quotes on
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how aliases resolve
-- [macOS Keychain backend](keychain.md) — the typical pair for `local`-as-registry
-- [AWS SSM backend](aws-ssm.md) — alternative: cloud-native parameter store
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how aliases resolve
+- [macOS Keychain backend](keychain.md), the typical pair for `local`-as-registry
+- [AWS SSM backend](aws-ssm.md), alternative: cloud-native parameter store
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

@@ -1,21 +1,21 @@
 # OpenBao
 
-**Type:** `openbao`
-**CLI required:** [`bao`](https://openbao.org/docs/install/) v2+
-**URI scheme:** `<instance-name>://mount/path/to/secret[#json-key=<field>]`
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `bao v2.5.3` (build 2026-04-20) on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `openbao`
+- **CLI required:** [`bao`](https://openbao.org/docs/install/)
+- **CLI version:** v2+
+- **URI scheme:** `<instance-name>://mount/path/to/secret[#json-key=<field>]`
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `bao v2.5.3` (build 2026-04-20) on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
 > SecretEnv injects secrets from any backend as environment variables. This page covers the `openbao` backend. New here? See the [overview](/).
 
-OpenBao is the Linux Foundation MPL-2.0 fork of HashiCorp Vault — same wire protocol, KV semantics, and auth methods. Pick OpenBao if you're already running a Vault-compatible instance and want the open-source governance model. Migration from Vault is a one-line config swap.
+OpenBao is the Linux Foundation MPL-2.0 fork of Vault with identical wire protocol and KV semantics. Migration from Vault is a one-line config swap.
 
 ## When to pick this
 
-- **Vault-compatible instances:** OpenBao understands the Vault API; use it with Vault servers
-- **Open source governance:** MPL-2.0 licensed, Linux Foundation governed
-- **Self-hosted or cloud:** run your own instance or use a managed provider
-- **Enterprise features via OSS:** namespaces are free in OpenBao 2.x (Enterprise-gated in Vault)
+- **Vault compatibility:** works with Vault and OpenBao servers
+- **Open-source governance:** MPL-2.0, Linux Foundation directed
+- **Free namespaces:** open in OpenBao 2.x (Enterprise-only in Vault)
 
 ## Configuration
 
@@ -31,9 +31,9 @@ openbao_address = "http://127.0.0.1:8300"   # required
 | Field | Required | Description |
 |---|---|---|
 | `type` | Yes | Must be `"openbao"` |
-| `openbao_address` | Yes | Full URL of the OpenBao instance (include scheme). Dev mode listens on **HTTP** (`http://127.0.0.1:8300`), not HTTPS. Set explicitly to keep registry portable. |
-| `openbao_namespace` | No | OpenBao namespace (free OSS feature in 2.x). Omit if not in use. |
-| `bao_unsafe_set` | No | Defense-in-depth opt-in. Defaults to `false`; the safe `value=-` stdin form is used regardless. Reserved for forward-compatibility. |
+| `openbao_address` | Yes | Full URL (with scheme). Dev mode: `http://127.0.0.1:8300` (HTTP, not HTTPS). Set explicitly for portable registries. |
+| `openbao_namespace` | No | OpenBao namespace (2.x OSS feature). Omit if unused. |
+| `bao_unsafe_set` | No | Defense-in-depth opt-in (reserved for forward-compatibility). Default `false`; safe `value=-` stdin always used. |
 | `timeout_secs` | No | Per-instance fetch timeout. Default: 30s. |
 
 ### Multiple instances or namespaces
@@ -58,7 +58,7 @@ openbao-dev://secret/prod/db_password
 instance    mount   path within mount
 ```
 
-The unified `bao kv` CLI handles KV v1 and v2 transparently. The mount is the KV backend's name (typically `secret`); the path is the secret's location within it.
+The `bao kv` CLI handles KV v1 and v2 transparently. The mount is the KV backend's name (typically `secret`).
 
 ### `#json-key=<field>` fragment
 
@@ -78,7 +78,7 @@ echo -n '{"username":"app","password":"sk_live_abc"}' \
 
 The fragment is recognized only on `get`. `set`, `delete`, `list`, and `history` reject any fragment.
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify your setup with:** `secretenv doctor`. Green output means you're ready to run `secretenv run -- <your command>`.
 
 ## Authentication
 
@@ -127,13 +127,13 @@ Other fragments are rejected with a specific error.
 
 ## History API support
 
-Not implemented (planned for future). The `bao` CLI (v2.5.3) has no per-secret history subcommand. Version history is available via the REST API and the web UI; this backend will flip to a native implementation once the CLI supports it.
+Not implemented. The `bao` CLI (v2.5.3) lacks a per-secret history subcommand. Available via REST API and web UI.
 
 ## Limitations
 
-- **Storage model.** Every secret is stored in the `value` field of a KV v2 entry (`bao kv put <path> value=-`). Multi-field secrets are not produced by this backend.
-- **Scheme mismatch gotcha.** Dev mode (`bao server -dev`) listens on **HTTP**, but the CLI defaults to **HTTPS**. Always set `openbao_address` explicitly with the correct scheme.
-- **KV v1 vs v2.** `bao kv` CLI is transparent, but if you're migrating from Vault, verify your mount type in OpenBao (run `bao secrets list` to see mount types).
+- **Storage model:** all secrets in the `value` field of KV v2 (`bao kv put <path> value=-`).
+- **Scheme gotcha:** dev mode is HTTP, CLI defaults to HTTPS. Always set `openbao_address` explicitly.
+- **KV mount verification:** when migrating from Vault, check mount types (`bao secrets list`).
 
 ## Examples
 
@@ -202,10 +202,10 @@ The path doesn't exist. Verify with `bao kv list secret/` to enumerate existing 
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key`, `#version`, etc. on other backends
-- [Vault backend](vault.md) — compatible and equivalent (choose based on governance preference)
-- [OpenBao CLI reference](https://openbao.org/docs/commands/) — authoritative OpenBao docs
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md), `#json-key`, `#version`, etc. on other backends
+- [Vault backend](vault.md), compatible and equivalent (choose based on governance preference)
+- [OpenBao CLI reference](https://openbao.org/docs/commands/), authoritative OpenBao docs
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

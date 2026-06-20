@@ -19,7 +19,7 @@ hero:
 features:
   - icon: 🗂
     title: Three files, three owners
-    details: '<code>secretenv.toml</code> in the repo lists alias names. Machine config names backend instances. The registry — inside a backend you control — maps aliases to backend URIs.'
+    details: '<code>secretenv.toml</code> in the repo lists alias names. Machine config names backend instances. The registry, inside a backend you control, maps aliases to backend URIs.'
     link: /reference/three-file-model-deep
     linkText: Read the model
 
@@ -31,14 +31,14 @@ features:
 
   - icon: 🔁
     title: Migrate without touching repos
-    details: 'Move a secret from 1Password to Vault: <code>secretenv registry set</code>. Every repo picks it up on the next run. No PRs, no re-encryption, no coordination.'
+    details: 'Move a secret from 1Password to Vault in one command: <code>secretenv registry migrate</code>. Every repo picks it up on the next run. No PRs, no re-encryption, no coordination.'
     link: /reference/registry
     linkText: Registry workflow
 
   - icon: ⚙️
     title: CI-first integration
     details: 'Set <code>SECRETENV_REGISTRY</code> once. OIDC patterns for GitHub Actions, GitLab, Jenkins, BuildKite, CircleCI. <code>doctor --json</code> as a pre-deploy gate.'
-    link: /ci-cd
+    link: /guides/ci-cd
     linkText: CI/CD guide
 
   - icon: 🧭
@@ -107,20 +107,20 @@ Secrets are fetched from whichever backends the registry points to, injected as 
 The **manifest** says *what* the project needs. The **machine config** says *which backends* this machine has. The **registry** says *which backend URI* each alias resolves to.
 
 ::: tip Why the indirection?
-Repos commit alias names like `secretenv://stripe-key`. The registry maps each alias to its current backend location. Migrating from 1Password to Vault becomes one `secretenv registry set` — every repo picks it up on the next run, no PRs.
+Repos commit alias names like `secretenv://stripe-key`. The registry maps each alias to its current backend location. Migrating from 1Password to Vault becomes one `secretenv registry set`. Every repo picks it up on the next run, no PRs.
 :::
 
-For the full schemas, validation rules, and 5-phase resolution flow: [The Three-File Model — Deep Reference](/reference/three-file-model-deep).
+For the full schemas, validation rules, and 5-phase resolution flow: [The Three-File Model, Deep Reference](/reference/three-file-model-deep).
 
 ---
 
 ## Where to go next
 
-- [**Backends**](/backends/) — 15 backend pages with config, URI format, examples, tested CLI versions
-- [**CLI Reference**](/reference/cli-reference-full) — every command, every flag, every exit code
-- [**CI/CD Integration**](/ci-cd) — GitHub Actions, GitLab, Jenkins, BuildKite, CircleCI patterns
-- [**Threat Model**](/security) — 14-category honest comparison with `.env`, fnox, op-run, direnv
-- [**Comparisons**](/comparisons/) — when to pick secretenv vs. an alternative
+- [**Backends**](/backends/): 15 backend pages with config, URI format, examples, tested CLI versions
+- [**CLI Reference**](/reference/cli-reference-full): every command, every flag, every exit code
+- [**CI/CD Integration**](/guides/ci-cd): GitHub Actions, GitLab, Jenkins, BuildKite, CircleCI patterns
+- [**Threat Model**](/security): 14-category honest comparison with `.env`, fnox, op-run, direnv
+- [**Comparisons**](/comparisons/): when to pick secretenv vs. an alternative
 
 ::: info Try it now
 `secretenv doctor` is the front door for validating your config against any backend. Run it after install, after every config change, and as a CI pre-deploy gate.

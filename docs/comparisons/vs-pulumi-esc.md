@@ -1,6 +1,6 @@
 # SecretEnv vs Pulumi ESC
 
-**TL;DR.** [Pulumi ESC](https://www.pulumi.com/docs/esc/) (Environments, Secrets, and Configuration) is the closest architectural cousin to SecretEnv: both are multi-backend, both abstract storage from consumption, both let you compose secrets across providers. **The differentiator is local-first vs SaaS-first.** Pulumi ESC requires a Pulumi Cloud account and runs orchestration through Pulumi's hosted service. SecretEnv runs entirely on your machine — no SaaS gate, no external dependency for a core workflow tool.
+**TL;DR.** [Pulumi ESC](https://www.pulumi.com/docs/esc/) is the closest cousin: both multi-backend, both abstract storage from consumption. **The differentiator: local-first vs SaaS-first.** ESC requires Pulumi Cloud. SecretEnv runs on your machine: no SaaS gate for core workflows.
 
 ---
 
@@ -8,40 +8,38 @@
 
 - Multi-backend abstraction (AWS, Azure, GCP, Vault, 1Password, Doppler, ...)
 - Hosted environment definitions in Pulumi Cloud
-- Policy-as-code via Pulumi's policy engine
-- Hosted audit log
-- Drift detection across environments
-- Tight integration with Pulumi IaC
+- Policy-as-code engine, hosted audit log, drift detection
+- Tight Pulumi IaC integration
 
-It is genuinely well-architected. If your org is already deep in the Pulumi ecosystem, ESC is a natural extension.
+If your org uses Pulumi extensively, ESC is a natural extension.
 
 ---
 
 ## The SaaS dependency
 
-Pulumi ESC's environment definitions live in Pulumi Cloud. To use it you need:
-- A Pulumi Cloud account (free tier exists; usage-priced beyond)
-- Network access to `api.pulumi.com` from every machine that resolves secrets
-- Trust in Pulumi as a service-availability dependency for your local-dev workflow
+ESC environment definitions live in Pulumi Cloud. You need:
+- A Pulumi Cloud account (free tier + usage-based pricing)
+- Network access to `api.pulumi.com` from every machine
+- Trust in Pulumi's availability for your local-dev workflow
 
-For some teams that's fine. For others — especially security-conscious teams that won't add SaaS for a core workflow tool, or air-gapped environments — it's a non-starter.
+Some teams accept this. Others, especially security-conscious or air-gapped teams, won't add SaaS to core workflows.
 
 ---
 
 ## Comparison
 
-| Property | Pulumi ESC | SecretEnv |
+| Property | SecretEnv | Pulumi ESC |
 |---|---|---|
 | Multi-backend orchestration | ✓ | ✓ |
-| Local-first | ✗ (requires Pulumi Cloud) | ✓ |
-| Backend topology hidden from repos | ✓ (via ESC environment refs) | ✓ (via alias registry) |
-| Policy engine (policy-as-code) | ✓ | ✗ (delegate to backend's IAM/ACLs) |
-| Hosted audit log | ✓ | ✗ (delegate to backend) |
-| Drift detection across environments | ✓ | ✗ |
-| UI for managing environments | ✓ (Pulumi Cloud UI) | ✗ (config files + CLI only) |
-| Cost | Free tier; paid above | Free (AGPL) |
-| Network required to read | Yes (Pulumi Cloud + backend) | Yes (backend only) |
-| Pulumi IaC integration | ✓ (native) | None |
+| Local-first | ✓ | ✗ (requires Pulumi Cloud) |
+| Backend topology hidden from repos | ✓ (via alias registry) | ✓ (via ESC environment refs) |
+| Policy engine (policy-as-code) | ✗ (delegate to backend's IAM/ACLs) | ✓ |
+| Hosted audit log | ✗ (delegate to backend) | ✓ |
+| Drift detection across environments | ✗ | ✓ |
+| UI for managing environments | ✗ (config files + CLI only) | ✓ (Pulumi Cloud UI) |
+| Cost | Free (AGPL) | Free tier; paid above |
+| Network required to read | Yes (backend only) | Yes (Pulumi Cloud + backend) |
+| Pulumi IaC integration | None | ✓ (native) |
 
 ---
 

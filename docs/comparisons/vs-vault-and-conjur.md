@@ -1,32 +1,32 @@
 # SecretEnv vs Vault Enterprise / CyberArk Conjur (identity platforms)
 
-**TL;DR.** HashiCorp Vault Enterprise and CyberArk Conjur are full **identity platforms** — they provide policy engines, dynamic secrets, lease management, certificate authorities, RBAC, multi-tenancy, audit logs, HSM integration, and more. SecretEnv runs **on top of** either of them as one of many backends. They're not competitors; they're a category SecretEnv routes to.
+**TL;DR.** Vault Enterprise and CyberArk Conjur are **identity platforms** with policy engines, dynamic secrets, lease management, CAs, RBAC, audit logs, HSM integration. SecretEnv runs **on top of** them as one of 15 backends. Not competitors; a category SecretEnv routes to.
 
 ---
 
 ## What Vault Enterprise / Conjur do
 
-These are **secrets-and-identity platforms** with capabilities far beyond what a CLI orchestration tool covers:
+**Secrets-and-identity platforms** with capabilities a CLI orchestration tool doesn't:
 
-- **Policy engines** — fine-grained ACLs, Sentinel (Vault) or Conjur policy language
-- **Dynamic secrets** — short-lived database credentials, AWS STS tokens, SSH certs generated on demand
-- **Lease management** — automatic renewal and revocation cycles
-- **Audit logs** — tamper-evident, hash-chained records of every access
-- **Multi-tenancy** — namespaces (Vault), accounts (Conjur)
-- **HSM integration** — root key sealed in hardware
-- **PKI / Certificate authority** — issue and rotate certs
-- **Transit encryption** — encryption-as-a-service for app-managed data
-- **Vendor support** — enterprise SLAs, professional services
+- **Policy engines**: Sentinel (Vault) or Conjur policy language
+- **Dynamic secrets**: short-lived DB creds, STS tokens, SSH certs on demand
+- **Lease management**: automatic renewal and revocation
+- **Audit logs**: tamper-evident, hash-chained
+- **Multi-tenancy**: namespaces (Vault), accounts (Conjur)
+- **HSM integration**: hardware-sealed root keys
+- **PKI / Certificate authority**: issue and rotate certs
+- **Transit encryption**: encryption-as-a-service
+- **Vendor support**: enterprise SLAs, professional services
 
-If you need any of the above, you need Vault Enterprise or Conjur. SecretEnv does not replace them.
+SecretEnv does not replace these capabilities.
 
 ---
 
 ## How SecretEnv coexists
 
-SecretEnv has `vault` and `conjur` backends. They're CLI wrappers — `vault kv get` and `conjur variable get` under the hood. SecretEnv treats Vault/Conjur as one of 15 backends it can fetch from.
+SecretEnv has `vault` and `conjur` backends (`vault kv get`, `conjur variable get` under the hood). SecretEnv treats Vault/Conjur as one of 15 backends.
 
-A typical multi-backend org:
+Example multi-backend org:
 
 ```toml
 # ~/.config/secretenv/config.toml
@@ -47,24 +47,24 @@ op_account = "acme.1password.com"
 sources = ["vault-prod://secret/secretenv/registry"]
 ```
 
-The registry itself can live in Vault (or anywhere). Aliases route to Vault for some secrets, AWS SSM for others, 1Password for others. SecretEnv handles the orchestration; Vault handles its own piece.
+The registry can live in Vault (or anywhere). Aliases route to Vault, AWS SSM, 1Password selectively. SecretEnv orchestrates; Vault handles policy and lease management.
 
 ---
 
 ## Comparison
 
-| Property | Vault Enterprise / Conjur | SecretEnv |
+| Property | SecretEnv | Vault Enterprise / Conjur |
 |---|---|---|
-| Multi-backend orchestration across heterogeneous sources | ✗ (Vault IS the source) | ✓ |
-| Policy engine | ✓ (Sentinel / Conjur policy) | ✗ (delegate to backend ACLs) |
-| Dynamic secrets / lease management | ✓ | ✗ |
-| Audit log | ✓ (hash-chained) | ✗ (delegate to backend logs) |
-| HSM integration | ✓ | ✗ |
-| PKI / Certificate authority | ✓ | ✗ |
-| Centrally-shared mutable alias registry | ✗ | ✓ |
-| Backend migration (cross-tool) | ✗ (Vault is the only backend) | ✓ |
-| Local-dev ergonomics | Heavy (Vault server + auth + policy) | Lightweight (CLI only) |
-| Cost | Enterprise license | Free (AGPL) |
+| Multi-backend orchestration across heterogeneous sources | ✓ | ✗ (Vault IS the source) |
+| Policy engine | ✗ (delegate to backend ACLs) | ✓ (Sentinel / Conjur policy) |
+| Dynamic secrets / lease management | ✗ | ✓ |
+| Audit log | ✗ (delegate to backend logs) | ✓ (hash-chained) |
+| HSM integration | ✗ | ✓ |
+| PKI / Certificate authority | ✗ | ✓ |
+| Centrally-shared mutable alias registry | ✓ | ✗ |
+| Backend migration (cross-tool) | ✓ | ✗ (Vault is the only backend) |
+| Local-dev ergonomics | Lightweight (CLI only) | Heavy (Vault server + auth + policy) |
+| Cost | Free (AGPL) | Enterprise license |
 
 ---
 
@@ -83,4 +83,4 @@ The registry itself can live in Vault (or anywhere). Aliases route to Vault for 
 - You don't need (or already have separately) policy engines and audit infrastructure
 
 **Run both if:**
-- Vault is your primary identity platform AND you also use AWS SSM, 1Password, or others — SecretEnv routes across all of them; Vault remains the policy / lease authority for what lives in Vault.
+- Vault is your primary identity platform AND you also use AWS SSM, 1Password, or others. SecretEnv routes across all of them; Vault remains the policy / lease authority for what lives in Vault.

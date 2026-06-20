@@ -1,6 +1,6 @@
 # SecretEnv vs External Secrets Operator (ESO)
 
-**TL;DR.** [External Secrets Operator](https://external-secrets.io/) is the dominant Kubernetes-native multi-backend secrets bridge. It runs in-cluster as an operator, syncs secrets from external backends into K8s `Secret` resources. SecretEnv runs as a CLI on developer laptops, in CI runners, and as a `secretenv run` wrapper for non-K8s production workloads. **They're complementary, not competing** — many teams run both.
+**TL;DR.** [External Secrets Operator](https://external-secrets.io/) is the Kubernetes-native multi-backend bridge. It runs in-cluster, syncing secrets into K8s `Secret` resources. SecretEnv runs as a CLI on laptops, in CI, and as a `secretenv run` wrapper for non-K8s workloads. **Complementary, not competing.**
 
 ---
 
@@ -8,48 +8,48 @@
 
 - Kubernetes operator pattern (controllers + CRDs)
 - `ExternalSecret` and `ClusterSecretStore` CRDs
-- Pulls from AWS SSM/SM, GCP SM, Azure KV, Vault, 1Password Connect, Doppler, Infisical, and many more
-- Materializes into native K8s `Secret` resources for Pod consumption
+- Pulls from AWS SSM/SM, GCP SM, Azure KV, Vault, 1Password Connect, Doppler, Infisical, etc.
+- Materializes into K8s `Secret` resources
 - Webhook + push-based sync modes
-- CNCF Sandbox project; broad community adoption
+- CNCF Sandbox project
 
-If your entire deployment is Kubernetes, ESO is the right answer for in-cluster secrets.
+Use ESO if your entire deployment is Kubernetes.
 
 ---
 
 ## Where ESO doesn't fit
 
-- **Local development.** ESO runs in K8s; it doesn't help a developer running `npm start` on their laptop.
-- **Non-K8s CI/CD.** GitHub Actions, GitLab CI, Jenkins, BuildKite — ESO doesn't run there.
-- **Non-K8s production.** Lambda, ECS Fargate, Cloud Run, plain VMs, Heroku-style PaaS — ESO has no story.
+- **Local development.** ESO doesn't help `npm start` on a laptop.
+- **Non-K8s CI/CD.** GitHub Actions, GitLab CI, Jenkins, BuildKite: ESO doesn't run there.
+- **Non-K8s production.** Lambda, ECS Fargate, Cloud Run, VMs, Heroku-style PaaS: no ESO story.
 
-For these contexts you need a CLI-first tool. SecretEnv fills that gap.
+For these, use a CLI-first tool like SecretEnv.
 
 ---
 
 ## Comparison
 
-| Property | ESO | SecretEnv |
+| Property | SecretEnv | ESO |
 |---|---|---|
-| Runtime model | Kubernetes operator (in-cluster) | CLI (local + CI + general-purpose runtime) |
-| Multi-backend | ✓ (broad provider list) | ✓ (15 backends) |
-| Local dev | ✗ | ✓ |
-| GitHub Actions / GitLab / Jenkins | ✗ (you'd run something else) | ✓ |
-| In-cluster sync to K8s `Secret` | ✓ (its primary purpose) | ✗ (use ESO for this) |
-| Centrally-shared mutable alias registry | ✗ (config-as-code via CRDs) | ✓ |
-| Backend migration | Edit every `ExternalSecret` CRD | One `registry set` |
-| Repo contains backend topology | Yes (provider name in CRD `spec.dataFrom.extract.key`) | No (alias only) |
+| Runtime model | CLI (local + CI + general-purpose runtime) | Kubernetes operator (in-cluster) |
+| Multi-backend | ✓ (15 backends) | ✓ (broad provider list) |
+| Local dev | ✓ | ✗ |
+| GitHub Actions / GitLab / Jenkins | ✓ | ✗ (you'd run something else) |
+| In-cluster sync to K8s `Secret` | ✗ (use ESO for this) | ✓ (its primary purpose) |
+| Centrally-shared mutable alias registry | ✓ | ✗ (config-as-code via CRDs) |
+| Backend migration | One `registry set` | Edit every `ExternalSecret` CRD |
+| Repo contains backend topology | No (alias only) | Yes (provider name in CRD `spec.dataFrom.extract.key`) |
 
 ---
 
 ## Running both
 
-A common pattern for K8s shops:
+A common K8s pattern:
 
-- **ESO in-cluster** for production workloads (Pods consuming `Secret` mounts)
-- **SecretEnv on dev laptops + CI** for local dev parity, build pipelines, and any non-K8s component
+- **ESO in-cluster** for production Pods
+- **SecretEnv on dev laptops + CI** for local dev parity and non-K8s components
 
-Both pull from the same underlying backends (AWS SSM, Vault, 1Password, etc.) so there's a single source of truth at the backend level. Each tool handles the workflow it's good at.
+Both pull from the same backends (AWS SSM, Vault, 1Password, etc.). Each handles its workflow.
 
 ---
 

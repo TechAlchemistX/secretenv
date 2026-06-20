@@ -1,27 +1,25 @@
 # Distribution profiles (`secretenv profile`)
 
-Profiles are shared, TOML-formatted config fragments hosted over HTTPS that teams can publish once and everyone installs with a single command. A profile defines `[backends.*]` and/or `[registries.*]` entries that get **merged into** the user's local `config.toml` at load time — no manual editing required.
+Profiles are shared, TOML-formatted config fragments hosted over HTTPS that teams can publish once and everyone installs with a single command. A profile defines `[backends.*]` and/or `[registries.*]` entries that get **merged into** the user's local `config.toml` at load time, no manual editing required.
 
 This is the v0.4 headline feature. The canonical host is `https://secretenv.io/profiles`, and you can also install from any URL (including private mirrors or `file://` paths).
 
 ## Why profiles
 
-Onboarding a new engineer traditionally involves copy-pasting a chunk of `config.toml` from a wiki page or Slack thread. Profiles replace that with:
+Publish backend and registry config once; install everywhere with one command. No copy-paste, no doc drift:
 
 ```sh
 secretenv profile install acme-defaults
-secretenv doctor  # now sees every team backend
+secretenv doctor  # sees every team backend
 ```
 
-Your org publishes `https://secretenv.io/profiles/acme-defaults.toml` (or any URL you control) once; everyone runs the same install command. Updates propagate with `secretenv profile update`.
+Updates propagate with `secretenv profile update`.
 
 ## The merge model
 
-- Profiles **fill gaps**, they don't override. If your `config.toml` defines `[backends.aws-prod]` and a profile also defines it, your local version wins.
-- Files in `<config_dir>/profiles/*.toml` are merged in alphabetical order. First profile to define a key wins among profiles.
-- Your own `config.toml` always wins over every profile.
-
-This means a profile can never silently change your local behavior — it can only add things you haven't defined.
+- Profiles **fill gaps**, they don't override. Your `config.toml` always wins.
+- Files in `<config_dir>/profiles/*.toml` are merged alphabetically. First definition wins.
+- A profile can only add new entries, never change existing ones.
 
 ## CLI surface
 
@@ -43,7 +41,7 @@ secretenv profile install my-team --url https://vault.acme.corp/profiles/team.to
 secretenv profile install local-dev --url file:///tmp/draft-profile.toml
 ```
 
-The downloaded TOML is validated as a SecretEnv config fragment before it's written — a malformed profile never reaches the filesystem. A sidecar `<name>.meta.json` captures the source URL, the server's `ETag`, and the install timestamp so `update` can do conditional re-fetch.
+Validation happens before write. Malformed profiles never reach disk. A sidecar `<name>.meta.json` stores the source URL, server `ETag`, and install timestamp for conditional re-fetch on `update`.
 
 ### `list`
 
@@ -69,7 +67,7 @@ secretenv profile update acme-defaults
 secretenv profile update
 ```
 
-The updater sends an `If-None-Match: <stored-etag>` header; on `304 Not Modified` the local file is untouched and you see `up to date`. On `200 OK` the file is replaced and the sidecar metadata gets a fresh timestamp + ETag.
+Uses `If-None-Match: <stored-etag>` for conditional fetch. `304 Not Modified` → no change; `200 OK` → file replaced and metadata refreshed.
 
 ### `uninstall`
 
@@ -89,7 +87,7 @@ secretenv profile install team-defaults
 # Fetches https://mirror.acme.corp/profiles/team-defaults.toml
 ```
 
-Passing `--url <url>` bypasses the base entirely — useful for one-off installs from arbitrary URLs.
+Passing `--url <url>` bypasses the base entirely, useful for one-off installs from arbitrary URLs.
 
 ## Authoring a profile
 
@@ -113,7 +111,7 @@ sources = [
 ]
 ```
 
-After an engineer runs `secretenv profile install acme-defaults`, they can immediately do `secretenv --registry acme get any-alias` — no manual config editing.
+After an engineer runs `secretenv profile install acme-defaults`, they can immediately do `secretenv --registry acme get any-alias`, no manual config editing.
 
 ## Storage layout
 
@@ -127,22 +125,20 @@ $XDG_CONFIG_HOME/secretenv/
     └── my-team.meta.json
 ```
 
-You can also drop a `.toml` file into `profiles/` manually — it will be auto-merged on the next load. Such files show up in `profile list` as `(manual)` source; `profile update` errors out because there's no sidecar to tell it what URL to re-fetch.
+Manual `.toml` files dropped into `profiles/` auto-merge on load and show as `(manual)` source in `profile list`. `profile update` errors on these (no sidecar URL).
 
 ## Security considerations
 
-v0.4 delivers **unsigned profiles over HTTPS** — the threat model relies on TLS to guarantee integrity in transit and the canonical host's access control to prevent tampering at rest.
+v0.4 delivers **unsigned profiles over HTTPS**. A compromised profile host could inject a malicious backend URI. While SecretEnv still refuses to leak secrets on argv/stdin (CV-1), attackers could trick users into **writing** secrets to a malicious target via `registry set`.
 
-If the canonical profile host is compromised, an attacker could ship a profile that defines a malicious backend instance (e.g. a Vault pointing at an attacker-controlled URL). SecretEnv still refuses to leak secrets on argv/stdin (CV-1 guarantees), but the attacker could trick users into **writing** secrets to a malicious target via `registry set`.
+**Signed profiles (minisign / sigstore) are a v0.5+ hardening.** Until then:
 
-**Signed profiles (minisign / sigstore / plain SHA256 manifests) are a v0.5+ hardening.** Until then:
-
-- Treat `SECRETENV_PROFILE_URL` overrides like `curl | sh` — only install from hosts you trust.
-- Review profile contents before installing: `curl -fsSL https://.../team.toml | less`
-- For the most sensitive teams, host profiles behind a VPN or authenticated proxy.
+- Treat `SECRETENV_PROFILE_URL` like `curl | sh`: install from trusted hosts only.
+- Review contents: `curl -fsSL https://.../team.toml | less`
+- For sensitive teams, host profiles behind a VPN or authenticated proxy.
 
 ## Known limitations
 
-- **No signing yet** — see above. Planned for v0.5.
-- **No profile index / search** — you need to know the profile name or URL. A central index (`secretenv.io/profiles/index.toml`) + `secretenv profile list --available` is a v0.4.1 / v0.5 idea.
-- **No version pinning** — `profile install` always fetches the current version at that URL. If your profile host also publishes versioned URLs (e.g. `acme-defaults-v2.toml`), you can pin with `--url`.
+- **No signing yet**: planned for v0.5.
+- **No profile index / search**: know the name or URL; central index planned for v0.5.
+- **No version pinning**: always fetches current. Pin manually via `--url` if your host publishes versioned URLs.

@@ -1,28 +1,29 @@
 # 1Password
 
-**Type:** `1password`
-**CLI required:** [`op`](https://developer.1password.com/docs/cli/get-started/) (1Password CLI v2)
-**URI scheme:** `<instance>://vault/item/field`
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `op 2.34.0` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `1password`
+- **CLI required:** [`op`](https://developer.1password.com/docs/cli/get-started/)
+- **CLI version:** 1Password CLI v2
+- **URI scheme:** `<instance>://vault/item/field`
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `op 2.34.0` on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `1password` backend. New here? See the [overview](/).
+> SecretEnv injects secrets as environment variables. This page covers the `1password` backend. New here? See the [overview](/).
 
-1Password is a password manager and secret store used by engineering teams for credential centralization, audit logging, and fine-grained access control. The `op` CLI is 1Password's official integration surface, supporting both interactive authentication via the desktop app and non-interactive service accounts for CI/CD environments.
+1Password is a team password manager with audit logging and access control. The `op` CLI supports both interactive (desktop app) and non-interactive (service accounts) authentication.
 
 ## When to pick this
 
-- **Team credential sharing:** 1Password vaults scale across teams; fine-grained access control per vault
-- **Audit trails:** Every access is logged; compliance audits see who accessed what
-- **Desktop integration:** Interactive biometric authentication via the 1Password app (no token management)
-- **CI/CD service accounts:** 1Password supports scoped service accounts for non-interactive automation
+- **Team sharing**, fine-grained access control per vault
+- **Audit trails**, every access logged for compliance
+- **Desktop integration**, biometric auth via 1Password app (no token management)
+- **CI/CD automation**, scoped service accounts
 
 ## Configuration
 
 ```toml
 [backends.1password-work]
 type       = "1password"
-op_account = "company.1password.com"  # optional — omit for single-account setups
+op_account = "company.1password.com"  # optional, omit for single-account setups
 ```
 
 ### Fields
@@ -54,21 +55,21 @@ op_account = "personal.1password.com"
 instance name    vault       item       field
 ```
 
-URIs have exactly three path segments: vault name, item name, and field label. Common fields for Login items: `username`, `password`. For API Credential items: use the field label configured in 1Password.
+URIs require exactly three segments: vault, item, and field. Common fields for Login items: `username`, `password`. API Credential items: use the configured field label.
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify:** `secretenv doctor`. Green output means ready to run.
 
 ## Authentication
 
-**Local development:** Interactive biometric authentication via the 1Password desktop app. The `op` CLI communicates with the app over a local socket. No token management required — open the app and authenticate once.
+**Local development:** Biometric via the 1Password desktop app. The `op` CLI communicates over a local socket. Open the app and authenticate once; no token management needed.
 
-**CI/CD:** Use a service account token. This is 1Password's official mechanism for non-interactive environments:
+**CI/CD:** Use a service account token (1Password's official non-interactive method):
 
 ```bash
 export OP_SERVICE_ACCOUNT_TOKEN="ops_..."
 ```
 
-Service accounts are created in the 1Password admin console. Scope them to specific vaults — never grant access to all vaults for CI credentials.
+Create service accounts in the 1Password admin console. Scope to specific vaults only, never all vaults.
 
 ## doctor Output
 
@@ -95,13 +96,13 @@ No fragment directives. Any `#...` fragment is rejected at URI-parse time.
 
 ## History API support
 
-Not implemented. The 1Password CLI does not expose a per-item version-history subcommand, so historical revisions cannot be retrieved programmatically.
+Not implemented. The `op` CLI lacks a per-item history subcommand for programmatic retrieval.
 
 ## Limitations
 
-- **Set operation requires opt-in.** `op item edit` passes the field value through subprocess argv (visible in `/proc/<pid>/cmdline` on multi-user Linux hosts). This is a 1Password CLI limitation (no stdin-fed form for field edits). The backend refuses `set` by default; operators acknowledge the exposure by setting `op_unsafe_set = true` under `[backends.<instance>]`.
-- **No auto-create:** `secretenv registry set` modifies a single field within an existing item; it does not create new items. Create the item manually in the 1Password app or via `op item create` first.
-- **Sections and nested fields:** v0.13 supports flat three-segment URIs only (`vault/item/field`). Nested sections are not supported.
+- **Set requires opt-in.** `op item edit` passes values via argv (visible in `/proc/<pid>/cmdline` on multi-user Linux); this is a 1Password CLI limitation. Disabled by default; enable with `op_unsafe_set = true`
+- **No auto-create.** `registry set` edits existing items only; create items manually first via 1Password app or `op item create`
+- **No nested fields.** v0.13 supports flat three-segment URIs only (`vault/item/field`)
 
 ## Examples
 
@@ -160,8 +161,8 @@ Enable `op_unsafe_set = true` in `[backends.1password-<instance>]` if you need t
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [1Password CLI documentation](https://developer.1password.com/docs/cli) — `op` command reference
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [1Password CLI documentation](https://developer.1password.com/docs/cli), `op` command reference
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

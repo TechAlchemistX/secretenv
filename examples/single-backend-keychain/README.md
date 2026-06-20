@@ -1,33 +1,23 @@
 # Single-backend: macOS Keychain
 
-New in v0.5. Secrets live in the macOS login keychain; the registry
-lives in a local TOML file (Keychain can't host a registry — see
-[list() limitation](#why-the-registry-is-local-not-keychain)).
+Secrets in the login keychain; registry in a local TOML file (Keychain can't host a registry).
 
-## When to use this
+## When to use
 
-- Solo macOS developer who already has keychain muscle memory from
-  storing SSH passphrases, API tokens, etc.
-- Offline-friendly: no network, no CLI auth setup, no cloud account.
-- Items created by Keychain Access.app or `security add-generic-password`
-  are ready to use immediately.
+- Solo macOS dev with keychain muscle memory
+- Offline-friendly (no network, no auth setup)
+- Keychain Access.app or `security` items ready immediately
 
 ## Not for you if
 
-- Team setup: Keychain is per-user, per-machine. Use a cloud backend
-  for team secrets.
-- Non-macOS: this backend errors cleanly on Linux/Windows. See
-  [`single-backend-keychain`](../single-backend-keychain/) pairs with
-  distro-specific backends in future releases (e.g. Secret Service for
-  Linux in v0.6).
+- Team setup, Keychain is per-user, per-machine
+- Non-macOS, future releases will add distro-specific backends
 
-## What's in this directory
+## Files
 
-- `config.toml` — one `keychain` backend + one `local` backend for the
-  registry.
-- `secretenv.toml` — project manifest with two aliases.
-- `local-registry/registry.toml` — alias-to-URI map pointing at
-  Keychain items.
+- `config.toml`: `keychain` backend + `local` backend for registry
+- `secretenv.toml`: project manifest with two aliases
+- `local-registry/registry.toml`: alias-to-URI map for Keychain items
 
 ## Creating the items
 
@@ -44,12 +34,6 @@ secretenv --config examples/single-backend-keychain/config.toml \
   run -- env | grep -E 'STRIPE_KEY|DATABASE_URL'
 ```
 
-## Why the registry is local, not Keychain
+## Why registry is local
 
-`security` has no safe list-all-items operation (the closest, `security
-dump-keychain`, prompts per item and leaks every credential). SecretEnv
-therefore implements Keychain as a `get`-only target — great for
-storing values, not for listing aliases. Hence a local TOML registry
-pointing at keychain URIs. See
-[`docs/backends/keychain.md`](../../docs/backends/keychain.md) for the
-full rationale.
+`security` has no safe list-all operation. `security dump-keychain` prompts per item and leaks all credentials. SecretEnv implements Keychain as get-only, great for values, not listing aliases. Hence a local TOML registry pointing at keychain URIs. See [`docs/backends/keychain.md`](../../docs/backends/keychain.md) for details.

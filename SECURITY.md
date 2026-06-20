@@ -8,7 +8,7 @@ We aim to acknowledge reports within 48 hours and provide an initial assessment 
 
 ## Scope and Threat Model
 
-secretenv is a workflow product that eliminates a class of workflow-driven security failures. It is not a cryptographic or access-control product. For the full scope — including what we protect against, what we explicitly do not, and how the threat model compares to adjacent tools — see [`docs/security.md`](docs/security.md).
+secretenv is a workflow product that eliminates a class of workflow-driven security failures. It is not a cryptographic or access-control product. For the full scope (including what we protect against, what we explicitly do not, and how the threat model compares to adjacent tools), see [`docs/security.md`](docs/security.md).
 
 ## Supported Versions
 

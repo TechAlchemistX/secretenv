@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 440" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="Live-backend smoke assertions per release, v0.2.0 to v0.19.0">
+<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4ade80" stop-opacity="0.30"/><stop offset="1" stop-color="#4ade80" stop-opacity="0"/></linearGradient></defs>
+<rect x="0.5" y="0.5" width="899" height="439" rx="14" fill="#0b0f17" stroke="#1c2230"/>
+<text x="72" y="34" fill="#e6edf3" font-size="18" font-weight="600">Live-backend smoke assertions per release</text>
+<text x="72" y="52" fill="#8b949e" font-size="12.5">Real binary · real backend CLIs · real shells · v0.2.0 → v0.19.0 · 15 backends</text>
+<line x1="72" y1="372.0" x2="864" y2="372.0" stroke="#20283a" stroke-width="1"/>
+<text x="62" y="376.0" fill="#8b949e" font-size="11" text-anchor="end">0</text>
+<line x1="72" y1="299.5" x2="864" y2="299.5" stroke="#20283a" stroke-width="1"/>
+<text x="62" y="303.5" fill="#8b949e" font-size="11" text-anchor="end">200</text>
+<line x1="72" y1="227.1" x2="864" y2="227.1" stroke="#20283a" stroke-width="1"/>
+<text x="62" y="231.1" fill="#8b949e" font-size="11" text-anchor="end">400</text>
+<line x1="72" y1="154.6" x2="864" y2="154.6" stroke="#20283a" stroke-width="1"/>
+<text x="62" y="158.6" fill="#8b949e" font-size="11" text-anchor="end">600</text>
+<line x1="72" y1="82.1" x2="864" y2="82.1" stroke="#20283a" stroke-width="1"/>
+<text x="62" y="86.1" fill="#8b949e" font-size="11" text-anchor="end">800</text>
+<polygon points="72.0,372.0 72.0,339.4 118.6,281.4 165.2,250.2 211.8,246.3 258.4,240.8 304.9,235.4 351.5,228.9 398.1,220.2 444.7,208.2 491.3,198.4 537.9,187.9 584.5,187.9 631.1,176.0 677.6,122.0 724.2,114.0 770.8,94.1 817.4,83.6 864.0,89.7 864.0,372.0" fill="url(#g)"/>
+<polyline points="72.0,339.4 118.6,281.4 165.2,250.2 211.8,246.3 258.4,240.8 304.9,235.4 351.5,228.9 398.1,220.2 444.7,208.2 491.3,198.4 537.9,187.9 584.5,187.9 631.1,176.0 677.6,122.0 724.2,114.0 770.8,94.1 817.4,83.6 864.0,89.7" fill="none" stroke="#4ade80" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="72.0" cy="339.4" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="72.0" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.2</text>
+<circle cx="118.6" cy="281.4" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="118.6" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.3</text>
+<circle cx="165.2" cy="250.2" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="165.2" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.4</text>
+<circle cx="211.8" cy="246.3" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="211.8" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.5</text>
+<circle cx="258.4" cy="240.8" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="258.4" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.6</text>
+<circle cx="304.9" cy="235.4" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="304.9" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.7</text>
+<circle cx="351.5" cy="228.9" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="351.5" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.8</text>
+<circle cx="398.1" cy="220.2" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="398.1" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.9</text>
+<circle cx="444.7" cy="208.2" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="444.7" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.10</text>
+<circle cx="491.3" cy="198.4" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="491.3" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.11</text>
+<circle cx="537.9" cy="187.9" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="537.9" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.12</text>
+<circle cx="584.5" cy="187.9" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="584.5" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.13</text>
+<circle cx="631.1" cy="176.0" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="631.1" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.14</text>
+<circle cx="677.6" cy="122.0" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="677.6" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.15</text>
+<circle cx="724.2" cy="114.0" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="724.2" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.16</text>
+<circle cx="770.8" cy="94.1" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="770.8" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.17</text>
+<circle cx="817.4" cy="83.6" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="817.4" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.18</text>
+<circle cx="864.0" cy="89.7" r="3.1" fill="#0b0f17" stroke="#4ade80" stroke-width="2"/>
+<text x="864.0" y="392.0" fill="#8b949e" font-size="10" text-anchor="middle">0.19</text>
+<text x="864.0" y="77.7" fill="#e6edf3" font-size="12.5" font-weight="600" text-anchor="middle">779</text>
+<text x="468.0" y="428" fill="#8b949e" font-size="11" text-anchor="middle">release</text>
+</svg>

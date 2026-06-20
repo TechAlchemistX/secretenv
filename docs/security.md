@@ -1,47 +1,43 @@
 # Security
 
-secretenv is not a security product. It is a workflow product that eliminates a class of workflow-driven security failures.
-
-**secretenv does not make your secrets more secure. It makes your team less likely to handle them insecurely. For most teams, habits are where the actual breaches happen.**
+**secretenv is not a security product. It is a workflow product** that eliminates a class of workflow-driven security failures. It doesn't make your secrets more secure. It makes your team less likely to handle them insecurely, and for most teams, habits are where the breaches actually happen.
 
 ---
 
 ## The Model
 
-secretenv is a coat of paint. If the walls aren't strong, the paint is useless. The walls are your backends.
+secretenv is a coat of paint: if the walls aren't strong, the paint is useless, and the walls are your backends. Its security posture is entirely inherited from the backends it wraps: it adds no authentication surface, stores no credentials, and makes no access-control decisions. What it removes is the workflow layer where secrets most commonly leak: `.env` files, hardcoded paths in repos, manual sharing, and offboarding gaps.
 
-secretenv's security posture is entirely inherited from the backends it wraps. It adds no authentication surface, stores no credentials, and makes no access control decisions. What it does is remove the workflow layer where secrets most commonly leak — `.env` files, hardcoded paths in repos, manual sharing, and offboarding gaps.
-
-**secretenv doesn't replace good tools. It replaces bad habits.**
+**It doesn't replace good tools. It replaces bad habits.**
 
 ---
 
-## A Note on the fnox Comparison
+## A Note on fnox
 
-Earlier drafts of this document modelled fnox as a single-mode tool (age-encryption only). That was incomplete. **fnox is multi-mode:** it supports age-encryption (private key on disk), KMS-gated encryption (`aws-kms` / `azure-kms` / `gcp-kms` — no persistent disk key, decryption gated on IAM), and pure cloud-reference modes (`aws-sm`, `vault`, `1password`, etc. — no encryption involved). The fnox columns below are split accordingly. **In KMS modes, fnox closes the persistent-key and offboarding concerns at the KMS-key level**, and the threat model reflects that. The full mode-by-mode breakdown lives at [comparisons/vs-fnox.md](comparisons/vs-fnox.md).
+**fnox is multi-mode**, and the columns below are split accordingly. It supports age-encryption (private key on disk), KMS-gated encryption (`aws-kms` / `azure-kms` / `gcp-kms`, no persistent disk key, decryption gated on IAM), and pure cloud-reference modes (`aws-sm`, `vault`, `1password`, etc., no encryption involved). **In KMS modes, fnox closes the persistent-key and offboarding concerns at the KMS-key level**, and the threat model reflects that. Full mode-by-mode breakdown: [comparisons/vs-fnox.md](comparisons/vs-fnox.md).
 
 ---
 
 ## Threat Model Comparison
 
-The table below maps 14 threat categories across common secrets workflows. The goal is not to show secretenv wins everywhere — it doesn't. The goal is an honest map of where risks move.
+The table below maps 14 threat categories across common secrets workflows. The goal is not to show secretenv wins everywhere. It doesn't. The goal is an honest map of where risks move.
 
 | Threat | **secretenv** | .env files | fnox (KMS) | direnv | op run | doppler run | fnox (age) |
 |---|---|---|---|---|---|---|---|
-| **Secrets committed to git** | **Eliminated** — aliases only | High — files exist to be committed | Low — ciphertext or reference-only | High — `.envrc` can contain secrets | Medium — 1Password URIs committed, not values | Low — no secrets in repo | Low — encrypted at rest |
-| **Secrets on disk in plaintext** | **Eliminated** — nothing written | High — that's the entire model | Low — runtime KMS decrypt or reference fetch | High — reads from local files | Low — runtime fetch | Low — runtime fetch | Medium — encrypted, key required |
-| **Infrastructure paths in repos** | **Eliminated** — aliases only | High — paths are the config | High — provider + path/KMS-key-id committed | High — paths in `.envrc` | High — `op://` URIs committed | Low — project name only | Medium — paths present, encrypted |
-| **New engineer onboarding** | **One command** | High — manual credential ceremony | Low — IAM grant on KMS / backend access | High — write custom `.envrc` per project | Medium — 1Password access + `op` CLI | Medium — Doppler token + CLI | Medium — age key ceremony + backend setup |
-| **Offboarding a departing engineer** | **One operation** — revoke registry backend access | High — manual, slow, cached copies unknown | Low — IAM revoke on KMS key / backend | High — manual, files may be cached | Medium — remove from 1Password vault | Medium — remove from Doppler | High — re-encryption required across all repos |
-| **Backend migration** | **One registry update** — all repos inherit | High — update every `.env` everywhere | High — edit every `fnox.toml` (KMS modes also re-encrypt) | High — rewrite `.envrc` everywhere | Critical — locked to 1Password | Critical — locked to Doppler | High — re-encrypt everything |
-| **Machine compromise** | Active sessions exploitable — **no persistent key**, breach contained after re-image | Plaintext files directly readable | Active sessions exploitable — no persistent key; bounded by KMS / backend policy | Same as `.env` | Active sessions exploitable | Active sessions + Doppler token at risk | Active sessions + **age private key theft** — offline decryption survives re-image |
-| **Registry document compromise** | **New** — path topology exposed. Requires authenticated backend access. | Does not exist | Does not exist | Does not exist | Does not exist | Does not exist | Does not exist |
-| **Post-injection process exposure** | **Universal** — property of env var model, not the tool | Universal | Universal | Universal | Universal | Universal | Universal |
-| **Audit trail** | **Delegated to backends** — CloudTrail, Vault audit, 1Password activity | None | KMS CloudTrail / backend audit | None | 1Password activity log | Doppler audit log | Backend-dependent |
-| **Supply chain risk** | **Install script** — mitigated by signed binaries | None | fnox binary + cloud SDK trust | Low | `op` CLI binary trust | Doppler CLI + SaaS | age tooling |
-| **SaaS dependency** | **None** — no secretenv service | None | Cloud KMS / backend reachability required | None | None | Hard — Doppler is the backend | None |
-| **Secret rotation visibility** | **Automatic** — runtime fetch, rotation transparent | None — files go stale silently | Automatic in reference modes; manual on KMS-key rotation | None — `.envrc` goes stale | Automatic — runtime fetch | Automatic — Doppler manages rotation | Manual — re-encrypt with new value |
-| **Multi-backend coordination** | **Native** — registry abstracts all backends | Manual copy-paste across tools | fnox supports many providers; per-repo config | Manual shell glue per project | Single backend only | Single backend only | Possible but complex at scale |
+| **Secrets committed to git** | **Eliminated**, aliases only | High, files exist to be committed | Low, ciphertext or reference-only | High, `.envrc` can contain secrets | Medium, 1Password URIs committed, not values | Low, no secrets in repo | Low, encrypted at rest |
+| **Secrets on disk in plaintext** | **Eliminated**, nothing written | High, that's the entire model | Low, runtime KMS decrypt or reference fetch | High, reads from local files | Low, runtime fetch | Low, runtime fetch | Medium, encrypted, key required |
+| **Infrastructure paths in repos** | **Eliminated**, aliases only | High, paths are the config | High, provider + path/KMS-key-id committed | High, paths in `.envrc` | High, `op://` URIs committed | Low, project name only | Medium, paths present, encrypted |
+| **New engineer onboarding** | **One command** | High, manual credential ceremony | Low, IAM grant on KMS / backend access | High, write custom `.envrc` per project | Medium, 1Password access + `op` CLI | Medium, Doppler token + CLI | Medium, age key ceremony + backend setup |
+| **Offboarding a departing engineer** | **One operation**, revoke registry backend access | High, manual, slow, cached copies unknown | Low, IAM revoke on KMS key / backend | High, manual, files may be cached | Medium, remove from 1Password vault | Medium, remove from Doppler | High, re-encryption required across all repos |
+| **Backend migration** | **One registry update**, all repos inherit | High, update every `.env` everywhere | High, edit every `fnox.toml` (KMS modes also re-encrypt) | High, rewrite `.envrc` everywhere | Critical, locked to 1Password | Critical, locked to Doppler | High, re-encrypt everything |
+| **Machine compromise** | Active sessions exploitable, **no persistent key**, breach contained after re-image | Plaintext files directly readable | Active sessions exploitable, no persistent key; bounded by KMS / backend policy | Same as `.env` | Active sessions exploitable | Active sessions + Doppler token at risk | Active sessions + **age private key theft**, offline decryption survives re-image |
+| **Registry document compromise** | **New**: path topology exposed. Requires authenticated backend access. | Does not exist | Does not exist | Does not exist | Does not exist | Does not exist | Does not exist |
+| **Post-injection process exposure** | **Universal**, property of env var model, not the tool | Universal | Universal | Universal | Universal | Universal | Universal |
+| **Audit trail** | **Delegated to backends**: CloudTrail, Vault audit, 1Password activity | None | KMS CloudTrail / backend audit | None | 1Password activity log | Doppler audit log | Backend-dependent |
+| **Supply chain risk** | **Install script**, mitigated by signed binaries | None | fnox binary + cloud SDK trust | Low | `op` CLI binary trust | Doppler CLI + SaaS | age tooling |
+| **SaaS dependency** | **None**, no secretenv service | None | Cloud KMS / backend reachability required | None | None | Hard, Doppler is the backend | None |
+| **Secret rotation visibility** | **Automatic**, runtime fetch, rotation transparent | None, files go stale silently | Automatic in reference modes; manual on KMS-key rotation | None, `.envrc` goes stale | Automatic, runtime fetch | Automatic, Doppler manages rotation | Manual, re-encrypt with new value |
+| **Multi-backend coordination** | **Native**, registry abstracts all backends | Manual copy-paste across tools | fnox supports many providers; per-repo config | Manual shell glue per project | Single backend only | Single backend only | Possible but complex at scale |
 
 ---
 
@@ -49,30 +45,30 @@ The table below maps 14 threat categories across common secrets workflows. The g
 
 ### What secretenv Eliminates
 
-The threats secretenv turns green are the high-frequency failures — the ones that happen not because attackers are sophisticated, but because developers are human, in a hurry, and doing the expedient thing under deadline pressure. Accidental commits. Stale files. Paths in repos. Manual offboarding. Backend lock-in. Rotation blindness.
+The threats secretenv eliminates (the cells marked **Eliminated**, **One command**, or **One operation** in its column) are the high-frequency failures, the ones that happen not because attackers are sophisticated, but because developers are human, in a hurry, and doing the expedient thing under deadline pressure. Accidental commits. Stale files. Paths in repos. Manual offboarding. Backend lock-in. Rotation blindness.
 
 These are the failures that actually cost organizations. Eliminating them is real, meaningful security improvement.
 
-### What Stays Red Everywhere
+### What No Tool Solves
 
-**Post-injection process exposure** is a property of environment variables, not of any tool. Once a secret is injected as an env var, it is readable by any process running as the same user. On Linux, `/proc/<pid>/environ` exposes it to same-user processes. The fix is OS or container-level process isolation — not a different secrets tool.
+**Post-injection process exposure** (marked **Universal** for every tool in the table) is a property of environment variables, not of any tool. Once a secret is injected as an env var, it is readable by any process running as the same user. On Linux, `/proc/<pid>/environ` exposes it to same-user processes. The fix is OS or container-level process isolation, not a different secrets tool.
 
-**Machine compromise** is universal. When a machine is owned, the attacker inherits whatever the user had — active cloud sessions, active Vault tokens, active 1Password sessions. The tool choice does not change this.
+**Machine compromise** is universal. When a machine is owned, the attacker inherits whatever the user had: active cloud sessions, active Vault tokens, active 1Password sessions. The tool choice does not change this.
 
 What the tool choice *does* affect is the blast radius and post-incident containment:
 
 - **`.env` files:** Plaintext on disk, immediately readable, breach is permanent regardless of what you do next.
 - **fnox (age mode):** Active sessions inherited *plus* the age private key is now in attacker hands. That key decrypts repo ciphertext offline, after the machine is re-imaged, after credentials are rotated. The breach outlives the machine.
-- **fnox (KMS / cloud-reference modes):** Active sessions inherited. No persistent decryption key on disk. Decryption (KMS modes) and reference resolution (`aws-sm`, `vault`, etc.) are gated by IAM / backend policy — re-image the machine, rotate or revoke the IAM principal, and the breach is contained. Same containment shape as secretenv.
-- **secretenv:** Active sessions inherited. No persistent decryption key exists anywhere — secretenv has nothing encrypted to decrypt. Re-image the machine, rotate backend credentials — the breach is contained. It dies with the session.
+- **fnox (KMS / cloud-reference modes):** Active sessions inherited. No persistent decryption key on disk. Decryption (KMS modes) and reference resolution (`aws-sm`, `vault`, etc.) are gated by IAM / backend policy. Re-image the machine, rotate or revoke the IAM principal, and the breach is contained. Same containment shape as secretenv.
+- **secretenv:** Active sessions inherited. No persistent decryption key exists anywhere; secretenv has nothing encrypted to decrypt. Re-image the machine, rotate backend credentials, and the breach is contained. It dies with the session.
 
-The real defense against machine compromise is credential scoping at the backend level — IAM policies with least privilege, Vault policies with bounded paths, short-lived session tokens. A compromised machine with narrowly scoped credentials has a bounded blast radius regardless of which secrets tool is running. If a machine is fully compromised, you have an incident response problem. The secrets tool is irrelevant at that point.
+The real defense against machine compromise is credential scoping at the backend level: IAM policies with least privilege, Vault policies with bounded paths, short-lived session tokens. A compromised machine with narrowly scoped credentials has a bounded blast radius regardless of which secrets tool is running. If a machine is fully compromised, you have an incident response problem. The secrets tool is irrelevant at that point.
 
-### The One New Yellow Cell
+### The One New Risk secretenv Introduces
 
-secretenv introduces one artifact that doesn't exist in any other workflow: the registry document. This document maps alias names to backend paths and is stored in a backend you control.
+secretenv introduces one artifact that doesn't exist in any other workflow: the registry document (the **Registry document compromise** row, marked **New** in secretenv's column and "Does not exist" for every other tool). This document maps alias names to backend paths and is stored in a backend you control.
 
-The honest characterization: if an attacker can access the registry document, they have already authenticated to your backend — the same backend your security team controls, your IAM policies govern, and your audit logs track. At that point they have demonstrated they are past your real defenses. The path topology in the registry is the least valuable thing they now have access to. If they're already inside your SSM with read permissions, the registry tells them paths they could find by listing parameters anyway.
+The honest characterization: if an attacker can access the registry document, they have already authenticated to your backend, the same backend your security team controls, your IAM policies govern, and your audit logs track. At that point they have demonstrated they are past your real defenses. The path topology in the registry is the least valuable thing they now have access to. If they're already inside your SSM with read permissions, the registry tells them paths they could find by listing parameters anyway.
 
 **Treat the registry document's access controls the same as your most sensitive secret.** SSM SecureString with KMS, Vault KV with tight policy, 1Password with restricted sharing. Not a public SSM String parameter.
 
@@ -85,11 +81,11 @@ Every backend plugin constructs CLI commands using values from the registry. If 
 secretenv prohibits this structurally. All plugins use argument passing, not shell interpolation:
 
 ```rust
-// Always — each argument is a separate string, shell never parses it
+// Always: each argument is a separate string, shell never parses it
 Command::new("aws")
     .args(["ssm", "get-parameter", "--name", &uri.path])
 
-// Never — shell interpolation, injectable
+// Never: shell interpolation, injectable
 Command::new("sh").arg("-c")
     .arg(format!("aws ssm get-parameter --name {}", uri.path))
 ```
@@ -100,17 +96,11 @@ This is enforced in the plugin development guide and verified in CI for all firs
 
 ## What secretenv Does Not Solve
 
-**Machine compromise.** If the machine is owned, the attacker runs secretenv themselves, reads the config, watches the CLI invocations. The tool is irrelevant.
-
-**Post-injection secret protection.** Once the process has the env var, secretenv is out of the picture. The process can log it, write it to disk, pass it in an HTTP request. This is outside secretenv's scope and always will be.
-
-**Production runtime security.** secretenv is a developer tool. ECS, Lambda, and Kubernetes have native secret injection mechanisms that are the right answer for production. secretenv is not a runtime secret delivery mechanism.
-
-**Encryption at rest.** secretenv stores no secret values, so it provides no encryption-at-rest property. That is the responsibility of whichever backend holds the value (Vault's storage encryption, SSM SecureString + KMS, 1Password's E2E vault). Tools like fnox (age + KMS modes) and sops *do* provide ciphertext-in-repo and are the right answer if that is the property you need.
-
-**Secret rotation enforcement.** secretenv fetches whatever the backend has, rotated or not. Rotation policy is the backend's concern.
-
-**Insider threats with backend access.** An authorized user with registry access and backend access can read anything they're authorized to read. secretenv doesn't add a meaningful barrier to that.
+- **Machine compromise** and **post-injection secret protection**, covered under [Reading the Table](#reading-the-table). Both are universal: machine compromise inherits whatever the user had (any tool), and once a secret is an env var the process can log it, write it, or send it anywhere (a property of env vars, not the tool).
+- **Production runtime security.** secretenv is a developer tool. ECS, Lambda, and Kubernetes have native secret injection that is the right answer for production.
+- **Encryption at rest.** secretenv stores no secret values, so it provides none. That belongs to the backend (Vault storage encryption, SSM SecureString + KMS, 1Password's E2E vault). Tools like fnox (age + KMS modes) and sops provide ciphertext-in-repo if that's the property you need.
+- **Secret rotation enforcement.** secretenv fetches whatever the backend has, rotated or not. Rotation policy is the backend's concern.
+- **Insider threats with backend access.** An authorized user with registry and backend access reads anything they're authorized to read. secretenv adds no barrier there.
 
 ---
 
@@ -122,12 +112,12 @@ secretenv has no central audit log. Audit capability depends on each backend:
 |---|---|
 | AWS SSM | CloudTrail logs every `GetParameter` and `PutParameter` call with caller identity, timestamp, and parameter name |
 | AWS Secrets Manager | CloudTrail, same coverage |
-| HashiCorp Vault | Audit device logs every operation — configurable to file, syslog, or socket |
+| HashiCorp Vault | Audit device logs every operation, configurable to file, syslog, or socket |
 | 1Password | Admin console activity log |
 | GCP Secret Manager | Cloud Audit Logs |
 | Azure Key Vault | Azure Monitor diagnostic logs |
 
-For organizations that need to answer "who fetched the production database password last Tuesday" — check CloudTrail or your Vault audit log, not secretenv. The audit trail is there. It lives in your backend.
+For organizations that need to answer "who fetched the production database password last Tuesday". Check CloudTrail or your Vault audit log, not secretenv. The audit trail is there. It lives in your backend.
 
 ---
 
@@ -135,80 +125,45 @@ For organizations that need to answer "who fetched the production database passw
 
 Four backends accept a user-supplied endpoint:
 
-- **Infisical** — `infisical_domain` (defaults to `app.infisical.com`).
-- **Vault** — `vault_address` (no default; required).
-- **OpenBao** — `bao_address` (no default; required). Same threat model as Vault — routes via `BAO_ADDR`.
-- **CyberArk Conjur** — `conjur_url` (no default; required). Routes via `CONJUR_APPLIANCE_URL`.
+- **Infisical**: `infisical_domain` (defaults to `app.infisical.com`).
+- **Vault**: `vault_address` (no default; required).
+- **OpenBao**: `bao_address` (no default; required). Same threat model as Vault, routes via `BAO_ADDR`.
+- **CyberArk Conjur**: `conjur_url` (no default; required). Routes via `CONJUR_APPLIANCE_URL`.
 
-The domain IS the trust boundary. A hostile endpoint receives every token and URI the backend routes through it — for Infisical that includes `$INFISICAL_TOKEN` on every CLI invocation; for Vault it includes every request to `/v1/...` carrying the client token.
+The domain IS the trust boundary. A hostile endpoint receives every token and URI the backend routes through it: for Infisical that includes `$INFISICAL_TOKEN` on every CLI invocation; for Vault it includes every request to `/v1/...` carrying the client token.
 
 Discipline that applies to both:
 
 1. **Verify the domain belongs to your organization.** Typos (`infisical.acne.com` vs. `infisical.acme.com`) + attacker-controlled lookalike registrations silently drain credentials. Compare the domain against your IaC repo / provisioning scripts, not a dashboard screenshot someone sent in chat.
-2. **Pin HTTPS with a cert you trust.** `http://` is accepted by both CLIs but leaks the token to anyone on-path — only acceptable for loopback dev (`http://127.0.0.1:<port>`).
-3. **Confirm the TLS cert chain.** For BYO-CA / internal-PKI setups, the issuing CA must be in the system trust store of every machine running `secretenv`. Test with `openssl s_client -connect <host>:443 -servername <host> </dev/null` — inspect the `Verify return code: 0 (ok)` line and the presented chain.
+2. **Pin HTTPS with a cert you trust.** `http://` is accepted by both CLIs but leaks the token to anyone on-path, only acceptable for loopback dev (`http://127.0.0.1:<port>`).
+3. **Confirm the TLS cert chain.** For BYO-CA / internal-PKI setups, the issuing CA must be in the system trust store of every machine running `secretenv`. Test with `openssl s_client -connect <host>:443 -servername <host> </dev/null`. Inspect the `Verify return code: 0 (ok)` line and the presented chain.
 4. **Don't inherit a domain from an untrusted registry.** A compromised registry can set `infisical_domain` / `vault_address` in downstream configs and redirect every resolve through an attacker-owned endpoint. Only accept these fields in config files your team owns.
-5. **Rotate tokens after suspected exposure.** If you discover the domain was wrong — even briefly — assume every token + secret URI that routed through it is compromised. Rotate immediately.
+5. **Rotate tokens after suspected exposure.** If you discover the domain was wrong, even briefly, assume every token + secret URI that routed through it is compromised. Rotate immediately.
 
 Per-backend specifics:
 
-- [backends/infisical.md](backends/infisical.md) — Infisical's `infisical_domain` threat model.
-- [backends/vault.md](backends/vault.md) — Vault's `vault_address` and namespace scoping.
-- [backends/openbao.md](backends/openbao.md) — OpenBao's `bao_address`.
-- [backends/conjur.md](backends/conjur.md) — Conjur's `conjur_url`.
+- [backends/infisical.md](backends/infisical.md), Infisical's `infisical_domain` threat model.
+- [backends/vault.md](backends/vault.md), Vault's `vault_address` and namespace scoping.
+- [backends/openbao.md](backends/openbao.md), OpenBao's `bao_address`.
+- [backends/conjur.md](backends/conjur.md), Conjur's `conjur_url`.
 
 ---
 
 ## Redaction (v0.14+)
 
-`secretenv run` redacts resolved values from the child process's stdout and stderr **by default**. `secretenv redact <path>` scrubs an existing file post-hoc. Both modes share the same engine (Aho-Corasick byte scanner over the set of resolved values) and substitute matches with `[redacted:<alias>]` by default.
+`secretenv run` redacts resolved values from the child's stdout and stderr **by default** (an Aho-Corasick scan substitutes each match with `[redacted:<alias>]`), and `secretenv redact <path>` scrubs existing files post-hoc. This catches the most common accidental-leak class: an application or CI step printing a resolved env-var value into logs that land in a shared artifact store. The full operator reference (both modes, flags, safety guards, substitution token) is at [reference/redact.md](reference/redact.md).
 
-### What redaction catches
+### Limits: what redaction does NOT catch
 
-- Application code that prints a resolved env-var value to stdout/stderr (the `echo "key=$STRIPE_KEY"` pattern, the most common accidental-leak class).
-- Build / CI logs that capture command output and end up in shared artifact stores.
-- Post-hoc scrubbing of saved log files via `secretenv redact <file> --in-place`.
+Redaction is **defense-in-depth, not complete protection.** These escape the pipe entirely or sit outside SecretEnv's view:
 
-### Limits — what redaction does NOT catch
-
-Redaction is **defense-in-depth**, not a complete protection. The following escape the pipe entirely or sit outside SecretEnv's view:
-
-- **Writes to `/dev/tty`** — bypasses the parent process's pipe entirely.
-- **`syslog(3)` / `journald` / kernel logging** — kernel writes never traverse the parent stdio pipes.
-- **`mmap`'d output** — file-backed shared memory; the parent never sees the bytes.
-- **Core dumps + post-mortem analysis** — the process memory at fault time contains the unwrapped values.
-- **Interactive TTY children** (default `Auto` mode falls back to `exec()` — see below — and forwards the original raw stdio without redaction, because a pipe would break the PTY contract).
-- **Children that re-fetch values via the cloud SDK directly** — bypasses SecretEnv entirely.
-- **Match-shorter-than-minimum values** — values < 8 bytes are skipped (the minimum-length filter exists because shorter substrings false-positive across normal English text, destroying log readability). 8-byte API keys are a vendor problem; rotate to a longer credential.
-
-The full bypass-coverage matrix lives in [[v0.14-plus/specialist-security]] §2.5 in the SecretEnv design knowledge base.
-
-### Modes
-
-**Mode A (runtime)** — `secretenv run <cmd>`:
-
-- Default `Auto`: pipe-based redaction when the parent's stdin is non-TTY (CI, scripts); auto fall-back to `exec()` when stdin is a TTY (preserves `psql`, `vim`, `ssh`). The fallback emits a one-line stderr advisory: `secretenv: interactive TTY detected; runtime redaction disabled for this invocation. Run with --redact to force pipe-based redaction (may break PTY-bound prompts).`
-- `--redact` — force pipe even on a TTY. PTY-bound commands may misbehave.
-- `--no-redact --i-know` — force `exec()` path, no redaction. `--i-know` is required to prevent CI accidents where a developer typos away the protection.
-
-**Mode B (post-hoc)** — `secretenv redact <path>`:
-
-- Default: writes scrubbed bytes to stdout.
-- `--in-place [--backup=<suffix>]`: atomic rename through a sibling tempfile; mode (`0o600` etc.) preserved.
-- `--dry-run`: counts matches without writing.
-
-Both modes share these safety guards (Mode B's `--in-place` and stdout paths, plus Mode A's child-spawn):
-
-- **`O_NOFOLLOW`** on `open(2)` — a symlink swap between the foreign-owner stat and the open is rejected.
-- **Foreign-owner refusal** — files owned by a UID other than the caller's EUID are refused unless `--allow-foreign-owner` opts in (defense against a maliciously-planted log file in a shared directory).
-- **Pseudo-filesystem refusal** — `/proc`, `/sys`, `/dev` are refused outright; "scrubbing" a kernel pseudofile is meaningless.
-- **64 KiB tail-window cap** (mode A only) — tainted values larger than the streaming carry-over window are refused at startup (a longer pattern cannot match mid-stream regardless of buffering).
-
-### Substitution token
-
-Default: `[redacted:<alias-name>]` — lowercase, alias-aware. The alias name is operator-chosen and treated as non-sensitive (the same name appears in your `secretenv.toml` and registry document); the substitution token gives operators a diagnostic breadcrumb in build logs without leaking the value.
-
-Override: `--redact-token '<fixed-string>'` — emits a constant substitution (e.g. `[REDACTED]` or `***`) regardless of which alias matched. Useful when alias names themselves are considered sensitive by policy.
+- **Writes to `/dev/tty`**: bypass the parent process's pipe entirely.
+- **`syslog(3)` / `journald` / kernel logging**: kernel writes never traverse the parent stdio pipes.
+- **`mmap`'d output**: file-backed shared memory; the parent never sees the bytes.
+- **Core dumps and post-mortem analysis**: process memory at fault time holds the unwrapped values.
+- **Interactive TTY children**: `Auto` mode falls back to `exec()` and forwards the raw stdio without redaction, because a pipe would break the PTY contract.
+- **Children that re-fetch values via a cloud SDK directly**: bypass SecretEnv entirely.
+- **Values shorter than 8 bytes**: skipped, because shorter substrings false-positive across normal text and destroy log readability. An 8-byte API key is a vendor problem; rotate to a longer credential.
 
 ---
 

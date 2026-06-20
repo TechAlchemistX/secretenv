@@ -15,8 +15,8 @@ Mutation calls time out after 30s server-side; the audit log
 records `decision: "timeout"`.
 
 The v0.16.2 F-11 cycle is set up to A/B test the leading
-hypothesis — adding a single no-op `confirm: bool` field to the
-schema — against the 6 elicitation-capable IDEs (Claude Code,
+hypothesis (adding a single no-op `confirm: bool` field to the
+schema) against the 6 elicitation-capable IDEs (Claude Code,
 Gemini, Cline, Codex, OpenCode, Copilot) to verify whether option
 (a) unlocks Copilot without regressing the 5 IDEs that currently
 work.

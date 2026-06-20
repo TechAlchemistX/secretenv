@@ -1,21 +1,22 @@
 # AWS Secrets Manager
 
-**Type:** `aws-secrets`
-**CLI required:** [`aws`](https://aws.amazon.com/cli/) (AWS CLI v2)
-**URI scheme:** `<instance>://secret-name[#json-key=<field>]`
-**Platform:** all (macOS, Linux, Windows)
-**Tested:** `aws-cli/2.34.35` on macOS Darwin 25.4 (SecretEnv v0.13.0, 2026-05-07)
+- **Type:** `aws-secrets`
+- **CLI required:** [`aws`](https://aws.amazon.com/cli/)
+- **CLI version:** AWS CLI v2
+- **URI scheme:** `<instance>://secret-name[#json-key=<field>]`
+- **Platform:** all (macOS, Linux, Windows)
+- **Tested:** `aws-cli/2.34.35` on macOS Darwin 25.4 (SecretEnv v0.19.0)
 
-> SecretEnv injects secrets from any backend as environment variables. This page covers the `aws-secrets` backend. New here? See the [overview](/).
+> SecretEnv injects secrets as environment variables. This page covers the `aws-secrets` backend. New here? See the [overview](/).
 
-AWS Secrets Manager is AWS's native secrets store for cross-service replication and automatic rotation. Unlike Parameter Store (which stores values as-is), Secrets Manager offers structured secret support and fine-grained permission control. Pick Secrets Manager when you need multi-region replication, automatic rotation orchestration, or fine-grained RDS/database credential management. The `aws` CLI wraps the Secrets Manager API with full credential chain support.
+AWS Secrets Manager is AWS's secrets store for replication and rotation. Unlike Parameter Store, it offers structured secrets and fine-grained permissions. Pick for multi-region replication, auto-rotation orchestration, or RDS/database credential management.
 
 ## When to pick this
 
-- **Multi-region replication:** Secrets Manager replicates across regions; Parameter Store is region-scoped
-- **Automatic rotation:** Rotate database passwords and API credentials via Lambda orchestration
-- **Fine-grained permissions:** IAM policy granularity per secret (not just per operation)
-- **Team workflows:** Named profiles let multiple accounts/contexts live in one config
+- **Multi-region replication**, unlike Parameter Store
+- **Automatic rotation**, Lambda-orchestrated rotation for passwords and API credentials
+- **Fine-grained IAM**, per-secret policies, not just per-operation
+- **Team workflows**, named profiles for multiple accounts
 
 ## Configuration
 
@@ -23,7 +24,7 @@ AWS Secrets Manager is AWS's native secrets store for cross-service replication 
 [backends.aws-secrets-prod]
 type        = "aws-secrets"
 aws_region  = "us-east-1"
-aws_profile = "prod"         # optional — omit to use ambient credentials
+aws_profile = "prod"         # optional, omit to use ambient credentials
 ```
 
 ### Fields
@@ -59,26 +60,26 @@ aws-secrets-prod://myapp/prod/stripe_key
 instance name       secret name
 ```
 
-Secret names are passed verbatim to `aws secretsmanager get-secret-value --secret-id`. Both friendly names and ARNs are supported. The leading `/` is **not** part of the secret name — double-slash form `aws-secrets-prod://` omits it, while triple-slash form `aws-secrets-prod:///` strips any leading `/` from the URI path.
+Secret names passed verbatim to `aws secretsmanager get-secret-value --secret-id`. Both friendly names and ARNs supported. Leading `/` omitted automatically.
 
-For secrets with JSON value (multiple key-value pairs), append the `#json-key` fragment directive:
+For JSON secrets, append `#json-key=<field>`:
 
 ```
 aws-secrets-prod://myapp/prod/db_credentials#json-key=password
 ```
 
-**Verify your setup with:** `secretenv doctor` — green output means you're ready to run `secretenv run -- <your command>`.
+**Verify:** `secretenv doctor`. Green output means ready to run.
 
 ## Authentication
 
-SecretEnv delegates authentication entirely to the `aws` CLI. Any credential mechanism the CLI supports works automatically:
+Delegates entirely to the `aws` CLI. All standard credential mechanisms work:
 
 - Named profiles (via `aws_profile` field)
 - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
 - IAM instance/task roles (EC2, ECS, Lambda, AppRunner)
 - AWS SSO / IAM Identity Center
 - `credential_process` custom providers
-- Cross-account role assumption via `role_arn` in profile config
+- Cross-account role assumption via `role_arn` in profile
 
 ## IAM Permissions
 
@@ -124,24 +125,22 @@ aws-secrets-prod                                            (aws-secrets)
 
 ## Fragment directives
 
-`#json-key=<field>` extracts a single field from a JSON-shaped secret:
-
 | Directive | Effect | Example |
 |---|---|---|
-| `#json-key=password` | Extract the `password` field as a string | `aws-secrets-prod://myapp/db#json-key=password` |
-| (no fragment) | Return the secret value verbatim (string or whole JSON) | `aws-secrets-prod://myapp/db` |
+| `#json-key=password` | Extract `password` field from JSON | `aws-secrets-prod://myapp/db#json-key=password` |
+| (no fragment) | Return value verbatim (string or JSON) | `aws-secrets-prod://myapp/db` |
 
-Shorthand fragments (`#password` with no `=`) and unsupported directives (`#version=5`) are rejected at URI-parse time with a migration hint.
+Shorthand fragments (`#password`) and invalid directives (`#version=5`) rejected at parse time with migration hint.
 
 ## History API support
 
-Not implemented. The backend returns the trait-default "not implemented" error. AWS Secrets Manager exposes version IDs via `aws secretsmanager list-secret-version-ids`, but this backend does not yet call that surface. Version history is available via the AWS Console or `aws secretsmanager list-secret-version-ids` directly.
+Not implemented. AWS Secrets Manager exposes version IDs via `aws secretsmanager list-secret-version-ids`, but this backend does not yet use that. Check the AWS Console or call the CLI directly.
 
 ## Limitations
 
-- **Auto-create on first set:** `registry set` adds a new version to an existing secret. The secret itself must exist first (`aws secretsmanager create-secret`); this is a one-time setup per secret.
-- **No nested JSON field extraction:** `#json-key` selects top-level fields only. Nested paths like `#json-key=db.password` are not supported.
-- **No automatic rotation orchestration:** Secrets Manager supports rotation policies in the console; this backend rotates the version but does not invoke the rotation Lambda. Use the AWS console or CloudFormation for rotation setup.
+- **No auto-create.** Secret must exist first (`aws secretsmanager create-secret`); `registry set` adds new versions only
+- **No nested JSON extraction.** `#json-key` selects top-level fields only; nested paths like `db.password` not supported
+- **No rotation orchestration.** `registry set` adds versions; rotation Lambda invocation via AWS Console/CloudFormation
 
 ## Examples
 
@@ -203,9 +202,9 @@ Secret names cannot start with `/`. Use `aws secretsmanager list-secrets --regio
 
 ## See Also
 
-- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor) — health checks for all backends
-- [Alias registry concepts](../reference/registry.md) — how registry sources resolve aliases
-- [Fragment vocabulary](../reference/fragment-vocabulary.md) — `#json-key` directive reference
-- [AWS Systems Manager Parameter Store](aws-ssm.md) — alternative for simpler use cases
-- [All backends](README.md) — pick a different backend
-- [Overview](/) — overview + workflows
+- [`secretenv doctor`](/reference/cli-reference-full#secretenv-doctor), health checks for all backends
+- [Alias registry concepts](../reference/registry.md), how registry sources resolve aliases
+- [Fragment vocabulary](../reference/fragment-vocabulary.md), `#json-key` directive reference
+- [AWS Systems Manager Parameter Store](aws-ssm.md), alternative for simpler use cases
+- [All backends](README.md), pick a different backend
+- [Overview](/), overview + workflows

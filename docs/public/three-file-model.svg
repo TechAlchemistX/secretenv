@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 660" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="The three-file model as a top-to-bottom resolution pipeline. Row 1: secretenv.toml, committed to the repo and owned by the developer, declares STRIPE_KEY with from secretenv://stripe-key, the manifest says WHAT is needed, alias names only. Row 2: the alias registry, stored inside a backend you control and owned by Platform or Security, maps stripe-key to 1password-work://payments/stripe/api_key, the registry says WHERE it lives. Row 3: config.toml in the machine XDG directory at ~/.config/secretenv/, owned by each developer, declares the backends.1password-work backend, the machine config says WHICH backends exist here. Result: at runtime the backend fetch op read injects the value as the STRIPE_KEY environment variable into the child process, fetched at runtime and gone when the process exits, never written to disk. Change where the alias points and every repo picks it up on its next run, with no PRs and no re-encryption.">
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0 0 L10 5 L0 10 L3 5 Z" fill="#4ade80"/>
+</marker>
+<linearGradient id="resglow" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#4ade80" stop-opacity="0.10"/>
+<stop offset="1" stop-color="#4ade80" stop-opacity="0.02"/>
+</linearGradient>
+</defs>
+
+<rect x="0.5" y="0.5" width="959" height="659" rx="14" fill="#0b0f17" stroke="#1c2230"/>
+
+<!-- Title -->
+<text x="40" y="46" fill="#e6edf3" font-size="20" font-weight="600">The three-file model</text>
+<text x="40" y="68" fill="#8b949e" font-size="13.5">Name a secret once. The registry decides where it lives.</text>
+
+<!-- ============ ROW 1, secretenv.toml ============ -->
+<g>
+<rect x="40" y="92" width="880" height="104" rx="11" fill="#11161f" stroke="#1c2230"/>
+<!-- vertical divider between left and right blocks -->
+<line x1="340" y1="108" x2="340" y2="180" stroke="#1c2230"/>
+
+<!-- left block -->
+<circle cx="68" cy="124" r="11" fill="#0b0f17" stroke="#4ade80" stroke-width="1.6"/>
+<text x="68" y="128.5" fill="#4ade80" font-size="12" font-weight="700" text-anchor="middle">1</text>
+<text x="90" y="123" fill="#e6edf3" font-size="15" font-weight="600" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace">secretenv.toml</text>
+<rect x="64" y="138" width="84" height="20" rx="10" fill="#0d1622" stroke="#20283a"/>
+<text x="106" y="152" fill="#8b949e" font-size="10" text-anchor="middle">owner: Developer</text>
+<text x="64" y="180" fill="#8b949e" font-size="11.5">committed to repo</text>
+
+<!-- right block -->
+<rect x="364" y="114" width="536" height="34" rx="7" fill="#0b0f17" stroke="#20283a"/>
+<text x="380" y="136" font-size="13" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace"><tspan fill="#e6edf3">STRIPE_KEY = { from = </tspan><tspan fill="#4ade80">"secretenv://stripe-key"</tspan><tspan fill="#e6edf3"> }</tspan></text>
+<text x="364" y="178" fill="#8b949e" font-size="12">the manifest says <tspan fill="#4ade80" font-weight="700">WHAT</tspan> is needed, <tspan font-style="italic">alias names only</tspan></text>
+</g>
+
+<!-- connector -->
+<line x1="480" y1="200" x2="480" y2="228" stroke="#4ade80" stroke-width="2.2" marker-end="url(#arr)"/>
+
+<!-- ============ ROW 2, Alias registry ============ -->
+<g>
+<rect x="40" y="236" width="880" height="104" rx="11" fill="#11161f" stroke="#1c2230"/>
+<line x1="340" y1="252" x2="340" y2="324" stroke="#1c2230"/>
+
+<!-- left block -->
+<circle cx="68" cy="268" r="11" fill="#0b0f17" stroke="#4ade80" stroke-width="1.6"/>
+<text x="68" y="272.5" fill="#4ade80" font-size="12" font-weight="700" text-anchor="middle">2</text>
+<text x="90" y="267" fill="#e6edf3" font-size="15" font-weight="600">Alias registry</text>
+<rect x="64" y="282" width="160" height="20" rx="10" fill="#0d1622" stroke="#20283a"/>
+<text x="144" y="296" fill="#8b949e" font-size="10" text-anchor="middle">owner: Platform / Security</text>
+<text x="64" y="324" fill="#8b949e" font-size="11.5">inside a backend you control</text>
+
+<!-- right block -->
+<rect x="364" y="258" width="536" height="34" rx="7" fill="#0b0f17" stroke="#20283a"/>
+<text x="380" y="280" font-size="13" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace"><tspan fill="#4ade80">stripe-key</tspan><tspan fill="#4ade80"> &#8594; </tspan><tspan fill="#e6edf3">1password-work://payments/stripe/api_key</tspan></text>
+<text x="364" y="322" fill="#8b949e" font-size="12">the registry says <tspan fill="#4ade80" font-weight="700">WHERE</tspan> it lives, <tspan font-style="italic">alias resolves to a backend URI</tspan></text>
+</g>
+
+<!-- connector -->
+<line x1="480" y1="344" x2="480" y2="372" stroke="#4ade80" stroke-width="2.2" marker-end="url(#arr)"/>
+
+<!-- ============ ROW 3, config.toml ============ -->
+<g>
+<rect x="40" y="380" width="880" height="104" rx="11" fill="#11161f" stroke="#1c2230"/>
+<line x1="340" y1="396" x2="340" y2="468" stroke="#1c2230"/>
+
+<!-- left block -->
+<circle cx="68" cy="412" r="11" fill="#0b0f17" stroke="#4ade80" stroke-width="1.6"/>
+<text x="68" y="416.5" fill="#4ade80" font-size="12" font-weight="700" text-anchor="middle">3</text>
+<text x="90" y="411" fill="#e6edf3" font-size="15" font-weight="600" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace">config.toml</text>
+<rect x="64" y="426" width="84" height="20" rx="10" fill="#0d1622" stroke="#20283a"/>
+<text x="106" y="440" fill="#8b949e" font-size="10" text-anchor="middle">owner: each dev</text>
+<text x="64" y="468" fill="#8b949e" font-size="11.5">machine XDG dir · ~/.config/secretenv/</text>
+
+<!-- right block -->
+<rect x="364" y="402" width="536" height="34" rx="7" fill="#0b0f17" stroke="#20283a"/>
+<text x="380" y="424" font-size="13" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace"><tspan fill="#e6edf3">[backends.</tspan><tspan fill="#4ade80">1password-work</tspan><tspan fill="#e6edf3">]</tspan></text>
+<text x="364" y="466" fill="#8b949e" font-size="12">the machine config says <tspan fill="#4ade80" font-weight="700">WHICH</tspan> backends exist here, <tspan font-style="italic">credentials &amp; endpoints</tspan></text>
+</g>
+
+<!-- connector -->
+<line x1="480" y1="488" x2="480" y2="516" stroke="#4ade80" stroke-width="2.2" marker-end="url(#arr)"/>
+
+<!-- ============ RESULT band ============ -->
+<g>
+<rect x="40" y="524" width="880" height="80" rx="11" fill="url(#resglow)" stroke="#2a5a3a"/>
+<rect x="40" y="524" width="880" height="80" rx="11" fill="none" stroke="#4ade80" stroke-opacity="0.28"/>
+
+<!-- pill -->
+<rect x="58" y="546" width="98" height="22" rx="11" fill="#0b0f17" stroke="#4ade80" stroke-opacity="0.5"/>
+<text x="107" y="561" fill="#4ade80" font-size="11.5" font-weight="700" text-anchor="middle">at runtime</text>
+
+<!-- fetch command -->
+<text x="174" y="562" font-size="12.5" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace"><tspan fill="#8b949e">$ </tspan><tspan fill="#e6edf3">op read "op://payments/stripe/api_key"</tspan></text>
+
+<line x1="500" y1="557" x2="528" y2="557" stroke="#4ade80" stroke-width="2" marker-end="url(#arr)"/>
+
+<!-- injected env -->
+<rect x="540" y="544" width="186" height="26" rx="6" fill="#0b0f17" stroke="#20283a"/>
+<text x="554" y="562" font-size="12.5" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace"><tspan fill="#4ade80">$STRIPE_KEY</tspan><tspan fill="#8b949e"> = sk_live_…</tspan></text>
+
+<line x1="734" y1="557" x2="762" y2="557" stroke="#4ade80" stroke-width="2" marker-end="url(#arr)"/>
+
+<!-- child process -->
+<rect x="774" y="544" width="128" height="26" rx="6" fill="#0b0f17" stroke="#20283a"/>
+<text x="838" y="562" fill="#e6edf3" font-size="12" text-anchor="middle">child process</text>
+
+<!-- runtime caption -->
+<text x="174" y="590" fill="#8b949e" font-size="11.5">fetched at runtime, <tspan fill="#e6edf3">gone when the process exits</tspan>, never written to disk</text>
+</g>
+
+<!-- Footer caption -->
+<text x="480" y="636" fill="#8b949e" font-size="12" text-anchor="middle">Change where the alias points <tspan fill="#4ade80">&#8594;</tspan> every repo picks it up on its next run. <tspan fill="#e6edf3">No PRs, no re-encryption.</tspan></text>
+</svg>

@@ -118,6 +118,9 @@ export default defineConfig({
           { text: 'CLI Reference', link: '/reference/cli-reference-full' },
           { text: 'Configuration', link: '/reference/configuration' },
           { text: 'Registry Migrate', link: '/reference/migrate' },
+          { text: 'Redaction', link: '/reference/redact' },
+          { text: 'MCP Server', link: '/reference/mcp' },
+          { text: 'OpenTelemetry', link: '/reference/opentelemetry' },
         ],
       },
       {

@@ -42,7 +42,7 @@ export default defineConfig({
     // Cross-links to repo-root files (work in GitHub repo browsing, not in the docs site).
     // VitePress normalises ./../../README, ../../README, and ../README: match all variants.
     /README(\.md)?(#|$)/,
-    /(CONTRIBUTING|SECURITY|LICENSE|CLA)(\.md)?(#|$)/,
+    /(CONTRIBUTING|SECURITY|LICENSE|CLA|CHANGELOG)(\.md)?(#|$)/,
   ],
 
   themeConfig: {

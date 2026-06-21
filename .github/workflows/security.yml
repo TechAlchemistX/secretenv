@@ -1,0 +1,64 @@
+name: Security
+
+# `cargo deny` (licenses / bans / advisories / sources) and `cargo audit`
+# (RUSTSEC advisories) only depend on the dependency tree, not on app
+# code. Split out of ci.yml so they are:
+#   - dependency-path-filtered on PR/push (skipped on code-only changes),
+#     keeping the common PR fast; and
+#   - run on a weekly schedule so newly-published advisories are caught
+#     even when no dependency changed.
+# `main` has no required status checks, so path-filtering here cannot
+# leave a required check pending and deadlock a merge.
+#
+# Adding a workspace crate always touches a Cargo.toml (root members +
+# the new crate's manifest), so the deny AGPL-exception gate
+# ([[feedback_new_crate_deny_audit]]) still fires on every crate add.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'rust-toolchain.toml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'rust-toolchain.toml'
+  schedule:
+    # Mondays 07:00 UTC — picks up advisories published since the last run.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit

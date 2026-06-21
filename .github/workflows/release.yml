@@ -47,8 +47,8 @@ jobs:
             os: ubuntu-latest
             use-cross: false
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            use-cross: true     # cross for Linux arm64
+            os: ubuntu-24.04-arm
+            use-cross: false    # native arm64 runner (free for public repos) — was `cross` Docker emulation
           - target: x86_64-apple-darwin
             os: macos-latest
             use-cross: false
@@ -204,9 +204,9 @@ jobs:
             See the [CHANGELOG](https://github.com/TechAlchemistX/secretenv/blob/${{ github.ref_name }}/CHANGELOG.md) for the full list of changes in this release.
 
   # ------------------------------------------------------------------
-  # 3. Publish every crate to crates.io in dependency order.
-  #    Brief sleeps between steps let the index catch up so the next
-  #    crate's path+version dep can resolve the just-published version.
+  # 3. Publish every crate to crates.io via a single workspace publish.
+  #    cargo derives the dependency order itself and waits on the index
+  #    between crates, so there is no hand-maintained order or sleeps.
   # ------------------------------------------------------------------
   publish-crates:
     name: Publish to crates.io
@@ -229,111 +229,68 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Order: TELEMETRY → CORE.
+      # ---------------------------------------------------------------
+      # Single workspace publish. cargo (>=1.66, repo is pinned 1.95.0)
+      # waits for each just-published crate to be live on the index
+      # before moving on, and `--workspace` derives the topological
+      # publish order from the dep graph itself — so we no longer
+      # hand-maintain the ordered list of 23 `cargo publish -p ...`
+      # steps nor the inter-step `sleep`s (formerly ~300s of pure
+      # waiting). This also removes the recurring "forgot to add the new
+      # crate to release.yml in dep order" incident class (v0.15 missed
+      # migrate; v0.16 missed backends-init + mcp; v0.17 swapped
+      # telemetry/core) — adding a workspace member now needs zero
+      # release.yml change.
       #
-      # Telemetry is the leaf crate of the workspace dep graph; nothing
-      # depends on the workspace below it. v0.14–v0.16 the order was
-      # core → telemetry because core did NOT depend on telemetry — they
-      # sat at the same layer. v0.17 Phase 8b added
-      # `secretenv-telemetry.workspace = true` to `secretenv-core`'s
-      # Cargo.toml (the runner span / metric call-sites need the typed
-      # builder + metric helpers), so core now depends on telemetry and
-      # the publish order must respect that. Swapping these two steps
-      # was the v0.17.0 release.yml fix; the v0.17.0 tag publish failed
-      # at `cargo publish -p secretenv-core` because telemetry 0.17.0
-      # wasn't on the index yet.
-      - name: Publish secretenv-telemetry
-        run: cargo publish -p secretenv-telemetry --locked
-
-      - name: Wait for crates.io to index secretenv-telemetry
-        run: sleep 45
-
-      - name: Publish secretenv-core
-        run: cargo publish -p secretenv-core --locked
-
-      - name: Wait for crates.io to index secretenv-core
-        run: sleep 45
-
-      - name: Publish backend crates (parallel dep-wise; sequential here for simplicity)
+      # secretenv-testing has `publish = false`, so `--workspace` skips
+      # it automatically.
+      #
+      # Verify builds are intentionally KEPT (no `--no-verify`): CI
+      # already builds/tests the tagged commit, but the per-crate verify
+      # also catches packaging-only bugs (a file missing from the
+      # published tarball) that a normal build won't. Workspace mode
+      # shares the build across crates, so this is far cheaper than the
+      # 23 isolated temp-dir verify builds the old form did.
+      #
+      # On `workflow_dispatch` (half-shipped-release recovery) some
+      # crates are already live at this version. Native
+      # `cargo publish --workspace` does NOT skip already-published
+      # crates (rust-lang/cargo#15006, #16139) — it errors on the first
+      # one and never reaches the missing *later* crates, which is
+      # exactly the tail that a half-shipped release left behind. So the
+      # recovery branch first asks crates.io which member versions are
+      # already live and `--exclude`s them; cargo then publishes only
+      # the remaining members, still in dependency order and still
+      # waiting on the index between each.
+      - name: Publish all workspace crates to crates.io
         shell: bash
         run: |
           set -euo pipefail
-          # Strict-mode so a transient mid-list failure (crates.io 5xx,
-          # indexing race, network blip) fails the step rather than
-          # masking via bash last-command-only exit semantics. Phase 9
-          # security audit LOW + v0.10.x deferred — landed in v0.11.x
-          # hygiene cycle.
-          cargo publish -p secretenv-backend-local --locked
-          cargo publish -p secretenv-backend-aws-ssm --locked
-          cargo publish -p secretenv-backend-1password --locked
-          cargo publish -p secretenv-backend-vault --locked
-          cargo publish -p secretenv-backend-aws-secrets --locked
-          cargo publish -p secretenv-backend-gcp --locked
-          cargo publish -p secretenv-backend-azure --locked
-          cargo publish -p secretenv-backend-keychain --locked
-          cargo publish -p secretenv-backend-doppler --locked
-          cargo publish -p secretenv-backend-infisical --locked
-          cargo publish -p secretenv-backend-keeper --locked
-          cargo publish -p secretenv-backend-cf-kv --locked
-          cargo publish -p secretenv-backend-openbao --locked
-          cargo publish -p secretenv-backend-conjur --locked
-          cargo publish -p secretenv-backend-bitwarden-sm --locked
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            cargo publish --workspace --locked
+            exit 0
+          fi
 
-      - name: Wait for crates.io to index backend crates
-        run: sleep 45
+          echo "Recovery mode (workflow_dispatch): computing already-published crates to skip."
+          # crates.io requires a descriptive User-Agent or it 403s.
+          ua="secretenv-release-ci (https://github.com/${GITHUB_REPOSITORY})"
+          excludes=()
+          # `cargo metadata --no-deps` lists only workspace members.
+          # `.publish == []` marks `publish = false` (secretenv-testing);
+          # null or a registry list means it is publishable.
+          while read -r name version; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -A "$ua" \
+              "https://crates.io/api/v1/crates/${name}/${version}")
+            if [ "$code" = "200" ]; then
+              echo "  already live: ${name} ${version} — excluding"
+              excludes+=(--exclude "$name")
+            else
+              echo "  missing: ${name} ${version} (http ${code}) — will publish"
+            fi
+          done < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | "\(.name) \(.version)"')
 
-      # ---------------------------------------------------------------
-      # NEW in v0.16 hygiene: secretenv-migrate (added v0.15) +
-      # secretenv-backends-init + secretenv-mcp (both v0.16) live
-      # between the backend layer and the CLI in the dep graph. The
-      # v0.16.0 tag publish missed them — recovered by hand. Order
-      # below mirrors the dep graph: migrate → backends-init → mcp →
-      # CLI. When adding a new workspace crate the CLI (or MCP) depends
-      # on, INSERT IT HERE in the correct topological slot.
-      # ---------------------------------------------------------------
-      - name: Publish secretenv-migrate
-        run: cargo publish -p secretenv-migrate --locked
-
-      - name: Wait for crates.io to index secretenv-migrate
-        run: sleep 30
-
-      - name: Publish secretenv-backends-init
-        run: cargo publish -p secretenv-backends-init --locked
-
-      - name: Wait for crates.io to index secretenv-backends-init
-        run: sleep 30
-
-      # secretenv-registry-mutate (v0.16.2 D.2b) — shared
-      # list+edit+serialize+set transaction used by BOTH secretenv-cli
-      # and secretenv-mcp. Depends on secretenv-core only; can be
-      # published any time after core. Publishing here (right before
-      # secretenv-mcp) keeps the dep-graph order intuitive for future
-      # readers.
-      - name: Publish secretenv-registry-mutate
-        run: cargo publish -p secretenv-registry-mutate --locked
-
-      - name: Wait for crates.io to index secretenv-registry-mutate
-        run: sleep 30
-
-      # secretenv-mcp-config (v0.16.2 D.5) — typed `[mcp]` config
-      # schema, lifted out of secretenv-mcp so future consumers
-      # (e.g. a slimmer `secretenv doctor` validator) can depend on
-      # the config types alone. Depends on serde + toml + anyhow
-      # only; sits anywhere after the workspace base.
-      - name: Publish secretenv-mcp-config
-        run: cargo publish -p secretenv-mcp-config --locked
-
-      - name: Wait for crates.io to index secretenv-mcp-config
-        run: sleep 30
-
-      - name: Publish secretenv-mcp
-        run: cargo publish -p secretenv-mcp --locked
-
-      - name: Wait for crates.io to index secretenv-mcp
-        run: sleep 45
-
-      - name: Publish secretenv (CLI)
-        run: cargo publish -p secretenv --locked
+          cargo publish --workspace "${excludes[@]}" --locked
 
   # ------------------------------------------------------------------
   # 4. Render + push the Homebrew formula to the tap repo.
